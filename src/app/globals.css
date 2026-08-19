@@ -1,26 +1,492 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --desk-wood: #28313b;
+  --spidey-burgundy: #3c1820;
+  --spidey-maroon: #5a2029;
+  --spidey-crimson: #7d2834;
+  --gwen-dusty-pink: #bd7f89;
+  --gwen-soft-pink: #e0b1ae;
+  --vintage-paper: #f2e6d2;
+  --polaroid-paper: #fcfaf7;
+  --ink: #261d24;
+  --web-mint: #8faeaa;
+  --glass-gold: #c5a467;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--desk-wood);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    radial-gradient(circle at 50% -10%, #53616c 0%, #28313b 48%, #171b22 100%);
+  background-size: 9px 9px, 9px 9px, 100% 100%;
+  color: var(--gwen-soft-pink);
+  min-height: 100vh;
+  margin: 0;
+  overflow-x: hidden;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+}
+
+/* Handwritten & Marker Typography */
+.font-handwriting {
+  font-family: 'Caveat', cursive;
+}
+.font-marker {
+  font-family: 'Permanent Marker', cursive;
+}
+
+/* Opaque Solid Scrapbook Paper (Zero Glassmorphism) */
+.paper-sheet-solid {
+  background-color: var(--vintage-paper);
+  background-image: radial-gradient(rgba(60, 35, 30, 0.09) 0.7px, transparent 0.7px);
+  background-size: 7px 7px;
+  color: #1A0D10;
+  border-radius: 0.45rem;
+  border: 3px solid var(--ink);
+  box-shadow: 
+    12px 14px 0 rgba(14, 17, 22, 0.55),
+    0 0 0 7px rgba(242, 230, 210, 0.12),
+    inset 0 0 60px rgba(180, 140, 110, 0.22);
+  transform: rotate(-0.35deg);
+}
+
+.polaroid-matte {
+  background: var(--polaroid-paper);
+  color: #1A0D10;
+  padding: 10px 10px 28px 10px;
+  border-radius: 3px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65), 0 1px 3px rgba(0, 0, 0, 0.3);
+  border: 2px solid var(--ink);
+  transition: all 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.polaroid-matte:hover {
+  transform: translateY(-6px) scale(1.03) rotate(0deg) !important;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.8), 0 0 15px rgba(125, 40, 52, 0.3);
+  z-index: 30;
+}
+
+/* Solid Tactile Masking Tapes */
+.tape-pink-solid {
+  background-color: #D47B91;
+  border-left: 3px dashed #FFF;
+  border-right: 3px dashed #FFF;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.6);
+}
+.tape-red-solid {
+  background-color: #590910;
+  border-left: 3px dashed #ECA8B8;
+  border-right: 3px dashed #ECA8B8;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.6);
+}
+.tape-gold-solid {
+  background-color: #B59350;
+  border-left: 3px dashed #FFF;
+  border-right: 3px dashed #FFF;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.6);
+}
+
+/* Wax Stamp */
+.wax-seal-solid {
+  background: radial-gradient(circle at 35% 35%, #8B121E, #2B0407);
+  border: 3px solid #1C0204;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.9), inset 0 2px 5px rgba(255, 255, 255, 0.35);
+}
+
+/* Navigation & Controls */
+.scrapbook-nav {
+  background: #30242b;
+  border: 3px solid #17131a;
+  box-shadow: 7px 8px 0 rgba(9, 12, 16, 0.6);
+}
+
+.scrapbook-tab {
+  border-radius: 0.2rem;
+  transform: rotate(-1deg);
+  transition: transform 0.22s steps(3), filter 0.22s ease, background-color 0.22s ease;
+}
+.scrapbook-tab:nth-child(even) { transform: rotate(1.4deg); }
+.scrapbook-tab:hover { transform: translateY(-7px) rotate(-3deg) scale(1.06); filter: saturate(1.35); }
+
+.scrapbook-scroller {
+  background: #30242b;
+  border: 3px solid #17131a;
+  box-shadow: 8px 9px 0 rgba(9, 12, 16, 0.65);
+  border-radius: 0.3rem;
+}
+
+.scrapbook-action {
+  background: none;
+  border: 0;
+  padding: 0.35rem;
+  filter: drop-shadow(3px 4px 0 rgba(9, 12, 16, 0.55));
+}
+.scrapbook-action:hover { transform: rotate(-12deg) scale(1.2); }
+
+.book-open-icon {
+  display: inline-block;
+  color: #e0b1ae;
+  font: 700 9px/1 'Space Grotesk', sans-serif;
+  letter-spacing: 0.14em;
+  border: 2px solid currentColor;
+  padding: 0.35rem 0.2rem;
+  transform: rotate(-6deg);
+}
+
+.contents-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.contents-control > span:last-child {
+  color: #e0b1ae;
+  font: 700 9px/1 'Space Grotesk', sans-serif;
+  letter-spacing: 0.14em;
+}
+
+/* Scrapbook Intro & Opening Spread Animations */
+.scrapbook-intro-cover {
+  animation: scrapbook-cover-enter 1.1s cubic-bezier(0.16, 1.2, 0.3, 1) both;
+}
+
+.scrapbook-open-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  color: #f2e6d2;
+  background: #7d2834;
+  border: 3px solid #261d24;
+  padding: 1rem 1.5rem;
+  box-shadow: 7px 8px 0 #261d24;
+  transform: rotate(-2deg);
+  transition: transform 0.25s steps(4), box-shadow 0.25s steps(4);
+}
+.scrapbook-open-button:hover {
+  transform: rotate(2deg) translateY(-6px) scale(1.08);
+  box-shadow: 12px 14px 0 #261d24;
+}
+
+.book-opening-effect {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  overflow: hidden;
+  pointer-events: none;
+  background: rgba(38, 29, 36, 0.16);
+  animation: opening-wash 1.7s ease-in forwards;
+}
+
+.book-opening-spread {
+  position: absolute;
+  inset: -20%;
+  background:
+    radial-gradient(ellipse at center, transparent 0 18%, rgba(242, 230, 210, 0.95) 19% 20%, transparent 21%),
+    conic-gradient(from 45deg at center, transparent, rgba(224, 177, 174, 0.9), transparent 15%, rgba(197, 164, 103, 0.85), transparent 35%, rgba(224, 177, 174, 0.9), transparent 55%);
+  animation: book-spread 1.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.opening-particle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  color: #e0b1ae;
+  font-size: clamp(1.4rem, 3vw, 3.5rem);
+  text-shadow: 4px 5px 0 #7d2834;
+  animation: particle-flight 1.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.particle-1, .particle-4 { color: #c5a467; }
+.particle-2, .particle-5 { color: #8faeaa; }
+.particle-0 { --particle-x: -42vw; --particle-y: -28vh; }
+.particle-1 { --particle-x: -25vw; --particle-y: 30vh; }
+.particle-2 { --particle-x: 18vw; --particle-y: -34vh; }
+.particle-3 { --particle-x: 42vw; --particle-y: 24vh; }
+.particle-4 { --particle-x: -36vw; --particle-y: 8vh; }
+.particle-5 { --particle-x: 34vw; --particle-y: -8vh; }
+
+@keyframes opening-wash {
+  0%, 75% { opacity: 1; }
+  100% { opacity: 0; visibility: hidden; }
+}
+
+@keyframes book-spread {
+  0% { transform: scale(0.05) rotate(-15deg); opacity: 0; }
+  55% { transform: scale(1.4) rotate(8deg); opacity: 1; }
+  100% { transform: scale(3.8) rotate(0); opacity: 0; }
+}
+
+@keyframes particle-flight {
+  0% { transform: translate(0, 0) rotate(0) scale(0.2); opacity: 0; }
+  22% { opacity: 1; }
+  100% { transform: translate(var(--particle-x), var(--particle-y)) rotate(540deg) scale(1.2); opacity: 0; }
+}
+
+@keyframes scrapbook-cover-enter {
+  0% { opacity: 0; transform: perspective(1500px) rotateY(-55deg) rotateZ(-7deg) translateX(-100px) scale(0.72); }
+  65% { opacity: 1; transform: perspective(1500px) rotateY(10deg) rotateZ(2deg) translateX(12px) scale(1.04); }
+  100% { opacity: 1; transform: perspective(1500px) rotateY(0) rotateZ(0) translateX(0) scale(1); }
+}
+
+/* Dashboard Feature Cards */
+.dashboard-feature-card {
+  display: block;
+  min-height: 245px;
+  padding: 1.5rem;
+  border: 3px solid #261d24;
+  color: #261d24;
+  box-shadow: 10px 12px 0 rgba(9, 12, 16, 0.55);
+  transition: transform 0.35s cubic-bezier(0.16, 1.3, 0.3, 1), box-shadow 0.35s ease, filter 0.35s ease;
+}
+.dashboard-feature-card:hover {
+  transform: translateY(-13px) rotate(0deg) scale(1.035) !important;
+  box-shadow: 16px 19px 0 rgba(9, 12, 16, 0.65);
+  filter: saturate(1.18) contrast(1.04);
+}
+
+.feature-rose { background: #ead0c7; }
+.feature-gold { background: #ead9a9; }
+.feature-red { background: #d7a4a0; }
+.feature-mint { background: #bdd0c5; }
+
+.feature-stamp {
+  display: inline-block;
+  padding: 0.25rem 0.45rem;
+  color: #7d2834;
+  border: 2px solid #7d2834;
+  font: 700 10px/1 'Space Grotesk', sans-serif;
+  letter-spacing: 0.14em;
+  transform: rotate(-4deg);
+}
+
+/* Full-Screen Comic Scrapbook Book-Turn Transition */
+@keyframes book-turn-portal {
+  0% {
+    opacity: 0;
+    transform: perspective(1800px) rotateY(-85deg) scale(0.7) translateX(-120px);
+    filter: brightness(0.6) contrast(1.2);
+  }
+  60% {
+    transform: perspective(1800px) rotateY(8deg) scale(1.03) translateX(10px);
+    filter: brightness(1.05);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(1800px) rotateY(0deg) scale(1) translateX(0);
+    filter: brightness(1);
+  }
+}
+
+.animate-book-portal {
+  animation: book-turn-portal 0.75s cubic-bezier(0.16, 1.25, 0.3, 1) forwards;
+  transform-origin: left center;
+}
+
+/* 3D Vertical Split-Flap Digit Animations */
+.flip-clock-unit {
+  perspective: 1200px;
+  transform-style: preserve-3d;
+}
+
+@keyframes flap-down-top {
+  0% {
+    transform: rotateX(0deg);
+    background-color: var(--vintage-paper);
+  }
+  50% {
+    transform: rotateX(-90deg);
+    background-color: #dfd0bb;
+  }
+  100% {
+    transform: rotateX(-90deg);
+    background-color: #dfd0bb;
+  }
+}
+
+@keyframes flap-down-bottom {
+  0% {
+    transform: rotateX(90deg);
+    background-color: #e5d5c0;
+  }
+  50% {
+    transform: rotateX(90deg);
+    background-color: #e5d5c0;
+  }
+  100% {
+    transform: rotateX(0deg);
+    background-color: #faf7f2;
+  }
+}
+
+.animate-flap-top {
+  animation: flap-down-top 0.45s cubic-bezier(0.37, 0, 0.63, 1) forwards;
+  transform-origin: bottom center;
+  backface-visibility: hidden;
+}
+
+.animate-flap-bottom {
+  animation: flap-down-bottom 0.45s cubic-bezier(0.37, 0, 0.63, 1) forwards;
+  transform-origin: top center;
+  backface-visibility: hidden;
+}
+/* Scrapbook Web Portal Transition */
+@keyframes scrapbook-portal-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.9) rotate(-1.5deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+.animate-scrapbook-portal {
+  animation: scrapbook-portal-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Cute Spiders Crawling Keyframes (Across Entire Screen) */
+@keyframes crawl-screen-horizontal {
+  0% { left: -5%; transform: scaleX(1); }
+  49% { transform: scaleX(1); }
+  50% { left: 105%; transform: scaleX(-1); }
+  99% { transform: scaleX(-1); }
+  100% { left: -5%; transform: scaleX(1); }
+}
+
+@keyframes crawl-screen-diagonal {
+  0% { top: 10%; left: -5%; transform: rotate(15deg); }
+  50% { top: 85%; left: 105%; transform: rotate(15deg); }
+  51% { transform: rotate(195deg); }
+  100% { top: 10%; left: -5%; transform: rotate(195deg); }
+}
+
+@keyframes crawl-screen-vertical {
+  0% { top: -5%; transform: rotate(90deg); }
+  50% { top: 105%; transform: rotate(90deg); }
+  51% { transform: rotate(-90deg); }
+  100% { top: -5%; transform: rotate(-90deg); }
+}
+
+@keyframes hanging-spider-bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(18px); }
+}
+
+.animate-crawl-h { animation: crawl-screen-horizontal 22s linear infinite; }
+.animate-crawl-d { animation: crawl-screen-diagonal 28s linear infinite; }
+.animate-crawl-v { animation: crawl-screen-vertical 19s linear infinite; }
+.animate-hanging-bounce { animation: hanging-spider-bounce 3.5s ease-in-out infinite; }
+
+/* Mini Spidey Swing Along Timer */
+@keyframes spidey-clock-swing {
+  0% { transform: rotate(20deg) translateY(0); }
+  50% { transform: rotate(-22deg) translateY(26px); }
+  100% { transform: rotate(20deg) translateY(0); }
+}
+.animate-spidey-swing {
+  animation: spidey-clock-swing 4.2s ease-in-out infinite;
+  transform-origin: top center;
+}
+
+/* Spider-Bot Patrol */
+@keyframes spiderbot-patrol {
+  0% { left: 4%; transform: scaleX(1); }
+  48% { left: 90%; transform: scaleX(1); }
+  50% { left: 90%; transform: scaleX(-1); }
+  98% { left: 4%; transform: scaleX(-1); }
+  100% { left: 4%; transform: scaleX(1); }
+}
+.animate-spiderbot-patrol {
+  animation: spiderbot-patrol 14s linear infinite;
+}
+
+/* Mason Jar Physical Styling */
+.mason-jar-body {
+  background-color: #E2ECE9;
+  border: 4px solid #4A5B5C;
+  box-shadow: 
+    inset -10px -10px 25px rgba(0, 0, 0, 0.15),
+    inset 10px 10px 25px rgba(255, 255, 255, 0.8),
+    0 20px 40px rgba(0, 0, 0, 0.8);
+}
+.mason-jar-lid {
+  background: linear-gradient(to right, #B59350, #E5C380, #8A6D33);
+  border: 3px solid #4A3816;
+}
+
+/* Page Transitions */
+@keyframes book-page-enter {
+  0% {
+    opacity: 0;
+    transform: perspective(1400px) rotateY(-70deg) rotateZ(-5deg) translateX(-80px) scale(0.72);
+  }
+  65% {
+    opacity: 1;
+    transform: perspective(1400px) rotateY(12deg) rotateZ(2deg) translateX(14px) scale(1.03);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(1400px) rotateY(0deg) scale(1);
+  }
+}
+.animate-scene-enter {
+  animation: book-page-enter 0.9s cubic-bezier(0.16, 1.35, 0.32, 1) forwards;
+  transform-origin: left center;
+}
+
+@keyframes sticker-burst {
+  0%, 100% { transform: rotate(-6deg) scale(1); }
+  35% { transform: rotate(7deg) scale(1.18); }
+  70% { transform: rotate(-3deg) scale(0.94); }
+}
+.sticker-burst {
+  animation: sticker-burst 1.9s steps(6, end) infinite;
+}
+
+@keyframes seal-crack {
+  0% { transform: scale(1) rotate(0); filter: drop-shadow(0 0 0 transparent); }
+  45% { transform: scale(1.3) rotate(-12deg); filter: drop-shadow(0 0 18px #e0b1ae); }
+  70% { transform: scale(0.82) rotate(10deg); }
+  100% { transform: scale(1) rotate(0); }
+}
+.animate-seal-crack { animation: seal-crack 0.8s steps(5, end); }
+
+@keyframes skyline-flicker {
+  0%, 100% { opacity: 0.75; }
+  48% { opacity: 0.92; }
+  51% { opacity: 0.58; }
+}
+.animate-skyline-flicker { animation: skyline-flicker 3.2s steps(7, end) infinite; }
+
+@keyframes peter-swing {
+  0%, 100% { transform: rotate(-5deg) translateY(0); }
+  50% { transform: rotate(8deg) translateY(24px); }
+}
+@keyframes gwen-swing {
+  0%, 100% { transform: rotate(6deg) translateY(12px); }
+  50% { transform: rotate(-9deg) translateY(-2px); }
+}
+.animate-peter-swing { animation: peter-swing 3.6s ease-in-out infinite; transform-origin: top center; }
+.animate-gwen-swing { animation: gwen-swing 4.2s ease-in-out infinite; transform-origin: top center; }
+
+@keyframes web-drift {
+  from { transform: translateX(-2%) scale(1); }
+  to { transform: translateX(2%) scale(1.04); }
+}
+.animate-web-drift { animation: web-drift 7s ease-in-out infinite alternate; }
+
+/* Spidey Vinyl Record Rotation */
+@keyframes spin-spidey-vinyl {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spidey-vinyl {
+  animation: spin-spidey-vinyl 6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
