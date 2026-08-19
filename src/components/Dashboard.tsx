@@ -1,10 +1,31 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useRef, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { CalendarDays, Camera, Clock3, Heart, ListChecks, LogOut, Mail, Music2, NotebookPen, Sparkles, Star, Timer, Unlink, UserRound } from "lucide-react";
 import SpideyBackground from "./SpideyBackground";
-import AmbientSound from "./AmbientSound";
+import { 
+  Clock, 
+  Calendar, 
+  Compass, 
+  Camera, 
+  Mail, 
+  BookHeart, 
+  CheckSquare, 
+  Disc, 
+  Gift, 
+  Lock, 
+  Unlink, 
+  LogOut, 
+  ArrowRight, 
+  Bookmark, 
+  Feather, 
+  ChevronLeft, 
+  ChevronRight, 
+  BookOpen, 
+  UserCheck, 
+  Sparkles
+} from "lucide-react";
 
 interface DashboardProps {
   user: any;
@@ -15,143 +36,550 @@ interface DashboardProps {
   onUnlinked?: () => void;
 }
 
-const featureCards = [
-  { href: "/clock", title: "Our Live Clock", label: "ANNIVERSARY", description: "Days, hours, minutes, and seconds together.", icon: Clock3, color: "rose" },
-  { href: "/countdowns", title: "Canon Events", label: "COUNTDOWNS", description: "Post-it notes for the days we are waiting for.", icon: Timer, color: "gold" },
-  { href: "/timeline", title: "Red String Timeline", label: "MEMORIES", description: "Milestones tied together across every universe.", icon: Heart, color: "red" },
-  { href: "/media", title: "Retro Digicam", label: "PHOTOS + VIDEOS", description: "Captured clips, captions, and memory notes.", icon: Camera, color: "mint" },
-  { href: "/letters", title: "Letter Jar", label: "SCROLLS", description: "Rolled letters waiting to be opened.", icon: Mail, color: "gold" },
-  { href: "/diary", title: "Spider Diary", label: "SHARED LOG", description: "Our handwritten pages, moods, and moments.", icon: NotebookPen, color: "rose" },
-  { href: "/planner", title: "Web Planner", label: "CALENDAR", description: "Date nights, trips, reminders, and plans.", icon: CalendarDays, color: "mint" },
-  { href: "/bucket-list", title: "Bucket List", label: "ADVENTURES", description: "Things we will do before the next dimension.", icon: ListChecks, color: "red" },
-  { href: "/soundtrack", title: "Our Playlist", label: "SOUNDTRACK", description: "The songs that follow our story.", icon: Music2, color: "gold" },
-  { href: "/wishlist", title: "Gift Wishlist", label: "SECRET IDEAS", description: "Private gifts, wishes, and little discoveries.", icon: Star, color: "rose" },
-  { href: "/about-him", title: "About Him Portal", label: "PRIVATE PORTAL", description: "A separate owner-only world of surprises.", icon: UserRound, color: "mint" },
-];
-
-export default function Dashboard({ user, profile, partner, couple, onSignOut, onUnlinked }: DashboardProps) {
-  const [opened, setOpened] = useState(() => typeof window !== "undefined" && sessionStorage.getItem("albiverse-book-open") === "true");
-  const [opening, setOpening] = useState(false);
+export default function Dashboard({
+  user,
+  profile,
+  partner,
+  couple,
+  onSignOut,
+  onUnlinked,
+}: DashboardProps) {
+  const searchParams = useSearchParams();
+  
+  const [isBookOpened, setIsBookOpened] = useState(false);
+  const [isOpeningSequence, setIsOpeningSequence] = useState(false);
+  const [isClosingSequence, setIsClosingSequence] = useState(false);
+  
+  const [bloomPhase, setBloomPhase] = useState<"bursting" | "sliding-down" | null>(null);
   const [unlinking, setUnlinking] = useState(false);
-  const supabase = require("@/lib/supabase/client").createClient();
-  const partnerName = partner?.full_name || "your favorite person";
+
+  const [currentSpread, setCurrentSpread] = useState(0);
+  const [flippingState, setFlippingState] = useState<"forward" | "backward" | null>(null);
+
+  const touchStartX = useRef<number | null>(null);
+  const touchStartY = useRef<number | null>(null);
+  const isDragging = useRef(false);
+
+  const myName = profile?.full_name || "Gwen Stacy";
+  const partnerName = partner?.full_name || "Peter Parker";
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("view") === "contents") {
-      sessionStorage.setItem("albiverse-book-open", "true");
-      setOpened(true);
+    const shouldOpen = searchParams?.get("view") === "toc" || sessionStorage.getItem("albiverse_book_opened") === "true";
+    if (shouldOpen) {
+      setIsBookOpened(true);
     }
-  }, []);
+  }, [searchParams]);
+
+  // ZERO-LAG TRIGGER: Cover lifts & bloom starts almost immediately (100ms)
+  const handleOpenBook = () => {
+    setIsOpeningSequence(true);
+
+    setTimeout(() => {
+      setBloomPhase("bursting");
+    }, 100);
+
+    setTimeout(() => {
+      setIsBookOpened(true);
+      sessionStorage.setItem("albiverse_book_opened", "true");
+      setIsOpeningSequence(false);
+      setBloomPhase("sliding-down");
+    }, 1150);
+
+    setTimeout(() => {
+      setBloomPhase(null);
+    }, 2500);
+  };
+
+  const handleCloseBook = () => {
+    setIsClosingSequence(true);
+    sessionStorage.removeItem("albiverse_book_opened");
+
+    setTimeout(() => {
+      setIsBookOpened(false);
+    }, 450);
+
+    setTimeout(() => {
+      setIsClosingSequence(false);
+    }, 1250);
+  };
 
   const handleUnlink = async () => {
-    if (!window.confirm("Unlink both scrapbook universes?")) return;
+    if (!confirm("Are you sure you want to disconnect both universes?")) return;
     setUnlinking(true);
-    try {
-      const ids = [couple?.partner_1_id, couple?.partner_2_id].filter(Boolean);
-      const { error: profileError } = await supabase.from("profiles").update({ couple_id: null }).in("id", ids);
-      if (profileError) throw profileError;
-      const { error: coupleError } = await supabase.from("couples").delete().eq("id", couple.id);
-      if (coupleError) throw coupleError;
-      onUnlinked?.();
-    } catch (error) {
-      console.error("Could not unlink scrapbook:", error);
-    } finally {
-      setUnlinking(false);
+    if (onUnlinked) onUnlinked();
+  };
+
+  const features = [
+    { title: "Live Canon Clock", desc: "Multiverse timer & live anniversary counter", href: "/clock", tag: "CH. 01", icon: Clock, sticker: "⏰ 🕸️", note: "Every second across dimensions" },
+    { title: "Canon Countdowns", desc: "Sticky milestone countdowns & birthdays", href: "/countdowns", tag: "CH. 02", icon: Calendar, sticker: "🎂 ✈️", note: "Mark our future timelines" },
+    { title: "Red String Timeline", desc: "Fate threads & milestone polaroids", href: "/timeline", tag: "CH. 03", icon: Compass, sticker: "🧵 📸", note: "Connected by destiny" },
+    { title: "Retro Digicam", desc: "Instant snapshots & viewfinder clips", href: "/media", tag: "CH. 04", icon: Camera, sticker: "📷 ✨", note: "Earth-65 & 616 gallery" },
+    { title: "Love Letter Jar", desc: "Folded scrolls & wax-sealed notes", href: "/letters", tag: "CH. 05", icon: Mail, sticker: "💌 📜", note: "Confidential unsealed letters" },
+    { title: "Spider Diary", desc: "Daily mood entries & shared doodles", href: "/diary", tag: "CH. 06", icon: BookHeart, sticker: "🕷️ 📖", note: "Our private logbook" },
+    { title: "Web Planner", desc: "Shared date schedules & reminders", href: "/planner", tag: "CH. 07", icon: CheckSquare, sticker: "📅 🎀", note: "Adventures on the docket" },
+    { title: "Multiverse Bucket List", desc: "Adventures across dimensions to complete", href: "/bucket-list", tag: "CH. 08", icon: Sparkles, sticker: "🌟 🗺️", note: "Cross off our milestones" },
+    { title: "Soundtrack Deck", desc: "Spinning vinyl & our special playlist", href: "/soundtrack", tag: "CH. 09", icon: Disc, sticker: "🎵 🌸", note: "Songs for our universe" },
+    { title: "Secret Wishlist", desc: "Gift ideas & surprise drops (Vault)", href: "/wishlist", tag: "CH. 10", icon: Gift, sticker: "🎁 🔒", note: "Surprise vault items" },
+    { title: "About Him Dossier", desc: "Confidential intel, sizes & favorites", href: "/about-him", tag: "CH. 11", icon: Lock, sticker: "📂 🕶️", note: "Classified Peter Parker Intel" },
+  ];
+
+  const totalSpreads = Math.ceil(features.length / 2);
+
+  const handleNextPage = () => {
+    if (currentSpread < totalSpreads - 1 && !flippingState) {
+      setFlippingState("forward");
+      setTimeout(() => {
+        setCurrentSpread((prev) => prev + 1);
+        setFlippingState(null);
+      }, 950);
     }
   };
 
-  const openBook = () => {
-    setOpening(true);
-    window.setTimeout(() => {
-      sessionStorage.setItem("albiverse-book-open", "true");
-      setOpened(true);
-      setOpening(false);
-    }, 1700);
+  const handlePrevPage = () => {
+    if (currentSpread > 0 && !flippingState) {
+      setFlippingState("backward");
+      setTimeout(() => {
+        setCurrentSpread((prev) => prev - 1);
+        setFlippingState(null);
+      }, 950);
+    }
   };
 
-  const showIntro = () => {
-    sessionStorage.removeItem("albiverse-book-open");
-    setOpened(false);
+  const onStart = (clientX: number, clientY: number) => {
+    touchStartX.current = clientX;
+    touchStartY.current = clientY;
+    isDragging.current = true;
   };
 
-  if (!opened) {
-    return (
-      <main className="min-h-screen relative overflow-hidden grid place-items-center p-6">
-        <SpideyBackground />
-        {opening && <BookOpeningEffect />}
-        <div className="relative z-10 w-full max-w-2xl text-center">
-          <div className="scrapbook-intro-cover paper-sheet-solid p-8 sm:p-16">
-            <div className="absolute -top-4 left-1/2 -translate-x-1/2 tape-gold-solid w-44 h-7 rotate-2" />
-            <Heart className="w-14 h-14 mx-auto text-[#7D2834] fill-[#BD7F89] sticker-burst" />
-            <p className="font-mono text-[11px] tracking-[.35em] text-[#7D2834] mt-7">EARTH-65 × EARTH-616</p>
-            <h1 className="font-marker text-6xl sm:text-8xl text-[#261D24] mt-4">Albiverse</h1>
-            <p className="font-handwriting text-3xl sm:text-4xl text-[#5A2029] mt-5">A scrapbook for {partnerName} & me.</p>
-            <div className="mt-10 flex justify-center">
-              <button onClick={openBook} disabled={opening} className="scrapbook-open-button group">
-                <span className="font-marker text-2xl">Open our story</span>
-                <Sparkles className="w-6 h-6 group-hover:animate-spin" />
-              </button>
-            </div>
-            <p className="font-mono text-[10px] tracking-widest text-[#7D2834] mt-8">PULL THE COVER • TURN THE PAGE</p>
-          </div>
+  const onEnd = (clientX: number, clientY: number) => {
+    if (!isDragging.current || touchStartX.current === null || touchStartY.current === null) return;
+    const diffX = touchStartX.current - clientX;
+    const diffY = touchStartY.current - clientY;
+
+    if (Math.abs(diffX) > Math.abs(diffY) && Math.abs(diffX) > 40) {
+      if (diffX > 0) handleNextPage();
+      else handlePrevPage();
+    }
+
+    touchStartX.current = null;
+    touchStartY.current = null;
+    isDragging.current = false;
+  };
+
+  const curLeft = features[currentSpread * 2];
+  const curRight = features[currentSpread * 2 + 1];
+  const nextLeft = features[(currentSpread + 1) * 2];
+  const nextRight = features[(currentSpread + 1) * 2 + 1];
+  const prevLeft = features[(currentSpread - 1) * 2];
+  const prevRight = features[(currentSpread - 1) * 2 + 1];
+
+  const renderChapterContent = (item: typeof features[0] | undefined, pageNum: number) => {
+    if (!item) {
+      return (
+        <div className="flex flex-col items-center justify-center p-6 text-center h-full">
+          <span className="text-4xl mb-2">🌸🕸️</span>
+          <h4 className="font-marker text-xl text-[#1A0D10]">End of Table of Contents</h4>
+          <p className="font-handwriting text-lg text-stone-600 mt-1">
+            Connected across every universe with {partnerName} ❤️
+          </p>
         </div>
-        <AmbientSound />
-      </main>
+      );
+    }
+
+    return (
+      <div className="h-full flex flex-col justify-between p-4 sm:p-6 bg-[#FAF6EE] rounded-lg border border-[#261D24]/20 shadow-inner">
+        <div>
+          <div className="flex items-center justify-between border-b-2 border-dashed border-[#8A7550] pb-3 mb-4">
+            <span className="feature-stamp">{item.tag}</span>
+            <span className="text-3xl">{item.sticker}</span>
+          </div>
+
+          <h3 className="font-marker text-2xl sm:text-3xl text-[#1A0D10] mb-2">
+            {item.title}
+          </h3>
+          <p className="font-handwriting text-xl text-stone-700 leading-snug">
+            {item.desc}
+          </p>
+          <p className="font-mono text-[11px] text-[#781420] mt-3 italic">
+            Note: {item.note}
+          </p>
+        </div>
+
+        <div className="pt-4 mt-6 border-t border-[#261D24]/20 flex items-center justify-between">
+          <span className="font-mono text-[10px] text-stone-500 uppercase">PAGE {pageNum}</span>
+          <Link
+            href={item.href}
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black rounded border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition"
+          >
+            <span>OPEN ENTRY</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+      </div>
     );
-  }
+  };
+
+  // Dense, Seamless Canopy Matrix (Includes extra hem layers along bottom to eliminate cut-off lines)
+  const burstParticles = [
+    // Center Core
+    { x: "0vw", y: "0vh", scale: 1.5, delay: "0s", rot: "12deg", icon: "🌸", file: "flower-1.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
+    { x: "-4vw", y: "-4vh", scale: 1.4, delay: "0.01s", rot: "-25deg", icon: "🌺", file: "flower-2.png", size: "w-56 h-56 sm:w-80 sm:h-80" },
+    { x: "5vw", y: "4vh", scale: 1.4, delay: "0.02s", rot: "35deg", icon: "🌹", file: "flower-3.png", size: "w-56 h-56 sm:w-80 sm:h-80" },
+
+    // Inner Radial Ring
+    { x: "-15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "-40deg", icon: "🌼", file: "flower-4.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
+    { x: "15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "45deg", icon: "🌸", file: "flower-1.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
+    { x: "-18vw", y: "14vh", scale: 1.35, delay: "0.04s", rot: "20deg", icon: "🌺", file: "flower-2.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
+    { x: "18vw", y: "15vh", scale: 1.35, delay: "0.04s", rot: "-30deg", icon: "🌹", file: "flower-3.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
+    { x: "0vw", y: "-22vh", scale: 1.4, delay: "0.03s", rot: "10deg", icon: "🌼", file: "flower-4.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
+    { x: "0vw", y: "22vh", scale: 1.4, delay: "0.04s", rot: "-15deg", icon: "🌸", file: "flower-1.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
+    { x: "-24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "30deg", icon: "🌺", file: "flower-2.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
+    { x: "24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "-45deg", icon: "🌹", file: "flower-3.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
+
+    // Mid-Screen Radial Ring
+    { x: "-32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "55deg", icon: "🌸", file: "flower-1.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
+    { x: "0vw", y: "-36vh", scale: 1.45, delay: "0.05s", rot: "-20deg", icon: "🌺", file: "flower-2.png", size: "w-64 h-64 sm:w-92 sm:h-92" },
+    { x: "32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "-60deg", icon: "🌹", file: "flower-3.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
+    { x: "-38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "15deg", icon: "🌼", file: "flower-4.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
+    { x: "38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "-35deg", icon: "🌸", file: "flower-1.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
+    { x: "-32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "-40deg", icon: "🌺", file: "flower-2.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
+    { x: "0vw", y: "36vh", scale: 1.45, delay: "0.06s", rot: "45deg", icon: "🌹", file: "flower-3.png", size: "w-64 h-64 sm:w-92 sm:h-92" },
+    { x: "32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "25deg", icon: "🌼", file: "flower-4.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
+
+    // Outer Perimeter (Blanket Coverage)
+    { x: "-48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "-15deg", icon: "🌸", file: "flower-1.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
+    { x: "48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "35deg", icon: "🌺", file: "flower-2.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
+    { x: "-48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "50deg", icon: "🌹", file: "flower-3.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
+    { x: "48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "-45deg", icon: "🌼", file: "flower-4.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
+    { x: "-54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "20deg", icon: "🌸", file: "flower-1.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
+    { x: "54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "-25deg", icon: "🌺", file: "flower-2.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
+    { x: "-54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "-30deg", icon: "🌹", file: "flower-3.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
+    { x: "54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "40deg", icon: "🌼", file: "flower-4.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
+
+    // Cascading Edge Hem (Covers the downward slide boundary)
+    { x: "-35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "-10deg", icon: "🌸", file: "flower-1.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
+    { x: "-12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "25deg", icon: "🌺", file: "flower-2.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
+    { x: "12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "-35deg", icon: "🌹", file: "flower-3.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
+    { x: "35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "45deg", icon: "🌼", file: "flower-4.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
+  ];
 
   return (
-    <main className="min-h-screen relative overflow-hidden p-5 sm:p-8 lg:p-12">
+    <main className="min-h-screen p-3 sm:p-6 lg:p-8 flex flex-col justify-between relative overflow-hidden select-none bg-[#181114]">
+      
       <SpideyBackground />
-      <AmbientSound />
-      <header className="relative z-20 flex flex-wrap items-center justify-between gap-4 mb-10">
+
+      <div className="fixed top-8 animate-crawl-h text-xl z-10 pointer-events-none">🕷️</div>
+      <div className="fixed animate-crawl-d text-2xl z-10 pointer-events-none">🕷️</div>
+      <div className="fixed left-4 animate-crawl-v text-lg z-10 pointer-events-none">🕷️</div>
+
+      {/* Top Header */}
+      <header className="max-w-6xl mx-auto w-full z-30 flex items-center justify-between">
         <div>
-          <p className="font-mono text-[11px] tracking-[.3em] text-[#E0B1AE]">THE SHARED SCRAPBOOK • {profile?.full_name || "PARTNER"} + {partnerName}</p>
-          <h1 className="font-marker text-5xl sm:text-7xl text-[#F2E6D2] mt-2">Pick a chapter.</h1>
+          {isBookOpened && (
+            <button
+              onClick={handleCloseBook}
+              disabled={isClosingSequence}
+              className="inline-flex items-center gap-2 px-3.5 py-2 bg-[#F2E6D2] hover:bg-[#FAF7F2] text-[#261D24] text-xs font-mono font-black border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] -rotate-1 transition cursor-pointer"
+            >
+              <Bookmark className="w-3.5 h-3.5 text-[#781420]" />
+              <span>Close Journal</span>
+            </button>
+          )}
         </div>
-        <div className="flex items-center gap-4 text-[#E0B1AE]">
-          <button onClick={showIntro} className="scrapbook-action contents-control" title="Return to intro"><BookOpenIcon /><span>INTRO</span></button>
-          <button onClick={handleUnlink} disabled={unlinking} className="scrapbook-action" title="Unlink partner"><Unlink className="w-6 h-6" /></button>
-          <button onClick={onSignOut} className="scrapbook-action" title="Sign out"><LogOut className="w-6 h-6" /></button>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleUnlink}
+            disabled={unlinking}
+            className="text-xs font-mono font-black text-[#E0B1AE] bg-[#3C1820] hover:bg-[#5A2029] px-3 py-1.5 border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] flex items-center gap-1.5 transition cursor-pointer"
+          >
+            <Unlink className="w-3.5 h-3.5" />
+            <span>{unlinking ? "Unlinking..." : "Unlink"}</span>
+          </button>
+          <button
+            onClick={onSignOut}
+            className="text-xs font-mono font-black text-[#261D24] bg-[#F2E6D2] hover:bg-[#FAF7F2] px-3 py-1.5 border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] flex items-center gap-1.5 transition cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5 text-[#781420]" />
+            <span>Sign Out</span>
+          </button>
         </div>
       </header>
 
-      <p className="relative z-20 text-[#E0B1AE] font-mono text-xs tracking-widest mb-5">LINKED TO {partnerName.toUpperCase()}</p>
+      {/* ================= INTRO: FRONT SCRAPBOOK COVER ================= */}
+      {(!isBookOpened || isClosingSequence) && (
+        <div className="flex-1 flex items-center justify-center max-w-4xl mx-auto w-full py-8 z-20 journal-book-perspective">
+          <div 
+            onClick={!isOpeningSequence && !isClosingSequence ? handleOpenBook : undefined}
+            className="relative cursor-pointer transition-transform duration-300 hover:scale-[1.01]"
+          >
+            <div className="absolute -top-4 left-16 tape-pink-solid w-36 h-7 -rotate-2 z-50 pointer-events-none" />
+            <div className="absolute -top-4 right-16 tape-red-solid w-36 h-7 rotate-2 z-50 pointer-events-none" />
 
-      <section className="relative z-20 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-7 max-w-[1500px] mx-auto pb-10">
-        {featureCards.map((feature, index) => {
-          const Icon = feature.icon;
-          return (
-            <Link key={feature.href} href={feature.href} className={`dashboard-feature-card feature-${feature.color}`} style={{ transform: `rotate(${index % 3 === 0 ? "-1.2deg" : index % 3 === 1 ? "1deg" : "-.3deg"})` }}>
-              <div className="flex items-start justify-between gap-4">
-                <span className="feature-stamp">{feature.label}</span>
-                <Icon className="w-9 h-9 text-[#7D2834]" strokeWidth={1.6} />
+            {/* BASE STATIONARY CONTAINER */}
+            <div className="relative w-[340px] sm:w-[480px] md:w-[560px] min-h-[620px] bg-[#2E0509] rounded-2xl border-4 border-[#17131A] shadow-[22px_24px_0_rgba(0,0,0,0.9)] p-5 sm:p-8 flex flex-col justify-between overflow-hidden">
+              
+              <div className="absolute left-1.5 inset-y-0 w-8 flex flex-col justify-around items-center py-4 z-40 pointer-events-none">
+                {Array.from({ length: 14 }).map((_, i) => (
+                  <div key={i} className="w-7 h-2.5 spiral-binder-ring border border-black/60" />
+                ))}
               </div>
-              <h2 className="font-marker text-3xl text-[#261D24] mt-10">{feature.title}</h2>
-              <p className="font-handwriting text-2xl leading-tight text-[#5A2029] mt-3">{feature.description}</p>
-              <span className="font-mono text-[10px] text-[#7D2834] block mt-8">OPEN PAGE →</span>
-            </Link>
-          );
-        })}
-      </section>
-    </main>
-  );
-}
 
-function BookOpenIcon() {
-  return <span className="book-open-icon" aria-hidden="true">BOOK</span>;
-}
+              <div className="ml-5 sm:ml-7 flex-1 bg-[#FAF6EE] border-3 border-[#261D24] p-5 sm:p-8 rounded-lg shadow-inner flex flex-col justify-between relative overflow-hidden z-0">
+                <div className="text-center my-auto space-y-3">
+                  <span className="text-5xl">🌸🕸️✨</span>
+                  <h2 className="font-marker text-3xl text-[#1A0D10]">Albiverse Chronicles</h2>
+                  <p className="font-handwriting text-xl text-[#781420]">Earth-65 × Earth-616</p>
+                </div>
+              </div>
+            </div>
 
-function BookOpeningEffect() {
-  const particles = Array.from({ length: 34 }, (_, index) => index);
-  return (
-    <div className="book-opening-effect" aria-hidden="true">
-      <div className="book-opening-spread" />
-      {particles.map((particle) => (
-        <span key={particle} className={`opening-particle particle-${particle % 6}`} style={{ animationDelay: `${particle * 12}ms` }}>
-          {particle % 3 === 0 ? "♥" : particle % 3 === 1 ? "✦" : "❀"}
+            {/* FRONT COVER (Swings Open and Closes Shut) */}
+            <div className={`absolute inset-0 z-30 ${
+              isOpeningSequence ? "animate-front-cover-swing-open pointer-events-none" : 
+              isClosingSequence ? "animate-front-cover-swing-close pointer-events-none" : ""
+            }`}>
+              <div className="w-[340px] sm:w-[480px] md:w-[560px] min-h-[620px] bg-[#2E0509] rounded-2xl border-4 border-[#17131A] shadow-[22px_24px_0_rgba(0,0,0,0.9)] p-5 sm:p-8 flex flex-col justify-between overflow-hidden relative">
+                
+                <img 
+                  src="/images/scrapbook/journal-cover.png" 
+                  alt=""
+                  onError={(e) => (e.currentTarget.style.display = 'none')}
+                  className="absolute inset-0 w-full h-full object-cover z-0 opacity-95 pointer-events-none"
+                />
+
+                <div className="ml-5 sm:ml-7 flex-1 paper-grid-journal border-3 border-[#261D24] p-5 sm:p-8 rounded-lg shadow-inner flex flex-col justify-between relative overflow-hidden z-10 bg-opacity-95">
+                  
+                  <div className="absolute top-4 right-2 w-48 h-32 paper-music-sheet -rotate-3 border border-black/20 p-2 shadow-sm pointer-events-none opacity-85">
+                    <div className="postage-stamp rotate-6">CAO DANG • № 616</div>
+                    <span className="font-handwriting text-xs text-stone-700 block mt-1">
+                      ♪ Sunflower in D Major
+                    </span>
+                  </div>
+
+                  <div className="absolute top-24 left-3 w-52 sm:w-64 h-48 paper-kraft-torn rotate-2 p-3 z-10">
+                    <span className="postage-stamp -rotate-3 bg-[#FAF4EB]">CANON EVENT</span>
+                    <p className="font-handwriting text-xl text-[#2E0509] mt-2 font-bold leading-tight">
+                      “A journey across a thousand universes begins with a single step.”
+                    </p>
+                  </div>
+
+                  <div className="absolute bottom-24 right-4 z-20 rotate-12 flex flex-col items-center">
+                    <div className="tape-gold-solid w-16 h-4 -rotate-6 mb-1" />
+                    <div className="text-4xl">🌿🍂</div>
+                    <span className="font-handwriting text-sm text-[#781420] font-bold">Earth-65 Flora</span>
+                  </div>
+
+                  <div className="absolute bottom-28 left-20 z-20 rotate-6 text-3xl">🎀</div>
+
+                  <div className="text-center z-20 mt-1">
+                    <span className="postage-stamp bg-[#781420] text-[#F6EFE9] -rotate-1 mb-1">
+                      VOL. 616 × 65 • ALBIVERSE
+                    </span>
+                    <h1 className="font-marker text-3xl sm:text-5xl text-[#1A0D10] leading-none mt-2">
+                      ALBIVERSE
+                    </h1>
+                    <p className="font-handwriting text-2xl text-[#781420] mt-1 font-bold">
+                      The Scrapbook of Us
+                    </p>
+                  </div>
+
+                  <div className="my-auto z-20 text-center py-6">
+                    <div className="inline-block bg-[#FAF7F2] p-4 border-2 border-[#261D24] shadow-[4px_4px_0_#261D24] rotate-1">
+                      <div className="text-3xl sm:text-4xl mb-1">🕷️❤️🌸</div>
+                      <span className="font-mono text-xs font-black text-[#781420] uppercase tracking-wider block">
+                        {myName} × {partnerName}
+                      </span>
+                      <span className="text-[10px] font-mono font-bold text-stone-600 uppercase block mt-1">
+                        Account Linked to: <span className="text-[#781420] font-black">{partnerName}</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="text-center z-20 pt-2">
+                    <div className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#781420] hover:bg-[#450A10] text-[#F6EFE9] border-3 border-[#261D24] shadow-[5px_5px_0_#171B22] font-mono text-xs font-black tracking-wider uppercase -rotate-1 group-hover:rotate-0 transition">
+                      <Feather className="w-4 h-4 text-[#ECA8B8]" />
+                      <span>Open Scrapbook</span>
+                      <ArrowRight className="w-4 h-4 text-[#ECA8B8]" />
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* ================= ZERO-GAP FLORAL CASCADE (NO DARK FILM LINE) ================= */}
+      {bloomPhase && (
+        <div 
+          className={`fixed inset-0 z-50 pointer-events-none overflow-visible ${
+            bloomPhase === "sliding-down" ? "animate-bloom-curtain-drop" : ""
+          }`}
+        >
+          {/* Centered Burst Emitter */}
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0 h-0 flex items-center justify-center">
+            {burstParticles.map((flower, idx) => (
+              <div
+                key={idx}
+                style={{
+                  ['--dest-x' as any]: flower.x,
+                  ['--dest-y' as any]: flower.y,
+                  ['--dest-scale' as any]: flower.scale,
+                  ['--dest-rot' as any]: flower.rot,
+                  animationDelay: flower.delay,
+                }}
+                className={`absolute ${flower.size} flex items-center justify-center animate-bloom-particle`}
+              >
+                <img
+                  src={`/images/bloom/${flower.file}`}
+                  alt=""
+                  onError={(e) => (e.currentTarget.style.display = 'none')}
+                  className="w-full h-full object-contain drop-shadow-[0_25px_45px_rgba(0,0,0,0.95)]"
+                />
+                <span className="text-9xl drop-shadow-[0_0_35px_#ECA8B8]">
+                  {flower.icon}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* Floating Letters */}
+          {["A", "L", "B", "I", "V", "E", "R", "S", "E", "❤️", "🕷️"].map((char, idx) => (
+            <div
+              key={idx}
+              style={{
+                left: `${18 + (idx * 6.5)}%`,
+                animationDelay: `${idx * 0.05}s`,
+              }}
+              className="absolute bottom-10 font-marker text-3xl sm:text-5xl text-[#FDF6F0] drop-shadow-[0_0_20px_#ECA8B8] animate-letter-float"
+            >
+              {char}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ================= TABLE OF CONTENTS: 3D BOOK SPREAD ================= */}
+      {isBookOpened && !isClosingSequence && (
+        <div 
+          onMouseDown={(e) => onStart(e.clientX, e.clientY)}
+          onMouseUp={(e) => onEnd(e.clientX, e.clientY)}
+          onTouchStart={(e) => onStart(e.touches[0].clientX, e.touches[0].clientY)}
+          onTouchEnd={(e) => onEnd(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}
+          className="flex-1 max-w-5xl mx-auto w-full py-4 z-20 journal-book-perspective flex flex-col justify-center cursor-grab active:cursor-grabbing animate-toc-reveal"
+        >
+          {/* Top Controls & Account Status Bar */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 px-2">
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-xs font-black text-[#ECA8B8] uppercase tracking-widest flex items-center gap-1.5">
+                <BookOpen className="w-4 h-4 text-[#D9889E]" /> SPREAD {currentSpread + 1} OF {totalSpreads}
+              </span>
+
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-[#2E0509] border border-[#781420] rounded-md shadow">
+                <UserCheck className="w-3.5 h-3.5 text-[#ECA8B8]" />
+                <span className="font-mono text-[10px] font-bold text-[#F8F4EB]">
+                  LINKED: <span className="text-[#ECA8B8] font-black">{partnerName.toUpperCase()}</span>
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 justify-between sm:justify-end">
+              <span className="font-mono text-[10px] text-[#ECA8B8]/70 italic hidden md:inline">
+                (Swipe left/right or click buttons to flip)
+              </span>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handlePrevPage}
+                  disabled={currentSpread === 0 || !!flippingState}
+                  className="px-3 py-1.5 bg-[#FAF4EB] text-[#261D24] border-2 border-[#261D24] shadow-[2px_2px_0_#261D24] disabled:opacity-40 disabled:pointer-events-none hover:bg-white transition cursor-pointer font-mono text-xs font-black flex items-center gap-1"
+                >
+                  <ChevronLeft className="w-4 h-4" /> PREV
+                </button>
+                <button
+                  onClick={handleNextPage}
+                  disabled={currentSpread === totalSpreads - 1 || !!flippingState}
+                  className="px-3 py-1.5 bg-[#FAF4EB] text-[#261D24] border-2 border-[#261D24] shadow-[2px_2px_0_#261D24] disabled:opacity-40 disabled:pointer-events-none hover:bg-white transition cursor-pointer font-mono text-xs font-black flex items-center gap-1"
+                >
+                  NEXT <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Master 3D Spread Container */}
+          <div className="paper-open-notebook-spread min-h-[460px] sm:min-h-[520px] p-4 sm:p-8 relative grid grid-cols-1 md:grid-cols-2 gap-6 overflow-hidden">
+            
+            <div className="hidden md:block absolute inset-y-0 left-1/2 -translate-x-1/2 w-12 book-gutter-crease pointer-events-none z-30" />
+
+            {/* Base Left Page */}
+            <div className="h-full relative z-0">
+              {flippingState === "backward"
+                ? renderChapterContent(prevLeft, (currentSpread - 1) * 2 + 1)
+                : renderChapterContent(curLeft, currentSpread * 2 + 1)}
+            </div>
+
+            {/* Base Right Page */}
+            <div className="h-full relative z-0">
+              {flippingState === "forward"
+                ? renderChapterContent(nextRight, (currentSpread + 1) * 2 + 2)
+                : renderChapterContent(curRight, currentSpread * 2 + 2)}
+            </div>
+
+            {/* Dynamic Leaves */}
+            {flippingState === "forward" && (
+              <div className="hidden md:block absolute inset-y-0 right-0 w-1/2 p-4 sm:p-8 animate-fluid-flip-forward z-40">
+                <div className="absolute inset-4 sm:inset-8 page-face-front">
+                  {renderChapterContent(curRight, currentSpread * 2 + 2)}
+                </div>
+                <div className="absolute inset-4 sm:inset-8 page-face-back">
+                  {renderChapterContent(nextLeft, (currentSpread + 1) * 2 + 1)}
+                </div>
+              </div>
+            )}
+
+            {flippingState === "backward" && (
+              <div className="hidden md:block absolute inset-y-0 left-0 w-1/2 p-4 sm:p-8 animate-fluid-flip-backward z-40">
+                <div className="absolute inset-4 sm:inset-8 page-face-front">
+                  {renderChapterContent(curLeft, currentSpread * 2 + 1)}
+                </div>
+                <div className="absolute inset-4 sm:inset-8 page-face-back">
+                  {renderChapterContent(prevRight, (currentSpread - 1) * 2 + 2)}
+                </div>
+              </div>
+            )}
+
+          </div>
+
+          {/* Bottom Progress Bar */}
+          <div className="flex items-center justify-center gap-2 mt-4">
+            {Array.from({ length: totalSpreads }).map((_, i) => (
+              <button
+                key={i}
+                onClick={() => {
+                  if (i > currentSpread) handleNextPage();
+                  else if (i < currentSpread) handlePrevPage();
+                }}
+                className={`h-2.5 rounded-full transition-all cursor-pointer border border-[#261D24] ${
+                  currentSpread === i ? "w-8 bg-[#D9889E]" : "w-2.5 bg-[#FAF4EB]/60 hover:bg-[#FAF4EB]"
+                }`}
+                title={`Jump to Spread ${i + 1}`}
+              />
+            ))}
+          </div>
+
+        </div>
+      )}
+
+      {/* Footer Tag */}
+      <footer className="max-w-md mx-auto text-center z-20 mt-4">
+        <span className="font-mono text-[10px] font-black text-[#261D24] uppercase tracking-widest bg-[#EAD9A9] px-4 py-1 border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] inline-block -rotate-1">
+          EARTH-65 × EARTH-616 • PAPER JOURNAL EDITION
         </span>
-      ))}
-    </div>
+      </footer>
+    </main>
   );
 }
