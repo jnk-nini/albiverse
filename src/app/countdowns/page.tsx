@@ -22,21 +22,39 @@ export default async function CountdownsPage() {
     redirect("/");
   }
 
-  // Fetch initial events safely from Supabase
-  const { data: events } = await supabase
+  // Fetch initial events from Supabase calendar_events using starts_at
+  const { data: rawEvents } = await supabase
     .from("calendar_events")
     .select("*")
-    .eq("couple_id", profile.couple_id);
+    .eq("couple_id", profile.couple_id)
+    .order("starts_at", { ascending: true });
 
-  const initialEvents = (events || []).map((ev: any) => ({
-    id: ev.id,
-    title: ev.title,
-    date: ev.date || ev.starts_at || "",
-    notes: ev.notes || "",
-    reminder: ev.reminder ?? true,
-    category: ev.category || "date",
-    custom_sticker: ev.custom_sticker || "🕸️",
-  }));
+  const initialEvents = (rawEvents || []).map((ev: any) => {
+    let category = "date";
+    let custom_sticker = "🕸️";
+
+    if (ev.location) {
+      try {
+        const parsed = JSON.parse(ev.location);
+        if (parsed.category) category = parsed.category;
+        if (parsed.custom_sticker) custom_sticker = parsed.custom_sticker;
+      } catch {
+        if (["date", "birthday", "trip", "anniversary", "custom"].includes(ev.location)) {
+          category = ev.location;
+        }
+      }
+    }
+
+    return {
+      id: ev.id,
+      title: ev.title,
+      date: ev.starts_at || ev.date || "",
+      notes: ev.notes || "",
+      reminder: ev.reminder_at ? true : ev.rsvp_required ?? true,
+      category,
+      custom_sticker,
+    };
+  });
 
   return (
     <CountdownsScreen
