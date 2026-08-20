@@ -62,6 +62,7 @@ export default function Dashboard({
 
   // Big & Fun Transition State for Live Clock Warp
   const [isWarpingToClock, setIsWarpingToClock] = useState(false);
+  const [isWarpingToCountdowns, setIsWarpingToCountdowns] = useState(false);
 
   const [currentSpread, setCurrentSpread] = useState(0);
   const [flippingState, setFlippingState] = useState<"forward" | "backward" | null>(null);
@@ -152,12 +153,49 @@ export default function Dashboard({
       router.push("/clock");
     }, 1100);
   };
+// Inside Dashboard.tsx
 
-  
+// 1. Prefetch the route in useEffect so the page loads instantly with zero lag
+useEffect(() => {
+  router.prefetch("/countdowns");
+  router.prefetch("/clock");
+}, [router]);
+
+// 2. Updated Chapter 2 Navigation Handler
+const handleGoToCountdowns = (e: React.MouseEvent) => {
+  e.preventDefault();
+  e.stopPropagation();
+  setIsWarpingToCountdowns(true);
+
+  // Prefetch again right on click to guarantee data/bundle readiness
+  router.prefetch("/countdowns");
+
+  setTimeout(() => {
+    router.push("/countdowns");
+  }, 1000);
+};
 
   const features = [
-    { title: "Live Canon Clock", desc: "Multiverse timer & live anniversary counter", href: "/clock", tag: "CH. 01", icon: Clock, sticker: "⏰ 🕸️", note: "Every second across dimensions", onClick: handleGoToClock },
-    { title: "Canon Countdowns", desc: "Sticky milestone countdowns & birthdays", href: "/countdowns", tag: "CH. 02", icon: Calendar, sticker: "🎂 ✈️", note: "Mark our future timelines" },
+    {
+    title: "Live Canon Clock", 
+    desc: "Multiverse timer & live anniversary counter", 
+    href: "/clock", 
+    tag: "CH. 01", 
+    icon: Clock, 
+    sticker: "⏰ 🕸️", 
+    note: "Every second across dimensions", 
+    onClick: handleGoToClock 
+  },
+  { 
+    title: "Canon Countdowns", 
+    desc: "Sticky milestone countdowns & birthdays", 
+    href: "/countdowns", 
+    tag: "CH. 02", 
+    icon: Calendar, 
+    sticker: "🎂 ✈️", 
+    note: "Mark our future timelines",
+    onClick: handleGoToCountdowns // <--- Added handler
+  },
     { title: "Red String Timeline", desc: "Fate threads & milestone polaroids", href: "/timeline", tag: "CH. 03", icon: Compass, sticker: "🧵 📸", note: "Connected by destiny" },
     { title: "Retro Digicam", desc: "Instant snapshots & viewfinder clips", href: "/media", tag: "CH. 04", icon: Camera, sticker: "📷 ✨", note: "Earth-65 & 616 gallery" },
     { title: "Love Letter Jar", desc: "Folded scrolls & wax-sealed notes", href: "/letters", tag: "CH. 05", icon: Mail, sticker: "💌 📜", note: "Confidential unsealed letters" },
@@ -781,6 +819,67 @@ export default function Dashboard({
 
             <span className="font-handwriting text-2xl text-[#ECA8B8] mt-3 font-black drop-shadow-md">
               Syncing seconds across dimensions...
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ================= CH. 02 COUNTDOWN & MILESTONE WARP OVERLAY ================= */}
+      {isWarpingToCountdowns && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none bg-black/65 backdrop-blur-xs overflow-hidden">
+          
+          {/* 1. Giant Flipping Multiverse Calendar Grid Ring */}
+          <div className="absolute w-[580px] h-[580px] sm:w-[860px] sm:h-[860px] rounded-full border-4 border-dashed border-[#D9889E]/60 opacity-80 animate-calendar-portal-spin flex items-center justify-center">
+            <div className="w-[420px] h-[420px] sm:w-[620px] sm:h-[620px] rounded-full border-2 border-dotted border-[#FAF4EB]/40" />
+          </div>
+
+          {/* 2. Web Ropes & Sticky Post-it Ripping Effect */}
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="w-full h-1.5 bg-[#ECA8B8]/70 -rotate-12 transform scale-x-150 animate-web-sling-horizontal" />
+            <div className="w-full h-1.5 bg-[#FAF4EB]/60 rotate-12 transform scale-x-150 animate-web-sling-horizontal" />
+          </div>
+
+          {/* 3. Floating Milestone Cards, Sticky Post-Its & Spider Stickers */}
+          {[
+            { text: "DAYS ⏳", x: "-36vw", y: "-28vh", rot: "-12deg", bg: "bg-[#EAD9A9] text-[#1A0D10]" },
+            { text: "🎂 BIRTHDAY", x: "34vw", y: "-25vh", rot: "15deg", bg: "bg-[#D9889E] text-white" },
+            { text: "CANON DATE 🕸️", x: "-30vw", y: "28vh", rot: "8deg", bg: "bg-[#FAF4EB] text-[#781420]" },
+            { text: "✈️ TRIP", x: "36vw", y: "22vh", rot: "-18deg", bg: "bg-[#BDD0C5] text-[#1A0D10]" },
+            { text: "💖 365 DAYS", x: "0vw", y: "-38vh", rot: "6deg", bg: "bg-[#781420] text-[#FAF4EB]" },
+            { text: "🕸️ THWIP!", x: "-22vw", y: "-10vh", rot: "-20deg", bg: "bg-transparent text-4xl" },
+            { text: "🕷️", x: "24vw", y: "12vh", rot: "30deg", bg: "bg-transparent text-5xl" },
+            { text: "📌", x: "-18vw", y: "20vh", rot: "0deg", bg: "bg-transparent text-4xl" },
+          ].map((item, idx) => (
+            <div
+              key={idx}
+              style={{
+                "--fly-x": item.x,
+                "--fly-y": item.y,
+                "--rot-dest": item.rot,
+              } as React.CSSProperties}
+              className={`absolute font-marker px-3 py-1.5 rounded border-2 border-[#261D24] shadow-[4px_4px_0_#17131A] select-none animate-milestone-fly ${item.bg}`}
+            >
+              {item.text}
+            </div>
+          ))}
+
+          {/* 4. Comic Punch Pop Milestone Bubble */}
+          <div className="relative z-10 flex flex-col items-center justify-center animate-comic-pop">
+            <div className="bg-[#2E0509] border-4 border-[#FAF4EB] shadow-[10px_10px_0_#17131A] px-6 py-4 rounded-2xl -rotate-1 flex items-center gap-3">
+              <span className="text-4xl animate-bounce">🎂</span>
+              <div>
+                <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#D9889E] block">
+                  MULTIVERSE COUNTDOWN SYNC
+                </span>
+                <h2 className="font-marker text-2xl sm:text-4xl text-[#FAF4EB] leading-tight">
+                  *STICK!* 📌 TARGETING CANON EVENTS...
+                </h2>
+              </div>
+              <span className="text-4xl animate-pulse">🕸️</span>
+            </div>
+
+            <span className="font-handwriting text-2xl text-[#ECA8B8] mt-3 font-black drop-shadow-md">
+              Locking in dates across Earth-65 & Earth-616...
             </span>
           </div>
         </div>
