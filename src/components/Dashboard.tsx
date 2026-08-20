@@ -49,6 +49,8 @@ export default function Dashboard({
   const [isBookOpened, setIsBookOpened] = useState(false);
   const [isOpeningSequence, setIsOpeningSequence] = useState(false);
   const [isClosingSequence, setIsClosingSequence] = useState(false);
+  const [isPageFlipSequence, setIsPageFlipSequence] = useState(false);
+  const [pageFlipRect, setPageFlipRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   
   const [bloomPhase, setBloomPhase] = useState<"bursting" | "sliding-down" | null>(null);
   const [unlinking, setUnlinking] = useState(false);
@@ -59,6 +61,7 @@ export default function Dashboard({
   const touchStartX = useRef<number | null>(null);
   const touchStartY = useRef<number | null>(null);
   const isDragging = useRef(false);
+  const coverRef = useRef<HTMLDivElement>(null);
 
   const myName = profile?.full_name || "Gwen Stacy";
   const partnerName = partner?.full_name || "Peter Parker";
@@ -70,24 +73,46 @@ export default function Dashboard({
     }
   }, [searchParams]);
 
-  // ZERO-LAG TRIGGER: Cover lifts & bloom starts almost immediately (100ms)
+  // Bloom overlaps the middle of the inner-page turn while the open spread stays underneath.
   const handleOpenBook = () => {
     setIsOpeningSequence(true);
 
     setTimeout(() => {
-      setBloomPhase("bursting");
-    }, 100);
+      const coverBounds = coverRef.current?.getBoundingClientRect();
+      if (coverBounds) {
+        setPageFlipRect({
+          left: coverBounds.left,
+          top: coverBounds.top,
+          width: coverBounds.width,
+          height: coverBounds.height,
+        });
+      }
+      setIsPageFlipSequence(true);
+    }, 550);
 
     setTimeout(() => {
-      setIsBookOpened(true);
-      sessionStorage.setItem("albiverse_book_opened", "true");
-      setIsOpeningSequence(false);
+    setBloomPhase("bursting");
+    }, 560);
+
+    setTimeout(() => {
+    setIsBookOpened(true);
+    sessionStorage.setItem("albiverse_book_opened", "true");
+    setIsOpeningSequence(false);
+    }, 1000);
+
+    setTimeout(() => {
+    setIsPageFlipSequence(false);
+    setBloomPhase("sliding-down");
+    }, 1450);
+
+    setTimeout(() => {
+      setIsPageFlipSequence(false);
       setBloomPhase("sliding-down");
-    }, 1150);
+    }, 1900);
 
     setTimeout(() => {
       setBloomPhase(null);
-    }, 2500);
+    }, 3000);
   };
 
   const handleCloseBook = () => {
@@ -310,6 +335,7 @@ export default function Dashboard({
       {(!isBookOpened || isClosingSequence) && (
         <div className="flex-1 flex items-center justify-center max-w-4xl mx-auto w-full py-8 z-20 journal-book-perspective">
           <div 
+            ref={coverRef}
             onClick={!isOpeningSequence && !isClosingSequence ? handleOpenBook : undefined}
             className="relative cursor-pointer transition-transform duration-300 hover:scale-[1.01]"
           >
@@ -344,6 +370,9 @@ export default function Dashboard({
                 <img 
                   src="/images/scrapbook/journal-cover.png" 
                   alt=""
+                  loading="eager"
+                  fetchPriority="high"
+                  decoding="async"
                   onError={(e) => (e.currentTarget.style.display = 'none')}
                   className="absolute inset-0 w-full h-full object-cover z-0 opacity-95 pointer-events-none"
                 />
@@ -419,6 +448,12 @@ export default function Dashboard({
             bloomPhase === "sliding-down" ? "animate-bloom-curtain-drop" : ""
           }`}
         >
+          <div className="bloom-top-flowers" aria-hidden="true">
+            {['🌸', '🌺', '🌹', '🌼', '🌸', '🌺', '🌹', '🌼'].map((flower, index) => (
+              <span key={index}>{flower}</span>
+            ))}
+          </div>
+
           {/* Centered Burst Emitter */}
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0 h-0 flex items-center justify-center">
             {burstParticles.map((flower, idx) => (
@@ -433,13 +468,7 @@ export default function Dashboard({
                 }}
                 className={`absolute ${flower.size} flex items-center justify-center animate-bloom-particle`}
               >
-                <img
-                  src={`/images/bloom/${flower.file}`}
-                  alt=""
-                  onError={(e) => (e.currentTarget.style.display = 'none')}
-                  className="w-full h-full object-contain drop-shadow-[0_25px_45px_rgba(0,0,0,0.95)]"
-                />
-                <span className="text-9xl drop-shadow-[0_0_35px_#ECA8B8]">
+                <span className="text-9xl drop-shadow-[0_0_18px_#ECA8B8]">
                   {flower.icon}
                 </span>
               </div>
@@ -462,6 +491,28 @@ export default function Dashboard({
         </div>
       )}
 
+      {isPageFlipSequence && (
+        <div
+          className="rapid-page-flip-overlay"
+          aria-hidden="true"
+          style={pageFlipRect ? {
+            left: pageFlipRect.left,
+            top: pageFlipRect.top,
+            width: pageFlipRect.width,
+            height: pageFlipRect.height,
+          } : undefined}
+        >
+          <div className="rapid-page-underlay" />
+          {Array.from({ length: 6 }).map((_, index) => (
+            <div
+              key={index}
+              className="rapid-page-leaf"
+              style={{ animationDelay: `${index * 70}ms`, zIndex: 20 - index }}
+            />
+          ))}
+        </div>
+      )}
+
       {/* ================= TABLE OF CONTENTS: 3D BOOK SPREAD ================= */}
       {isBookOpened && !isClosingSequence && (
         <div 
@@ -469,7 +520,7 @@ export default function Dashboard({
           onMouseUp={(e) => onEnd(e.clientX, e.clientY)}
           onTouchStart={(e) => onStart(e.touches[0].clientX, e.touches[0].clientY)}
           onTouchEnd={(e) => onEnd(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}
-          className="flex-1 max-w-5xl mx-auto w-full py-4 z-20 journal-book-perspective flex flex-col justify-center cursor-grab active:cursor-grabbing animate-toc-reveal"
+          className="flex-1 max-w-5xl mx-auto w-full py-4 z-30 journal-book-perspective flex flex-col justify-center cursor-grab active:cursor-grabbing animate-toc-reveal"
         >
           {/* Top Controls & Account Status Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 px-2">
