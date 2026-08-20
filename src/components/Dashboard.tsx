@@ -51,6 +51,7 @@ export default function Dashboard({
   const [isClosingSequence, setIsClosingSequence] = useState(false);
   const [isPageFlipSequence, setIsPageFlipSequence] = useState(false);
   const [pageFlipRect, setPageFlipRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [hasCoverImageError, setHasCoverImageError] = useState(false);
   
   const [bloomPhase, setBloomPhase] = useState<"bursting" | "sliding-down" | null>(null);
   const [unlinking, setUnlinking] = useState(false);
@@ -73,7 +74,6 @@ export default function Dashboard({
     }
   }, [searchParams]);
 
-  // Bloom overlaps the middle of the inner-page turn while the open spread stays underneath.
   const handleOpenBook = () => {
     setIsOpeningSequence(true);
 
@@ -91,18 +91,18 @@ export default function Dashboard({
     }, 550);
 
     setTimeout(() => {
-    setBloomPhase("bursting");
+      setBloomPhase("bursting");
     }, 590);
 
     setTimeout(() => {
-    setIsBookOpened(true);
-    sessionStorage.setItem("albiverse_book_opened", "true");
-    setIsOpeningSequence(false);
+      setIsBookOpened(true);
+      sessionStorage.setItem("albiverse_book_opened", "true");
+      setIsOpeningSequence(false);
     }, 1600);
 
     setTimeout(() => {
-    setIsPageFlipSequence(false);
-    setBloomPhase("sliding-down");
+      setIsPageFlipSequence(false);
+      setBloomPhase("sliding-down");
     }, 1450);
 
     setTimeout(() => {
@@ -244,14 +244,10 @@ export default function Dashboard({
     );
   };
 
-  // 7-Flower Dense Radial Matrix
   const burstParticles = [
-    // Center Core
     { x: "0vw", y: "0vh", scale: 1.5, delay: "0s", rot: "12deg", icon: "🌸", file: "flower-1.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
     { x: "-4vw", y: "-4vh", scale: 1.4, delay: "0.01s", rot: "-25deg", icon: "🌺", file: "flower-2.png", size: "w-56 h-56 sm:w-80 sm:h-80" },
     { x: "5vw", y: "4vh", scale: 1.4, delay: "0.02s", rot: "35deg", icon: "🌹", file: "flower-3.png", size: "w-56 h-56 sm:w-80 sm:h-80" },
-
-    // Inner Radial Ring
     { x: "-15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "-40deg", icon: "🌼", file: "flower-4.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
     { x: "15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "45deg", icon: "🌻", file: "flower-5.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
     { x: "-18vw", y: "14vh", scale: 1.35, delay: "0.04s", rot: "20deg", icon: "🌷", file: "flower-6.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
@@ -260,8 +256,6 @@ export default function Dashboard({
     { x: "0vw", y: "22vh", scale: 1.4, delay: "0.04s", rot: "-15deg", icon: "🌺", file: "flower-2.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
     { x: "-24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "30deg", icon: "🌹", file: "flower-3.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
     { x: "24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "-45deg", icon: "🌼", file: "flower-4.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
-
-    // Mid-Screen Radial Ring
     { x: "-32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "55deg", icon: "🌻", file: "flower-5.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
     { x: "0vw", y: "-36vh", scale: 1.45, delay: "0.05s", rot: "-20deg", icon: "🌷", file: "flower-6.png", size: "w-64 h-64 sm:w-92 sm:h-92" },
     { x: "32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "-60deg", icon: "💐", file: "flower-7.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
@@ -270,8 +264,6 @@ export default function Dashboard({
     { x: "-32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "-40deg", icon: "🌹", file: "flower-3.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
     { x: "0vw", y: "36vh", scale: 1.45, delay: "0.06s", rot: "45deg", icon: "🌼", file: "flower-4.png", size: "w-64 h-64 sm:w-92 sm:h-92" },
     { x: "32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "25deg", icon: "🌻", file: "flower-5.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-
-    // Outer Perimeter (Blanket Coverage)
     { x: "-48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "-15deg", icon: "🌷", file: "flower-6.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
     { x: "48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "35deg", icon: "💐", file: "flower-7.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
     { x: "-48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "50deg", icon: "🌸", file: "flower-1.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
@@ -280,8 +272,6 @@ export default function Dashboard({
     { x: "54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "-25deg", icon: "🌼", file: "flower-4.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
     { x: "-54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "-30deg", icon: "🌻", file: "flower-5.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
     { x: "54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "40deg", icon: "🌷", file: "flower-6.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-
-    // Cascading Bottom Hem
     { x: "-35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "-10deg", icon: "💐", file: "flower-7.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
     { x: "-12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "25deg", icon: "🌸", file: "flower-1.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
     { x: "12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "-35deg", icon: "🌺", file: "flower-2.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
@@ -365,75 +355,114 @@ export default function Dashboard({
               isOpeningSequence ? "animate-front-cover-swing-open pointer-events-none" : 
               isClosingSequence ? "animate-front-cover-swing-close pointer-events-none" : ""
             }`}>
-              <div className="w-[340px] sm:w-[480px] md:w-[560px] min-h-[620px] bg-[#2E0509] rounded-2xl border-4 border-[#17131A] shadow-[22px_24px_0_rgba(0,0,0,0.9)] p-5 sm:p-8 flex flex-col justify-between overflow-hidden relative">
+              <div className="w-[340px] sm:w-[480px] md:w-[560px] min-h-[620px] bg-[#2E0509] rounded-2xl border-4 border-[#17131A] shadow-[22px_24px_0_rgba(0,0,0,0.9)] p-5 sm:p-8 flex flex-col justify-between overflow-hidden relative group">
                 
-                <img 
-                  src="/images/scrapbook/journal-cover.png" 
-                  alt=""
-                  loading="eager"
-                  fetchPriority="high"
-                  decoding="async"
-                  onError={(e) => (e.currentTarget.style.display = 'none')}
-                  className="absolute inset-0 w-full h-full object-cover z-0 opacity-95 pointer-events-none"
-                />
-
-                <div className="ml-5 sm:ml-7 flex-1 paper-grid-journal border-3 border-[#261D24] p-5 sm:p-8 rounded-lg shadow-inner flex flex-col justify-between relative overflow-hidden z-10 bg-opacity-95">
-                  
-                  <div className="absolute top-4 right-2 w-48 h-32 paper-music-sheet -rotate-3 border border-black/20 p-2 shadow-sm pointer-events-none opacity-85">
-                    <div className="postage-stamp rotate-6">CAO DANG • № 616</div>
-                    <span className="font-handwriting text-xs text-stone-700 block mt-1">
-                      ♪ Sunflower in D Major
-                    </span>
-                  </div>
-
-                  <div className="absolute top-24 left-3 w-52 sm:w-64 h-48 paper-kraft-torn rotate-2 p-3 z-10">
-                    <span className="postage-stamp -rotate-3 bg-[#FAF4EB]">CANON EVENT</span>
-                    <p className="font-handwriting text-xl text-[#2E0509] mt-2 font-bold leading-tight">
-                      “A journey across a thousand universes begins with a single step.”
-                    </p>
-                  </div>
-
-                  <div className="absolute bottom-24 right-4 z-20 rotate-12 flex flex-col items-center">
-                    <div className="tape-gold-solid w-16 h-4 -rotate-6 mb-1" />
-                    <div className="text-4xl">🌿🍂</div>
-                    <span className="font-handwriting text-sm text-[#781420] font-bold">Earth-65 Flora</span>
-                  </div>
-
-                  <div className="absolute bottom-28 left-20 z-20 rotate-6 text-3xl">🎀</div>
-
-                  <div className="text-center z-20 mt-1">
-                    <span className="postage-stamp bg-[#781420] text-[#F6EFE9] -rotate-1 mb-1">
-                      VOL. 616 × 65 • ALBIVERSE
-                    </span>
-                    <h1 className="font-marker text-3xl sm:text-5xl text-[#1A0D10] leading-none mt-2">
-                      ALBIVERSE
-                    </h1>
-                    <p className="font-handwriting text-2xl text-[#781420] mt-1 font-bold">
-                      The Scrapbook of Us
-                    </p>
-                  </div>
-
-                  <div className="my-auto z-20 text-center py-6">
-                    <div className="inline-block bg-[#FAF7F2] p-4 border-2 border-[#261D24] shadow-[4px_4px_0_#261D24] rotate-1">
-                      <div className="text-3xl sm:text-4xl mb-1">🕷️❤️🌸</div>
-                      <span className="font-mono text-xs font-black text-[#781420] uppercase tracking-wider block">
-                        {myName} × {partnerName}
-                      </span>
-                      <span className="text-[10px] font-mono font-bold text-stone-600 uppercase block mt-1">
-                        Account Linked to: <span className="text-[#781420] font-black">{partnerName}</span>
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="text-center z-20 pt-2">
-                    <div className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#781420] hover:bg-[#450A10] text-[#F6EFE9] border-3 border-[#261D24] shadow-[5px_5px_0_#171B22] font-mono text-xs font-black tracking-wider uppercase -rotate-1 group-hover:rotate-0 transition">
-                      <Feather className="w-4 h-4 text-[#ECA8B8]" />
-                      <span>Open Scrapbook</span>
-                      <ArrowRight className="w-4 h-4 text-[#ECA8B8]" />
-                    </div>
-                  </div>
-
+                {/* Spiral Rings */}
+                <div className="absolute left-1.5 inset-y-0 w-8 flex flex-col justify-around items-center py-4 z-40 pointer-events-none">
+                  {Array.from({ length: 14 }).map((_, i) => (
+                    <div key={i} className="w-7 h-2.5 spiral-binder-ring border border-black/60" />
+                  ))}
                 </div>
+
+                {!hasCoverImageError ? (
+                  /* ================= OFFICIAL IMAGE COVER ================= */
+                  <div className="ml-5 sm:ml-7 flex-1 border-3 border-[#261D24] rounded-lg shadow-inner relative overflow-hidden flex flex-col justify-between bg-[#1B0D12]">
+                    <img 
+                      src="/images/scrapbook/journal-cover.png" 
+                      alt="Scrapbook Cover"
+                      loading="eager"
+                      fetchPriority="high"
+                      decoding="async"
+                      onError={() => setHasCoverImageError(true)}
+                      className="absolute inset-0 w-full h-full object-cover z-0 transition-transform duration-500 group-hover:scale-105"
+                    />
+
+                    {/* Subtle Overlay Vignette */}
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20 z-10 pointer-events-none" />
+
+                    {/* Top Status Header */}
+                    <div className="relative z-20 p-4 flex justify-between items-start">
+                      <span className="postage-stamp bg-[#781420] text-[#F6EFE9] -rotate-2 shadow">
+                        VOL. 616 × 65
+                      </span>
+                    </div>
+
+                    {/* Bottom CTA & Info */}
+                    <div className="relative z-20 p-4 sm:p-6 text-center flex flex-col items-center gap-3">
+                      <div className="inline-block bg-[#FAF7F2]/90 backdrop-blur-xs px-3 py-1.5 border border-[#261D24] shadow-[3px_3px_0_#261D24] rotate-1">
+                        <span className="font-mono text-[11px] font-black text-[#781420] uppercase tracking-wider block">
+                          {myName} × {partnerName}
+                        </span>
+                      </div>
+
+                      <div className="inline-flex items-center gap-2 px-6 py-3 bg-[#781420] group-hover:bg-[#450A10] text-[#F6EFE9] border-3 border-[#261D24] shadow-[5px_5px_0_#171B22] font-mono text-xs sm:text-sm font-black tracking-wider uppercase -rotate-1 group-hover:rotate-0 transition-all">
+                        <Feather className="w-4 h-4 text-[#ECA8B8]" />
+                        <span>Open Scrapbook</span>
+                        <ArrowRight className="w-4 h-4 text-[#ECA8B8]" />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  /* ================= CSS SCRAPBOOK FALLBACK ================= */
+                  <div className="ml-5 sm:ml-7 flex-1 paper-grid-journal border-3 border-[#261D24] p-5 sm:p-8 rounded-lg shadow-inner flex flex-col justify-between relative overflow-hidden z-10 bg-opacity-95">
+                    
+                    <div className="absolute top-4 right-2 w-48 h-32 paper-music-sheet -rotate-3 border border-black/20 p-2 shadow-sm pointer-events-none opacity-85">
+                      <div className="postage-stamp rotate-6">CAO DANG • № 616</div>
+                      <span className="font-handwriting text-xs text-stone-700 block mt-1">
+                        ♪ Sunflower in D Major
+                      </span>
+                    </div>
+
+                    <div className="absolute top-24 left-3 w-52 sm:w-64 h-48 paper-kraft-torn rotate-2 p-3 z-10">
+                      <span className="postage-stamp -rotate-3 bg-[#FAF4EB]">CANON EVENT</span>
+                      <p className="font-handwriting text-xl text-[#2E0509] mt-2 font-bold leading-tight">
+                        “A journey across a thousand universes begins with a single step.”
+                      </p>
+                    </div>
+
+                    <div className="absolute bottom-24 right-4 z-20 rotate-12 flex flex-col items-center">
+                      <div className="tape-gold-solid w-16 h-4 -rotate-6 mb-1" />
+                      <div className="text-4xl">🌿🍂</div>
+                      <span className="font-handwriting text-sm text-[#781420] font-bold">Earth-65 Flora</span>
+                    </div>
+
+                    <div className="absolute bottom-28 left-20 z-20 rotate-6 text-3xl">🎀</div>
+
+                    <div className="text-center z-20 mt-1">
+                      <span className="postage-stamp bg-[#781420] text-[#F6EFE9] -rotate-1 mb-1">
+                        VOL. 616 × 65 • ALBIVERSE
+                      </span>
+                      <h1 className="font-marker text-3xl sm:text-5xl text-[#1A0D10] leading-none mt-2">
+                        ALBIVERSE
+                      </h1>
+                      <p className="font-handwriting text-2xl text-[#781420] mt-1 font-bold">
+                        The Scrapbook of Us
+                      </p>
+                    </div>
+
+                    <div className="my-auto z-20 text-center py-6">
+                      <div className="inline-block bg-[#FAF7F2] p-4 border-2 border-[#261D24] shadow-[4px_4px_0_#261D24] rotate-1">
+                        <div className="text-3xl sm:text-4xl mb-1">🕷️❤️🌸</div>
+                        <span className="font-mono text-xs font-black text-[#781420] uppercase tracking-wider block">
+                          {myName} × {partnerName}
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-stone-600 uppercase block mt-1">
+                          Account Linked to: <span className="text-[#781420] font-black">{partnerName}</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="text-center z-20 pt-2">
+                      <div className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#781420] hover:bg-[#450A10] text-[#F6EFE9] border-3 border-[#261D24] shadow-[5px_5px_0_#171B22] font-mono text-xs font-black tracking-wider uppercase -rotate-1 group-hover:rotate-0 transition">
+                        <Feather className="w-4 h-4 text-[#ECA8B8]" />
+                        <span>Open Scrapbook</span>
+                        <ArrowRight className="w-4 h-4 text-[#ECA8B8]" />
+                      </div>
+                    </div>
+
+                  </div>
+                )}
+
               </div>
             </div>
 
@@ -441,7 +470,7 @@ export default function Dashboard({
         </div>
       )}
 
-            {/* ================= FLORAL CASCADE WITH 7 CUTOUTS ================= */}
+      {/* ================= FLORAL CASCADE WITH 7 CUTOUTS ================= */}
       {bloomPhase && (
         <div 
           className={`fixed inset-0 z-50 pointer-events-none overflow-visible ${
