@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import SpideyBackground from "./SpideyBackground";
 import { 
@@ -45,6 +45,7 @@ export default function Dashboard({
   onUnlinked,
 }: DashboardProps) {
   const searchParams = useSearchParams();
+  const router = useRouter();
   
   const [isBookOpened, setIsBookOpened] = useState(false);
   const [isOpeningSequence, setIsOpeningSequence] = useState(false);
@@ -53,8 +54,14 @@ export default function Dashboard({
   const [pageFlipRect, setPageFlipRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [hasCoverImageError, setHasCoverImageError] = useState(false);
   
+  // Track failed page images by page number
+  const [pageImageErrors, setPageImageErrors] = useState<Record<number, boolean>>({});
+
   const [bloomPhase, setBloomPhase] = useState<"bursting" | "sliding-down" | null>(null);
   const [unlinking, setUnlinking] = useState(false);
+
+  // Big & Fun Transition State for Live Clock Warp
+  const [isWarpingToClock, setIsWarpingToClock] = useState(false);
 
   const [currentSpread, setCurrentSpread] = useState(0);
   const [flippingState, setFlippingState] = useState<"forward" | "backward" | null>(null);
@@ -66,6 +73,8 @@ export default function Dashboard({
 
   const myName = profile?.full_name || "Gwen Stacy";
   const partnerName = partner?.full_name || "Peter Parker";
+
+  
 
   useEffect(() => {
     const shouldOpen = searchParams?.get("view") === "toc" || sessionStorage.getItem("albiverse_book_opened") === "true";
@@ -134,8 +143,20 @@ export default function Dashboard({
     if (onUnlinked) onUnlinked();
   };
 
+  // Intercept Chapter 1 (Live Canon Clock) navigation for the big fun warp transition
+  const handleGoToClock = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWarpingToClock(true);
+
+    setTimeout(() => {
+      router.push("/clock");
+    }, 1100);
+  };
+
+  
+
   const features = [
-    { title: "Live Canon Clock", desc: "Multiverse timer & live anniversary counter", href: "/clock", tag: "CH. 01", icon: Clock, sticker: "⏰ 🕸️", note: "Every second across dimensions" },
+    { title: "Live Canon Clock", desc: "Multiverse timer & live anniversary counter", href: "/clock", tag: "CH. 01", icon: Clock, sticker: "⏰ 🕸️", note: "Every second across dimensions", onClick: handleGoToClock },
     { title: "Canon Countdowns", desc: "Sticky milestone countdowns & birthdays", href: "/countdowns", tag: "CH. 02", icon: Calendar, sticker: "🎂 ✈️", note: "Mark our future timelines" },
     { title: "Red String Timeline", desc: "Fate threads & milestone polaroids", href: "/timeline", tag: "CH. 03", icon: Compass, sticker: "🧵 📸", note: "Connected by destiny" },
     { title: "Retro Digicam", desc: "Instant snapshots & viewfinder clips", href: "/media", tag: "CH. 04", icon: Camera, sticker: "📷 ✨", note: "Earth-65 & 616 gallery" },
@@ -201,7 +222,7 @@ export default function Dashboard({
   const renderChapterContent = (item: typeof features[0] | undefined, pageNum: number) => {
     if (!item) {
       return (
-        <div className="flex flex-col items-center justify-center p-6 text-center h-full">
+        <div className="flex flex-col items-center justify-center p-6 text-center h-full bg-[#FAF6EE] rounded-lg border border-[#261D24]/20">
           <span className="text-4xl mb-2">🌸🕸️</span>
           <h4 className="font-marker text-xl text-[#1A0D10]">End of Table of Contents</h4>
           <p className="font-handwriting text-lg text-stone-600 mt-1">
@@ -211,34 +232,63 @@ export default function Dashboard({
       );
     }
 
+    const hasImageError = pageImageErrors[pageNum];
+
     return (
-      <div className="h-full flex flex-col justify-between p-4 sm:p-6 bg-[#FAF6EE] rounded-lg border border-[#261D24]/20 shadow-inner">
-        <div>
-          <div className="flex items-center justify-between border-b-2 border-dashed border-[#8A7550] pb-3 mb-4">
-            <span className="feature-stamp">{item.tag}</span>
-            <span className="text-3xl">{item.sticker}</span>
+      <div className="h-full relative rounded-lg border border-[#261D24]/20 shadow-inner overflow-hidden flex flex-col justify-between p-4 sm:p-6 bg-[#FAF6EE]">
+        {/* Page PNG Image from /public/images/scrapbook/page-[pageNum].png */}
+        {!hasImageError && (
+          <img
+            src={`/images/scrapbook/page-${pageNum}.png`}
+            alt={`Page ${pageNum}`}
+            onError={() =>
+              setPageImageErrors((prev) => ({ ...prev, [pageNum]: true }))
+            }
+            className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none"
+          />
+        )}
+
+        {/* Dynamic Chapter Info & Buttons */}
+        <div className="relative z-10 flex flex-col justify-between h-full">
+          <div>
+            <div className="flex items-center justify-between border-b-2 border-dashed border-[#8A7550] pb-3 mb-4 bg-[#FAF6EE]/75 p-2 rounded backdrop-blur-xs">
+              <span className="feature-stamp">{item.tag}</span>
+              <span className="text-3xl">{item.sticker}</span>
+            </div>
+
+            <div className="bg-[#FAF6EE]/85 p-3 rounded backdrop-blur-xs shadow-xs">
+              <h3 className="font-marker text-2xl sm:text-3xl text-[#1A0D10] mb-2">
+                {item.title}
+              </h3>
+              <p className="font-handwriting text-xl text-stone-700 leading-snug">
+                {item.desc}
+              </p>
+              <p className="font-mono text-[11px] text-[#781420] mt-3 italic">
+                Note: {item.note}
+              </p>
+            </div>
           </div>
 
-          <h3 className="font-marker text-2xl sm:text-3xl text-[#1A0D10] mb-2">
-            {item.title}
-          </h3>
-          <p className="font-handwriting text-xl text-stone-700 leading-snug">
-            {item.desc}
-          </p>
-          <p className="font-mono text-[11px] text-[#781420] mt-3 italic">
-            Note: {item.note}
-          </p>
-        </div>
-
-        <div className="pt-4 mt-6 border-t border-[#261D24]/20 flex items-center justify-between">
-          <span className="font-mono text-[10px] text-stone-500 uppercase">PAGE {pageNum}</span>
-          <Link
-            href={item.href}
-            className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black rounded border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition"
-          >
-            <span>OPEN ENTRY</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </Link>
+          <div className="pt-4 mt-6 border-t border-[#261D24]/20 flex items-center justify-between bg-[#FAF6EE]/80 p-2 rounded backdrop-blur-xs">
+            <span className="font-mono text-[10px] text-stone-700 font-bold uppercase">PAGE {pageNum}</span>
+            {item.onClick ? (
+              <button
+                onClick={item.onClick}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black rounded border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition active:scale-95 cursor-pointer"
+              >
+                <span>OPEN ENTRY</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              <Link
+                href={item.href}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black rounded border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition active:scale-95"
+              >
+                <span>OPEN ENTRY</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -350,14 +400,13 @@ export default function Dashboard({
               </div>
             </div>
 
-            {/* FRONT COVER (Swings Open and Closes Shut) */}
+            {/* FRONT COVER */}
             <div className={`absolute inset-0 z-30 ${
               isOpeningSequence ? "animate-front-cover-swing-open pointer-events-none" : 
               isClosingSequence ? "animate-front-cover-swing-close pointer-events-none" : ""
             }`}>
               <div className="w-[340px] sm:w-[480px] md:w-[560px] min-h-[620px] bg-[#2E0509] rounded-2xl border-4 border-[#17131A] shadow-[22px_24px_0_rgba(0,0,0,0.9)] p-5 sm:p-8 flex flex-col justify-between overflow-hidden relative group">
                 
-                {/* Spiral Rings */}
                 <div className="absolute left-1.5 inset-y-0 w-8 flex flex-col justify-around items-center py-4 z-40 pointer-events-none">
                   {Array.from({ length: 14 }).map((_, i) => (
                     <div key={i} className="w-7 h-2.5 spiral-binder-ring border border-black/60" />
@@ -365,7 +414,6 @@ export default function Dashboard({
                 </div>
 
                 {!hasCoverImageError ? (
-                  /* ================= OFFICIAL IMAGE COVER ================= */
                   <div className="ml-5 sm:ml-7 flex-1 border-3 border-[#261D24] rounded-lg shadow-inner relative overflow-hidden flex flex-col justify-between bg-[#1B0D12]">
                     <img 
                       src="/images/scrapbook/journal-cover.png" 
@@ -377,17 +425,14 @@ export default function Dashboard({
                       className="absolute inset-0 w-full h-full object-cover z-0 transition-transform duration-500 group-hover:scale-105"
                     />
 
-                    {/* Subtle Overlay Vignette */}
                     <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20 z-10 pointer-events-none" />
 
-                    {/* Top Status Header */}
                     <div className="relative z-20 p-4 flex justify-between items-start">
                       <span className="postage-stamp bg-[#781420] text-[#F6EFE9] -rotate-2 shadow">
                         VOL. 616 × 65
                       </span>
                     </div>
 
-                    {/* Bottom CTA & Info */}
                     <div className="relative z-20 p-4 sm:p-6 text-center flex flex-col items-center gap-3">
                       <div className="inline-block bg-[#FAF7F2]/90 backdrop-blur-xs px-3 py-1.5 border border-[#261D24] shadow-[3px_3px_0_#261D24] rotate-1">
                         <span className="font-mono text-[11px] font-black text-[#781420] uppercase tracking-wider block">
@@ -403,7 +448,6 @@ export default function Dashboard({
                     </div>
                   </div>
                 ) : (
-                  /* ================= CSS SCRAPBOOK FALLBACK ================= */
                   <div className="ml-5 sm:ml-7 flex-1 paper-grid-journal border-3 border-[#261D24] p-5 sm:p-8 rounded-lg shadow-inner flex flex-col justify-between relative overflow-hidden z-10 bg-opacity-95">
                     
                     <div className="absolute top-4 right-2 w-48 h-32 paper-music-sheet -rotate-3 border border-black/20 p-2 shadow-sm pointer-events-none opacity-85">
@@ -477,7 +521,6 @@ export default function Dashboard({
             bloomPhase === "sliding-down" ? "animate-bloom-curtain-drop" : ""
           }`}
         >
-          {/* Top Hem Row spanning across 7 flowers */}
           <div className="bloom-top-flowers" aria-hidden="true">
             {[
               { file: "flower-1.png", fallback: "🌸" },
@@ -507,7 +550,6 @@ export default function Dashboard({
             ))}
           </div>
 
-          {/* Centered Burst Emitter */}
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0 h-0 flex items-center justify-center">
             {burstParticles.map((flower, idx) => (
               <div
@@ -538,7 +580,6 @@ export default function Dashboard({
             ))}
           </div>
 
-          {/* Floating Letters */}
           {["A", "L", "B", "I", "V", "E", "R", "S", "E", "❤️", "🕷️"].map((char, idx) => (
             <div
               key={idx}
@@ -585,7 +626,6 @@ export default function Dashboard({
           onTouchEnd={(e) => onEnd(e.changedTouches[0].clientX, e.changedTouches[0].clientY)}
           className="flex-1 max-w-5xl mx-auto w-full py-4 z-30 journal-book-perspective flex flex-col justify-center cursor-grab active:cursor-grabbing animate-toc-reveal"
         >
-          {/* Top Controls & Account Status Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 px-2">
             <div className="flex items-center gap-3">
               <span className="font-mono text-xs font-black text-[#ECA8B8] uppercase tracking-widest flex items-center gap-1.5">
@@ -685,6 +725,64 @@ export default function Dashboard({
             ))}
           </div>
 
+        </div>
+      )}
+
+      {/* ================= BIG & FUN TIMELINE WARP OVERLAY ================= */}
+      {isWarpingToClock && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none bg-black/60 backdrop-blur-xs overflow-hidden">
+          {/* 1. Spider-Web Radial Burst in Background */}
+          <div className="absolute w-[600px] h-[600px] sm:w-[900px] sm:h-[900px] rounded-full border-4 border-dashed border-[#D9889E] opacity-70 animate-web-sling-burst flex items-center justify-center">
+            <span className="text-8xl sm:text-9xl opacity-80 select-none">🕸️</span>
+          </div>
+
+          {/* 2. Giant Multiverse Clock Gears Spinning */}
+          <div className="absolute w-72 h-72 sm:w-96 sm:h-96 rounded-full border-8 border-dashed border-[#C5A467] opacity-60 animate-clock-gear-spin flex items-center justify-center">
+            <div className="w-48 h-48 rounded-full border-4 border-dashed border-[#ECA8B8]" />
+          </div>
+
+          {/* 3. Flying Time Units & Comic Particles */}
+          {[
+            { text: "00", x: "-38vw", y: "-30vh" },
+            { text: "60", x: "36vw", y: "-28vh" },
+            { text: "12", x: "-32vw", y: "32vh" },
+            { text: "616", x: "38vw", y: "26vh" },
+            { text: "65", x: "0vw", y: "-40vh" },
+            { text: "⏰", x: "-20vw", y: "-15vh" },
+            { text: "🕷️", x: "25vw", y: "15vh" },
+            { text: "✨", x: "-22vw", y: "24vh" },
+          ].map((item, idx) => (
+            <span
+              key={idx}
+              style={{
+                "--fly-x": item.x,
+                "--fly-y": item.y,
+              } as React.CSSProperties}
+              className="absolute font-marker text-3xl sm:text-5xl text-[#FAF4EB] drop-shadow-[0_0_12px_#781420] animate-digit-fly select-none"
+            >
+              {item.text}
+            </span>
+          ))}
+
+          {/* 4. Comic Punch Pop Bubble in Center */}
+          <div className="relative z-10 flex flex-col items-center justify-center animate-comic-pop">
+            <div className="bg-[#781420] border-4 border-[#FAF4EB] shadow-[8px_8px_0_#17131A] px-6 py-3 rounded-2xl rotate-2 flex items-center gap-3">
+              <span className="text-3xl animate-bounce">🕷️</span>
+              <div>
+                <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#ECA8B8] block">
+                  CANON TIMELINE PORTAL
+                </span>
+                <h2 className="font-marker text-3xl sm:text-4xl text-[#FAF4EB] leading-tight">
+                  *THWIP!* 🕸️ WARPING TIME...
+                </h2>
+              </div>
+              <span className="text-3xl animate-spin">⏰</span>
+            </div>
+
+            <span className="font-handwriting text-2xl text-[#ECA8B8] mt-3 font-black drop-shadow-md">
+              Syncing seconds across dimensions...
+            </span>
+          </div>
         </div>
       )}
 
