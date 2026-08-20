@@ -92,13 +92,13 @@ export default function Dashboard({
 
     setTimeout(() => {
     setBloomPhase("bursting");
-    }, 560);
+    }, 590);
 
     setTimeout(() => {
     setIsBookOpened(true);
     sessionStorage.setItem("albiverse_book_opened", "true");
     setIsOpeningSequence(false);
-    }, 1000);
+    }, 1600);
 
     setTimeout(() => {
     setIsPageFlipSequence(false);
@@ -244,7 +244,7 @@ export default function Dashboard({
     );
   };
 
-  // Dense, Seamless Canopy Matrix (Includes extra hem layers along bottom to eliminate cut-off lines)
+  // 7-Flower Dense Radial Matrix
   const burstParticles = [
     // Center Core
     { x: "0vw", y: "0vh", scale: 1.5, delay: "0s", rot: "12deg", icon: "🌸", file: "flower-1.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
@@ -253,39 +253,39 @@ export default function Dashboard({
 
     // Inner Radial Ring
     { x: "-15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "-40deg", icon: "🌼", file: "flower-4.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
-    { x: "15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "45deg", icon: "🌸", file: "flower-1.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
-    { x: "-18vw", y: "14vh", scale: 1.35, delay: "0.04s", rot: "20deg", icon: "🌺", file: "flower-2.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
-    { x: "18vw", y: "15vh", scale: 1.35, delay: "0.04s", rot: "-30deg", icon: "🌹", file: "flower-3.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
-    { x: "0vw", y: "-22vh", scale: 1.4, delay: "0.03s", rot: "10deg", icon: "🌼", file: "flower-4.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
-    { x: "0vw", y: "22vh", scale: 1.4, delay: "0.04s", rot: "-15deg", icon: "🌸", file: "flower-1.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
-    { x: "-24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "30deg", icon: "🌺", file: "flower-2.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
-    { x: "24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "-45deg", icon: "🌹", file: "flower-3.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
+    { x: "15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "45deg", icon: "🌻", file: "flower-5.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
+    { x: "-18vw", y: "14vh", scale: 1.35, delay: "0.04s", rot: "20deg", icon: "🌷", file: "flower-6.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
+    { x: "18vw", y: "15vh", scale: 1.35, delay: "0.04s", rot: "-30deg", icon: "💐", file: "flower-7.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
+    { x: "0vw", y: "-22vh", scale: 1.4, delay: "0.03s", rot: "10deg", icon: "🌸", file: "flower-1.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
+    { x: "0vw", y: "22vh", scale: 1.4, delay: "0.04s", rot: "-15deg", icon: "🌺", file: "flower-2.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
+    { x: "-24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "30deg", icon: "🌹", file: "flower-3.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
+    { x: "24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "-45deg", icon: "🌼", file: "flower-4.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
 
     // Mid-Screen Radial Ring
-    { x: "-32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "55deg", icon: "🌸", file: "flower-1.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "0vw", y: "-36vh", scale: 1.45, delay: "0.05s", rot: "-20deg", icon: "🌺", file: "flower-2.png", size: "w-64 h-64 sm:w-92 sm:h-92" },
-    { x: "32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "-60deg", icon: "🌹", file: "flower-3.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "-38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "15deg", icon: "🌼", file: "flower-4.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "-35deg", icon: "🌸", file: "flower-1.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "-32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "-40deg", icon: "🌺", file: "flower-2.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "0vw", y: "36vh", scale: 1.45, delay: "0.06s", rot: "45deg", icon: "🌹", file: "flower-3.png", size: "w-64 h-64 sm:w-92 sm:h-92" },
-    { x: "32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "25deg", icon: "🌼", file: "flower-4.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
+    { x: "-32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "55deg", icon: "🌻", file: "flower-5.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
+    { x: "0vw", y: "-36vh", scale: 1.45, delay: "0.05s", rot: "-20deg", icon: "🌷", file: "flower-6.png", size: "w-64 h-64 sm:w-92 sm:h-92" },
+    { x: "32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "-60deg", icon: "💐", file: "flower-7.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
+    { x: "-38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "15deg", icon: "🌸", file: "flower-1.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
+    { x: "38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "-35deg", icon: "🌺", file: "flower-2.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
+    { x: "-32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "-40deg", icon: "🌹", file: "flower-3.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
+    { x: "0vw", y: "36vh", scale: 1.45, delay: "0.06s", rot: "45deg", icon: "🌼", file: "flower-4.png", size: "w-64 h-64 sm:w-92 sm:h-92" },
+    { x: "32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "25deg", icon: "🌻", file: "flower-5.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
 
     // Outer Perimeter (Blanket Coverage)
-    { x: "-48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "-15deg", icon: "🌸", file: "flower-1.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
-    { x: "48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "35deg", icon: "🌺", file: "flower-2.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
-    { x: "-48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "50deg", icon: "🌹", file: "flower-3.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
-    { x: "48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "-45deg", icon: "🌼", file: "flower-4.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
-    { x: "-54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "20deg", icon: "🌸", file: "flower-1.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "-25deg", icon: "🌺", file: "flower-2.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "-54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "-30deg", icon: "🌹", file: "flower-3.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "40deg", icon: "🌼", file: "flower-4.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
+    { x: "-48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "-15deg", icon: "🌷", file: "flower-6.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
+    { x: "48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "35deg", icon: "💐", file: "flower-7.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
+    { x: "-48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "50deg", icon: "🌸", file: "flower-1.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
+    { x: "48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "-45deg", icon: "🌺", file: "flower-2.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
+    { x: "-54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "20deg", icon: "🌹", file: "flower-3.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
+    { x: "54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "-25deg", icon: "🌼", file: "flower-4.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
+    { x: "-54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "-30deg", icon: "🌻", file: "flower-5.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
+    { x: "54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "40deg", icon: "🌷", file: "flower-6.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
 
-    // Cascading Edge Hem (Covers the downward slide boundary)
-    { x: "-35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "-10deg", icon: "🌸", file: "flower-1.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
-    { x: "-12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "25deg", icon: "🌺", file: "flower-2.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
-    { x: "12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "-35deg", icon: "🌹", file: "flower-3.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
-    { x: "35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "45deg", icon: "🌼", file: "flower-4.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
+    // Cascading Bottom Hem
+    { x: "-35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "-10deg", icon: "💐", file: "flower-7.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
+    { x: "-12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "25deg", icon: "🌸", file: "flower-1.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
+    { x: "12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "-35deg", icon: "🌺", file: "flower-2.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
+    { x: "35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "45deg", icon: "🌹", file: "flower-3.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
   ];
 
   return (
@@ -441,16 +441,40 @@ export default function Dashboard({
         </div>
       )}
 
-      {/* ================= ZERO-GAP FLORAL CASCADE (NO DARK FILM LINE) ================= */}
+            {/* ================= FLORAL CASCADE WITH 7 CUTOUTS ================= */}
       {bloomPhase && (
         <div 
           className={`fixed inset-0 z-50 pointer-events-none overflow-visible ${
             bloomPhase === "sliding-down" ? "animate-bloom-curtain-drop" : ""
           }`}
         >
+          {/* Top Hem Row spanning across 7 flowers */}
           <div className="bloom-top-flowers" aria-hidden="true">
-            {['🌸', '🌺', '🌹', '🌼', '🌸', '🌺', '🌹', '🌼'].map((flower, index) => (
-              <span key={index}>{flower}</span>
+            {[
+              { file: "flower-1.png", fallback: "🌸" },
+              { file: "flower-2.png", fallback: "🌺" },
+              { file: "flower-3.png", fallback: "🌹" },
+              { file: "flower-4.png", fallback: "🌼" },
+              { file: "flower-5.png", fallback: "🌻" },
+              { file: "flower-6.png", fallback: "🌷" },
+              { file: "flower-7.png", fallback: "💐" },
+              { file: "flower-1.png", fallback: "🌸" },
+            ].map((flower, index) => (
+              <div key={index} className="relative w-20 h-20 sm:w-28 sm:h-28 flex items-center justify-center">
+                <img
+                  src={`/images/bloom/${flower.file}`}
+                  alt=""
+                  onError={(e) => {
+                    e.currentTarget.style.display = "none";
+                    const fallbackSpan = e.currentTarget.nextElementSibling as HTMLElement;
+                    if (fallbackSpan) fallbackSpan.style.display = "inline-block";
+                  }}
+                  className="w-full h-full object-contain drop-shadow-[0_4px_12px_rgba(0,0,0,0.5)]"
+                />
+                <span className="hidden text-6xl drop-shadow-[0_0_18px_#ECA8B8]">
+                  {flower.fallback}
+                </span>
+              </div>
             ))}
           </div>
 
@@ -466,9 +490,19 @@ export default function Dashboard({
                   ['--dest-rot' as any]: flower.rot,
                   animationDelay: flower.delay,
                 }}
-                className={`absolute ${flower.size} flex items-center justify-center animate-bloom-particle`}
+                className={`absolute ${flower.size} flex items-center justify-center animate-bloom-particle pointer-events-none`}
               >
-                <span className="text-9xl drop-shadow-[0_0_18px_#ECA8B8]">
+                <img
+                  src={`/images/bloom/${flower.file}`}
+                  alt=""
+                  onError={(e) => {
+                    e.currentTarget.style.display = "none";
+                    const fallbackSpan = e.currentTarget.nextElementSibling as HTMLElement;
+                    if (fallbackSpan) fallbackSpan.style.display = "inline-block";
+                  }}
+                  className="w-full h-full object-contain drop-shadow-[0_12px_28px_rgba(0,0,0,0.65)] select-none"
+                />
+                <span className="hidden text-9xl drop-shadow-[0_0_24px_#ECA8B8]">
                   {flower.icon}
                 </span>
               </div>
