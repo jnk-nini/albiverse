@@ -34,6 +34,73 @@ body {
   font-family: 'Permanent Marker', cursive;
 }
 
+/* ================= LOGIN & LOGOUT MULTIVERSE TRANSITIONS ================= */
+
+@keyframes multiverse-portal-enter {
+  0% {
+    transform: scale(0.6) rotate(-8deg);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.04) rotate(1deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+@keyframes multiverse-portal-exit {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.7) rotate(6deg);
+    opacity: 0;
+  }
+}
+
+@keyframes comic-spin-fast {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes comic-spin-reverse {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+.animate-portal-enter {
+  animation: multiverse-portal-enter 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+.animate-portal-exit {
+  animation: multiverse-portal-exit 0.6s cubic-bezier(0.6, -0.28, 0.735, 0.045) forwards;
+}
+
+.animate-spin-fast {
+  animation: comic-spin-fast 1.2s linear infinite;
+}
+
+.animate-spin-reverse {
+  animation: comic-spin-reverse 2s linear infinite;
+}
+
+
 /* ================= PAPER BY WETRANSFER JOURNAL STYLES ================= */
 
 /* 3D Journal Perspective Stage */
@@ -97,6 +164,8 @@ body {
     12px 20px 32px rgba(0, 0, 0, 0.6),
     0 0 15px rgba(236, 168, 184, 0.3);
 }
+
+
 
 /* ================= AUTHENTIC SCRAPBOOK COLLAGE LAYERS ================= */
 
@@ -1009,3 +1078,4 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
