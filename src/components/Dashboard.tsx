@@ -175,6 +175,42 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
   }, 1000);
 };
 
+// Chapter 3 Timeline Warp State
+// Inside src/components/Dashboard.tsx
+useEffect(() => {
+  const shouldOpen =
+    searchParams?.get("view") === "toc" ||
+    searchParams?.get("opened") === "true" ||
+    sessionStorage.getItem("albiverse_book_opened") === "true";
+
+  if (shouldOpen) {
+    setIsBookOpened(true);
+  }
+
+  // Handle direct navigation to page 3 (which corresponds to spread index 1)
+  const pageParam = searchParams?.get("page");
+  const spreadParam = searchParams?.get("spread");
+
+  if (pageParam === "3" || spreadParam === "1") {
+    setCurrentSpread(1);
+  } else if (spreadParam !== null && spreadParam !== undefined) {
+    const parsed = parseInt(spreadParam, 10);
+    if (!isNaN(parsed)) setCurrentSpread(parsed);
+  }
+}, [searchParams]);
+
+  const [isWarpingTimeline, setIsWarpingTimeline] = useState(false);
+
+  const handleOpenTimeline = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWarpingTimeline(true);
+
+    // Play full Spider-Verse warp animation, then push route
+    setTimeout(() => {
+      router.push("/timeline");
+    }, 1150);
+  };
+
   const features = [
     {
     title: "Live Canon Clock", 
@@ -884,6 +920,68 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
           </div>
         </div>
       )}
+
+      {/* ================= CHAPTER 3 RED STRING TIMELINE WARP OVERLAY ================= */}
+            {isWarpingTimeline && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md overflow-hidden animate-in fade-in duration-300">
+                
+                {/* 1. Giant Winding Red Web String Radial Burst */}
+                <div className="absolute w-[600px] h-[600px] sm:w-[900px] sm:h-[900px] rounded-full border-6 border-dashed border-[#7D2834] opacity-80 animate-red-string-burst flex items-center justify-center pointer-events-none">
+                  <span className="text-9xl opacity-90 select-none">🧵</span>
+                </div>
+
+                {/* 2. Rotating Multiverse Timeline Portal */}
+                <div className="absolute w-72 h-72 sm:w-96 sm:h-96 rounded-full border-8 border-dotted border-[#E0B1AE] opacity-60 animate-timeline-portal-spin flex items-center justify-center pointer-events-none">
+                  <div className="w-48 h-48 rounded-full border-4 border-dashed border-[#C5A467]" />
+                </div>
+
+                {/* 3. Flying Spider-Verse Timeline Particles & Polaroids */}
+                {[
+                  { text: "📸", x: "-38vw", y: "-28vh" },
+                  { text: "🧵", x: "36vw", y: "-26vh" },
+                  { text: "💌", x: "-32vw", y: "30vh" },
+                  { text: "🕷️", x: "38vw", y: "24vh" },
+                  { text: "616", x: "0vw", y: "-40vh" },
+                  { text: "65", x: "-22vw", y: "-15vh" },
+                  { text: "✨", x: "25vw", y: "15vh" },
+                  { text: "❤️", x: "-20vw", y: "24vh" },
+                ].map((item, idx) => (
+                  <span
+                    key={idx}
+                    style={{
+                      "--fly-x": item.x,
+                      "--fly-y": item.y,
+                    } as React.CSSProperties}
+                    className="absolute font-marker text-3xl sm:text-5xl text-[#FAF4EB] drop-shadow-[0_0_15px_#7D2834] animate-timeline-particle select-none pointer-events-none"
+                  >
+                    {item.text}
+                  </span>
+                ))}
+
+                {/* 4. Comic Punch Pop Bubble in Center */}
+                <div className="relative z-10 flex flex-col items-center justify-center animate-comic-pop">
+                  <div className="bg-[#7D2834] border-4 border-[#FAF4EB] shadow-[10px_10px_0_#17131A] px-7 py-4 rounded-2xl rotate-2 flex items-center gap-4">
+                    <span className="text-4xl animate-bounce">🧵</span>
+                    <div>
+                      <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#E0B1AE] block">
+                        CHAPTER 03 • RED STRING OF FATE
+                      </span>
+                      <h2 className="font-marker text-3xl sm:text-4xl text-[#FAF4EB] leading-tight">
+                        *THWIP!* 🕸️ CONNECTING TIMELINES...
+                      </h2>
+                    </div>
+                    <span className="text-4xl animate-spin">📸</span>
+                  </div>
+
+                  <span className="font-handwriting text-2xl text-[#E0B1AE] mt-3 font-black drop-shadow-md">
+                    Weaving polaroids across dimensions...
+                  </span>
+                </div>
+
+              </div>
+            )}
+
+
 
       {/* Footer Tag */}
       <footer className="max-w-md mx-auto text-center z-20 mt-4">
