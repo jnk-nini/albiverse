@@ -185,6 +185,7 @@ export default function Dashboard({
 useEffect(() => {
   router.prefetch("/countdowns");
   router.prefetch("/clock");
+  router.prefetch("/letters");
 }, [router]);
 
 // 2. Updated Chapter 2 Navigation Handler
@@ -215,6 +216,22 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     }, 1150);
   };
 
+  // Chapter 5 Love Letter Jar Warp State
+  const [isWarpingLetters, setIsWarpingLetters] = useState(false);
+
+  /* The spread the reader is on travels with them into the chapter, so BACK
+     from the jar drops them onto this exact page of the contents instead of
+     the front of the book. */
+  const handleOpenLetters = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWarpingLetters(true);
+    router.prefetch("/letters");
+
+    setTimeout(() => {
+      router.push(`/letters?from=${currentSpread}`);
+    }, 1250);
+  };
+
   const features = [
     {
     title: "Live Canon Clock", 
@@ -236,7 +253,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
   },
     { title: "Red String Timeline", desc: "Fate threads & milestone polaroids", href: "/timeline", tag: "CH. 03", icon: Compass, note: "Connected by destiny", onClick: handleOpenTimeline },
     { title: "Retro Digicam", desc: "Instant snapshots & viewfinder clips", href: "/media", tag: "CH. 04", icon: Camera, note: "Earth-65 & 616 gallery" },
-    { title: "Love Letter Jar", desc: "Folded scrolls & wax-sealed notes", href: "/letters", tag: "CH. 05", icon: Mail, note: "Confidential unsealed letters" },
+    { title: "Love Letter Jar", desc: "Folded scrolls & wax-sealed notes", href: "/letters", tag: "CH. 05", icon: Mail, note: "Confidential unsealed letters", onClick: handleOpenLetters },
     { title: "Spider Diary", desc: "Daily mood entries & shared doodles", href: "/diary", tag: "CH. 06", icon: BookHeart, note: "Our private logbook" },
     { title: "Web Planner", desc: "Shared date schedules & reminders", href: "/planner", tag: "CH. 07", icon: CheckSquare, note: "Adventures on the docket" },
     { title: "Multiverse Bucket List", desc: "Adventures across dimensions to complete", href: "/bucket-list", tag: "CH. 08", icon: Sparkles, note: "Cross off our milestones" },
@@ -1164,6 +1181,162 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
             )}
 
 
+
+      {/* ================= CH. 05 LOVE LETTER JAR WARP OVERLAY =================
+          The other chapters throw their particles outward. This one pulls them
+          IN: every scroll on screen is sucked into the jar's mouth, the cork
+          pops, the fairy lights come up, and the jar fills with warm light.
+          Its CSS lives here rather than in globals.css because nothing else in
+          the app uses it. */}
+      {isWarpingLetters && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#0E0709]/92 backdrop-blur-md overflow-hidden pointer-events-none">
+          <style>{`
+            @keyframes jarwarp-rise {
+              0%   { transform: translateY(70vh) scale(0.55) rotate(-9deg); opacity: 0; }
+              45%  { transform: translateY(0) scale(1.06) rotate(2deg); opacity: 1; }
+              62%  { transform: translateY(0) scale(0.95) rotate(-1.5deg); }
+              78%  { transform: translateY(0) scale(1.03) rotate(0.8deg); }
+              100% { transform: translateY(0) scale(1) rotate(0deg); opacity: 1; }
+            }
+            @keyframes jarwarp-cork {
+              0%   { transform: translateY(0) rotate(0deg); }
+              38%  { transform: translateY(0) rotate(0deg); }
+              58%  { transform: translateY(-120px) rotate(-38deg); }
+              100% { transform: translateY(-260px) rotate(-150deg); opacity: 0; }
+            }
+            @keyframes jarwarp-fill {
+              0%, 40% { opacity: 0; transform: scaleY(0.1); }
+              70%     { opacity: 0.85; transform: scaleY(0.72); }
+              100%    { opacity: 1; transform: scaleY(1); }
+            }
+            @keyframes jarwarp-suck {
+              0%   { transform: translate(var(--fly-x), var(--fly-y)) rotate(var(--fly-rot)) scale(1.15); opacity: 0; }
+              18%  { opacity: 1; }
+              100% { transform: translate(0, -20px) rotate(0deg) scale(0.16); opacity: 0; }
+            }
+            @keyframes jarwarp-twinkle {
+              0%, 100% { opacity: 0.35; }
+              50%      { opacity: 1; }
+            }
+            @keyframes jarwarp-sway {
+              0%, 100% { transform: rotate(-1.6deg); }
+              50%      { transform: rotate(1.6deg); }
+            }
+            .jarwarp-jar   { animation: jarwarp-rise 1.25s cubic-bezier(0.2, 0.9, 0.3, 1) forwards; }
+            .jarwarp-cork  { animation: jarwarp-cork 1.25s cubic-bezier(0.3, 0.8, 0.4, 1) forwards; }
+            .jarwarp-fill  { animation: jarwarp-fill 1.25s ease-out forwards; transform-origin: bottom center; }
+            .jarwarp-note  { animation: jarwarp-suck 1.1s cubic-bezier(0.55, 0, 0.35, 1) forwards; }
+            .jarwarp-bulb  { animation: jarwarp-twinkle 1.4s ease-in-out infinite; }
+            .jarwarp-string{ animation: jarwarp-sway 3s ease-in-out infinite; transform-origin: top center; }
+          `}</style>
+
+          {/* 1. Fairy lights strung across the top of the frame */}
+          <div className="jarwarp-string absolute top-0 left-0 right-0 h-40">
+            <svg viewBox="0 0 1200 160" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
+              <path d="M0 12 Q 300 128 600 74 T 1200 18" fill="none" stroke="#5A4638" strokeWidth="3" />
+            </svg>
+            {Array.from({ length: 15 }).map((_, i) => {
+              const t = i / 14;
+              // sampled off the same quadratic droop the wire is drawn with
+              const x = t * 100;
+              const y = 12 + Math.sin(t * Math.PI) * 62 + (t > 0.5 ? -18 * (t - 0.5) * 2 : 0);
+              return (
+                <span
+                  key={i}
+                  className="jarwarp-bulb absolute w-2.5 h-2.5 rounded-full"
+                  style={{
+                    left: `${x}%`,
+                    top: `${y}px`,
+                    background: i % 3 === 0 ? "#FFD9A0" : i % 3 === 1 ? "#FFC1CE" : "#FFEBC4",
+                    boxShadow: `0 0 12px 4px ${i % 3 === 1 ? "rgba(255,177,198,.55)" : "rgba(255,201,130,.55)"}`,
+                    animationDelay: `${(i % 5) * 0.18}s`,
+                  }}
+                />
+              );
+            })}
+          </div>
+
+          {/* 2. The jar itself, rising into frame and filling with warm light */}
+          <div className="jarwarp-jar relative w-[188px] h-[248px] sm:w-[228px] sm:h-[300px] -translate-y-10">
+            {/* cork, popping off the top */}
+            <div className="jarwarp-cork absolute left-1/2 -translate-x-1/2 -top-8 w-[74px] h-[34px] sm:w-[92px] sm:h-[40px] rounded-[10px] border-[3px] border-[#3A2A1C] bg-[linear-gradient(180deg,#D9AF75,#A87C46)]" />
+
+            {/* glass body */}
+            <div className="absolute inset-0 rounded-b-[34px] rounded-t-[16px] border-[3px] border-[#9FB3B4]/70 bg-[linear-gradient(115deg,rgba(226,236,233,.20),rgba(226,236,233,.06)_40%,rgba(226,236,233,.24))] overflow-hidden">
+              {/* the light filling up from the bottom */}
+              <div className="jarwarp-fill absolute inset-x-0 bottom-0 h-full bg-[radial-gradient(ellipse_at_50%_100%,rgba(255,200,130,.85),rgba(255,150,120,.35)_45%,transparent_75%)]" />
+              {/* a few scrolls already settled at the bottom */}
+              {[
+                { l: "12%", b: "8%", w: "58%", r: "-14deg" },
+                { l: "34%", b: "18%", w: "52%", r: "22deg" },
+                { l: "8%",  b: "28%", w: "48%", r: "6deg" },
+                { l: "40%", b: "38%", w: "46%", r: "-26deg" },
+              ].map((s, i) => (
+                <span
+                  key={i}
+                  className="absolute h-3 rounded-full border border-[#8A6E4E]/70 bg-[linear-gradient(180deg,#F6EBD6,#D9C29C)]"
+                  style={{ left: s.l, bottom: s.b, width: s.w, transform: `rotate(${s.r})` }}
+                />
+              ))}
+              {/* glass highlight */}
+              <span className="absolute left-3 top-4 bottom-8 w-2 rounded-full bg-white/25" />
+            </div>
+
+            {/* twine bow and kraft heart tag, straight off the reference jar */}
+            <span className="absolute left-1/2 -translate-x-1/2 top-1.5 w-[86%] h-1.5 rounded-full bg-[#B99B6E]" />
+            <span className="absolute left-1/2 -translate-x-1/2 top-6 w-8 h-8 rotate-12 border-2 border-[#8A6E4E] bg-[#C9A778] rounded-[6px] grid place-items-center text-[13px]">
+              🤎
+            </span>
+          </div>
+
+          {/* 3. Scrolls, tags and hearts rushing into the jar's mouth */}
+          {[
+            { text: "📜", x: "-42vw", y: "-30vh", rot: "-24deg" },
+            { text: "💌", x: "40vw", y: "-26vh", rot: "18deg" },
+            { text: "📜", x: "-34vw", y: "30vh", rot: "34deg" },
+            { text: "🕸️", x: "38vw", y: "26vh", rot: "-12deg" },
+            { text: "🏷️", x: "0vw", y: "-42vh", rot: "10deg" },
+            { text: "🤍", x: "-22vw", y: "-16vh", rot: "-30deg" },
+            { text: "🕷️", x: "26vw", y: "14vh", rot: "26deg" },
+            { text: "🌾", x: "-26vw", y: "20vh", rot: "16deg" },
+            { text: "📜", x: "46vw", y: "2vh", rot: "-40deg" },
+            { text: "💗", x: "-46vw", y: "4vh", rot: "20deg" },
+          ].map((item, idx) => (
+            <span
+              key={idx}
+              style={{
+                "--fly-x": item.x,
+                "--fly-y": item.y,
+                "--fly-rot": item.rot,
+                animationDelay: `${idx * 0.055}s`,
+              } as React.CSSProperties}
+              className="jarwarp-note absolute text-4xl sm:text-5xl select-none"
+            >
+              {item.text}
+            </span>
+          ))}
+
+          {/* 4. Comic bubble, parked under the jar so it never covers it */}
+          <div className="absolute bottom-[13vh] left-1/2 -translate-x-1/2 flex flex-col items-center animate-comic-pop">
+            <div className="bg-[#450A10] border-4 border-[#FAF4EB] shadow-[10px_10px_0_#17131A] px-6 py-4 rounded-2xl -rotate-1 flex items-center gap-4">
+              <span className="text-4xl animate-bounce">🫙</span>
+              <div>
+                <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#E0B1AE] block">
+                  CHAPTER 05 • LOVE LETTER JAR
+                </span>
+                <h2 className="font-marker text-2xl sm:text-4xl text-[#FAF4EB] leading-tight">
+                  *POP!* 📜 UNCORKING THE JAR...
+                </h2>
+              </div>
+              <span className="text-4xl animate-pulse">🕯️</span>
+            </div>
+
+            <span className="font-handwriting text-2xl text-[#E0B1AE] mt-3 font-black drop-shadow-md">
+              Gathering every note we ever rolled up...
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Footer Tag */}
       <footer className="max-w-md mx-auto text-center z-20 mt-4">
