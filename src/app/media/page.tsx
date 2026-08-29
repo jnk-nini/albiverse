@@ -1,38 +1,54 @@
-import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import DigicamScreen from "@/components/DigicamScreen";
+import { createClient } from "@/lib/supabase/client";
 
-export default async function MediaPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+export default function MediaPage() {
+  const router = useRouter();
+  const supabase = createClient();
+  const [state, setState] = useState<{ userId: string; coupleId: string } | null>(null);
+  const [message, setMessage] = useState("Loading your digicam...");
 
-  if (!user) {
-    redirect("/");
+  useEffect(() => {
+    const loadAccess = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        router.replace("/");
+        return;
+      }
+
+      const { data: profile, error } = await supabase
+        .from("profiles")
+        .select("couple_id")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (error || !profile?.couple_id) {
+        setMessage("Link both universes before opening the digicam.");
+        return;
+      }
+
+      setState({ userId: user.id, coupleId: profile.couple_id });
+    };
+
+    loadAccess();
+  }, [router, supabase]);
+
+  if (!state) {
+    return (
+      <main className="min-h-screen bg-[#181114] text-[#F2E6D2] grid place-items-center p-6 font-mono text-sm">
+        {message}
+      </main>
+    );
   }
-
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("couple_id")
-    .eq("id", user.id)
-    .single();
-
-  if (!profile || !profile.couple_id) {
-    redirect("/");
-  }
-
-  const { data: rawItems } = await supabase
-    .from("media_items")
-    .select("id, url, caption, notes, media_type, created_at")
-    .eq("couple_id", profile.couple_id)
-    .order("created_at", { ascending: false });
 
   return (
     <DigicamScreen
-      userId={user.id}
-      coupleId={profile.couple_id}
-      initialItems={rawItems ?? []}
+      userId={state.userId}
+      coupleId={state.coupleId}
+      onBack={() => router.push("/?opened=true&page=4&spread=1")}
     />
   );
 }

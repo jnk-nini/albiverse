@@ -4,27 +4,31 @@ import { useState, useRef, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import SpideyBackground from "./SpideyBackground";
-import { 
-  Clock, 
-  Calendar, 
-  Compass, 
-  Camera, 
-  Mail, 
-  BookHeart, 
-  CheckSquare, 
-  Disc, 
-  Gift, 
-  Lock, 
-  Unlink, 
-  LogOut, 
-  ArrowRight, 
-  Bookmark, 
-  Feather, 
-  ChevronLeft, 
-  ChevronRight, 
-  BookOpen, 
-  UserCheck, 
-  Sparkles
+import AmbientSound from "./AmbientSound";
+import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
+import {
+  Clock,
+  Calendar,
+  Compass,
+  Camera,
+  Mail,
+  BookHeart,
+  CheckSquare,
+  Disc,
+  Gift,
+  Lock,
+  Unlink,
+  LogOut,
+  ArrowRight,
+  Bookmark,
+  Feather,
+  ChevronLeft,
+  ChevronRight,
+  BookOpen,
+  UserCheck,
+  Sparkles,
+  List,
+  X
 } from "lucide-react";
 
 interface DashboardProps {
@@ -66,6 +70,7 @@ export default function Dashboard({
 
   const [currentSpread, setCurrentSpread] = useState(0);
   const [flippingState, setFlippingState] = useState<"forward" | "backward" | null>(null);
+  const [showFastNav, setShowFastNav] = useState(false);
 
   const touchStartX = useRef<number | null>(null);
   const touchStartY = useRef<number | null>(null);
@@ -78,10 +83,23 @@ export default function Dashboard({
   
 
   useEffect(() => {
-    const shouldOpen = searchParams?.get("view") === "toc" || sessionStorage.getItem("albiverse_book_opened") === "true";
+    const shouldOpen =
+      searchParams?.get("view") === "toc" ||
+      searchParams?.get("opened") === "true" ||
+      sessionStorage.getItem("albiverse_book_opened") === "true";
     if (shouldOpen) {
       setIsBookOpened(true);
+      sessionStorage.setItem("albiverse_book_opened", "true");
     }
+
+    const spreadParam = searchParams?.get("spread");
+    if (spreadParam !== null && spreadParam !== undefined) {
+      const parsed = parseInt(spreadParam, 10);
+      if (!Number.isNaN(parsed)) {
+        setCurrentSpread(Math.max(0, Math.min(totalSpreads - 1, parsed)));
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
   const handleOpenBook = () => {
@@ -144,6 +162,14 @@ export default function Dashboard({
     if (onUnlinked) onUnlinked();
   };
 
+  const [runSignOut, signingOut] = useGuardedAction(onSignOut, 600);
+
+  const [runJumpToSpread] = useGuardedAction((spreadIndex: number) => {
+    setFlippingState(null);
+    setCurrentSpread(spreadIndex);
+    setShowFastNav(false);
+  }, 300);
+
   // Intercept Chapter 1 (Live Canon Clock) navigation for the big fun warp transition
   const handleGoToClock = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -175,30 +201,8 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
   }, 1000);
 };
 
-// Chapter 3 Timeline Warp State
-// Inside src/components/Dashboard.tsx
-useEffect(() => {
-  const shouldOpen =
-    searchParams?.get("view") === "toc" ||
-    searchParams?.get("opened") === "true" ||
-    sessionStorage.getItem("albiverse_book_opened") === "true";
-
-  if (shouldOpen) {
-    setIsBookOpened(true);
-  }
-
-  // Handle direct navigation to page 3 (which corresponds to spread index 1)
-  const pageParam = searchParams?.get("page");
-  const spreadParam = searchParams?.get("spread");
-
-  if (pageParam === "3" || spreadParam === "1") {
-    setCurrentSpread(1);
-  } else if (spreadParam !== null && spreadParam !== undefined) {
-    const parsed = parseInt(spreadParam, 10);
-    if (!isNaN(parsed)) setCurrentSpread(parsed);
-  }
-}, [searchParams]);
-
+  // Chapter 3 Timeline Warp State
+  // (spread/opened deep-link parsing now lives in the unified useEffect above)
   const [isWarpingTimeline, setIsWarpingTimeline] = useState(false);
 
   const handleOpenTimeline = (e: React.MouseEvent) => {
@@ -232,7 +236,7 @@ useEffect(() => {
     note: "Mark our future timelines",
     onClick: handleGoToCountdowns // <--- Added handler
   },
-    { title: "Red String Timeline", desc: "Fate threads & milestone polaroids", href: "/timeline", tag: "CH. 03", icon: Compass, sticker: "🧵 📸", note: "Connected by destiny" },
+    { title: "Red String Timeline", desc: "Fate threads & milestone polaroids", href: "/timeline", tag: "CH. 03", icon: Compass, sticker: "🧵 📸", note: "Connected by destiny", onClick: handleOpenTimeline },
     { title: "Retro Digicam", desc: "Instant snapshots & viewfinder clips", href: "/media", tag: "CH. 04", icon: Camera, sticker: "📷 ✨", note: "Earth-65 & 616 gallery" },
     { title: "Love Letter Jar", desc: "Folded scrolls & wax-sealed notes", href: "/letters", tag: "CH. 05", icon: Mail, sticker: "💌 📜", note: "Confidential unsealed letters" },
     { title: "Spider Diary", desc: "Daily mood entries & shared doodles", href: "/diary", tag: "CH. 06", icon: BookHeart, sticker: "🕷️ 📖", note: "Our private logbook" },
@@ -406,6 +410,7 @@ useEffect(() => {
     <main className="min-h-screen p-3 sm:p-6 lg:p-8 flex flex-col justify-between relative overflow-hidden select-none bg-[#181114]">
       
       <SpideyBackground />
+      <AmbientSound coupleId={couple?.id} />
 
       <div className="fixed top-8 animate-crawl-h text-xl z-10 pointer-events-none">🕷️</div>
       <div className="fixed animate-crawl-d text-2xl z-10 pointer-events-none">🕷️</div>
@@ -413,16 +418,27 @@ useEffect(() => {
 
       {/* Top Header */}
       <header className="max-w-6xl mx-auto w-full z-30 flex items-center justify-between">
-        <div>
+        <div className="flex items-center gap-2.5">
           {isBookOpened && (
-            <button
-              onClick={handleCloseBook}
-              disabled={isClosingSequence}
-              className="inline-flex items-center gap-2 px-3.5 py-2 bg-[#F2E6D2] hover:bg-[#FAF7F2] text-[#261D24] text-xs font-mono font-black border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] -rotate-1 transition cursor-pointer"
-            >
-              <Bookmark className="w-3.5 h-3.5 text-[#781420]" />
-              <span>Close Journal</span>
-            </button>
+            <>
+              <button
+                onClick={handleCloseBook}
+                disabled={isClosingSequence}
+                className="inline-flex items-center gap-2 px-3.5 py-2 bg-[#F2E6D2] hover:bg-[#FAF7F2] text-[#261D24] text-xs font-mono font-black border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] -rotate-1 transition cursor-pointer"
+              >
+                <Bookmark className="w-3.5 h-3.5 text-[#781420]" />
+                <span>Close Journal</span>
+              </button>
+              {!isClosingSequence && (
+                <button
+                  onClick={() => setShowFastNav((v) => !v)}
+                  className="inline-flex items-center gap-2 px-3.5 py-2 bg-[#2E0509] hover:bg-[#450A10] text-[#ECA8B8] text-xs font-mono font-black border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] rotate-1 transition cursor-pointer"
+                >
+                  <List className="w-3.5 h-3.5" />
+                  <span>Index</span>
+                </button>
+              )}
+            </>
           )}
         </div>
 
@@ -436,11 +452,12 @@ useEffect(() => {
             <span>{unlinking ? "Unlinking..." : "Unlink"}</span>
           </button>
           <button
-            onClick={onSignOut}
-            className="text-xs font-mono font-black text-[#261D24] bg-[#F2E6D2] hover:bg-[#FAF7F2] px-3 py-1.5 border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] flex items-center gap-1.5 transition cursor-pointer"
+            onClick={() => runSignOut()}
+            disabled={signingOut}
+            className="text-xs font-mono font-black text-[#261D24] bg-[#F2E6D2] hover:bg-[#FAF7F2] px-3 py-1.5 border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] flex items-center gap-1.5 transition cursor-pointer disabled:opacity-60 disabled:pointer-events-none"
           >
             <LogOut className="w-3.5 h-3.5 text-[#781420]" />
-            <span>Sign Out</span>
+            <span>{signingOut ? "Signing Out..." : "Sign Out"}</span>
           </button>
         </div>
       </header>
@@ -448,10 +465,12 @@ useEffect(() => {
       {/* ================= INTRO: FRONT SCRAPBOOK COVER ================= */}
       {(!isBookOpened || isClosingSequence) && (
         <div className="flex-1 flex items-center justify-center max-w-4xl mx-auto w-full py-8 z-20 journal-book-perspective">
-          <div 
+          <div
             ref={coverRef}
             onClick={!isOpeningSequence && !isClosingSequence ? handleOpenBook : undefined}
-            className="relative cursor-pointer transition-transform duration-300 hover:scale-[1.01]"
+            className={`relative cursor-pointer transition-transform duration-300 hover:scale-[1.01] ${
+              isOpeningSequence ? "animate-book-shift-open" : isClosingSequence ? "animate-book-shift-close" : ""
+            }`}
           >
             <div className="absolute -top-4 left-16 tape-pink-solid w-36 h-7 -rotate-2 z-50 pointer-events-none" />
             <div className="absolute -top-4 right-16 tape-red-solid w-36 h-7 rotate-2 z-50 pointer-events-none" />
@@ -738,8 +757,16 @@ useEffect(() => {
             </div>
           </div>
 
-          {/* Master 3D Spread Container */}
-          <div className="paper-open-notebook-spread min-h-[460px] sm:min-h-[520px] p-4 sm:p-8 relative grid grid-cols-1 md:grid-cols-2 gap-6 overflow-hidden">
+          {/* Master 3D Spread Container
+              NOTE: deliberately no `overflow-hidden` here — clipping an ancestor
+              inside a `transform-style: preserve-3d` context breaks the mid-flip
+              "read-through" to the base layer (the leaf goes edge-on and the
+              browser can't fall back to the page behind it), which is what was
+              causing the blank-page flash / stiff stop-motion look. The base
+              pages underneath (z-0) already swap to the destination content the
+              instant a flip starts, so removing the clip lets that show through
+              continuously as the leaf turns. */}
+          <div className="paper-open-notebook-spread min-h-[460px] sm:min-h-[520px] p-4 sm:p-8 relative grid grid-cols-1 md:grid-cols-2 gap-6">
             
             <div className="hidden md:block absolute inset-y-0 left-1/2 -translate-x-1/2 w-12 book-gutter-crease pointer-events-none z-30" />
 
@@ -799,6 +826,47 @@ useEffect(() => {
             ))}
           </div>
 
+        </div>
+      )}
+
+      {/* ================= UNIVERSAL FAST-TRAVEL INDEX ================= */}
+      {showFastNav && isBookOpened && !isClosingSequence && (
+        <div
+          className="fixed inset-0 z-[90] bg-black/70 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setShowFastNav(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="paper-sheet-solid max-w-lg w-full max-h-[75vh] overflow-y-auto p-5 sm:p-7"
+          >
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="font-marker text-2xl sm:text-3xl text-[#1A0D10]">Jump to a Chapter</h3>
+              <button onClick={() => setShowFastNav(false)} className="text-[#7D2834] cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-2.5">
+              {features.map((item, index) => {
+                const Icon = item.icon;
+                const spreadIndex = Math.floor(index / 2);
+                return (
+                  <button
+                    key={item.tag}
+                    onClick={() => runJumpToSpread(spreadIndex)}
+                    className={`flex items-center gap-2.5 text-left border-2 border-[#261D24] px-3 py-2.5 shadow-[3px_3px_0_rgba(38,29,36,.4)] transition cursor-pointer ${
+                      spreadIndex === currentSpread ? "bg-[#F2E6D2]" : "bg-[#E8D9C1] hover:bg-[#F2E6D2]"
+                    }`}
+                  >
+                    <Icon className="w-4 h-4 text-[#7D2834] shrink-0" />
+                    <span className="flex-1 min-w-0">
+                      <span className="block font-mono text-[9px] font-black text-[#7D2834]">{item.tag}</span>
+                      <span className="block font-marker text-sm text-[#1A0D10] truncate">{item.title}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
