@@ -393,6 +393,33 @@ export default function AuthPage() {
           <div className="absolute -top-24 -left-24 w-96 h-96 bg-cyan-600/20 rounded-full blur-[110px] animate-pulse pointer-events-none" style={{ animationDuration: "6s" }} />
           <div className="absolute -bottom-24 -right-24 w-96 h-96 bg-red-700/20 rounded-full blur-[110px] animate-pulse pointer-events-none" style={{ animationDuration: "5s" }} />
 
+          {/* Giant Comic Halftone Strip (bold, oversized, fighting for attention) */}
+          <div
+            className="absolute top-0 left-0 w-[160%] h-52 sm:h-80 -translate-x-10 -translate-y-20 rotate-[-8deg] pointer-events-none opacity-35"
+            style={{
+              backgroundImage: "radial-gradient(circle, #0e7490 4.5px, transparent 4.5px)",
+              backgroundSize: "28px 28px",
+            }}
+          />
+
+          {/* Giant Halftone Burst Medallion */}
+          <div
+            className="absolute -top-40 -right-40 w-[700px] h-[700px] sm:w-[950px] sm:h-[950px] rounded-full pointer-events-none opacity-45"
+            style={{
+              backgroundImage: "radial-gradient(circle, #dc2626 4px, transparent 4px)",
+              backgroundSize: "24px 24px",
+              maskImage: "radial-gradient(circle, black 0%, black 40%, transparent 72%)",
+              WebkitMaskImage: "radial-gradient(circle, black 0%, black 40%, transparent 72%)",
+            }}
+          />
+
+          {/* Giant Spider Emblem */}
+          <div className="absolute -bottom-28 -left-28 sm:-left-20 pointer-events-none select-none opacity-90 -rotate-12">
+            <span className="block text-[300px] sm:text-[440px] leading-none drop-shadow-[0_14px_50px_rgba(0,0,0,0.85)]">
+              🕷️
+            </span>
+          </div>
+
           {/* Floating Stickers */}
           <div className="hidden lg:block absolute left-12 top-24 z-20 pointer-events-none animate-bounce" style={{ animationDuration: "4s" }}>
             <div className="relative bg-[#facc15] text-zinc-950 border-[3px] border-zinc-950 px-4 py-2 rounded-lg shadow-[4px_4px_0px_#000] -rotate-12">
@@ -442,10 +469,29 @@ export default function AuthPage() {
               <Flame className="w-3 h-3 text-amber-300 fill-amber-300" />
               <span>PETER // 616</span>
             </div>
-            
+
             <div className="absolute -top-4 right-6 rotate-3 z-30 bg-[#0e7490] text-teal-50 px-3.5 py-1 text-[9px] font-black uppercase tracking-widest shadow-[2px_2px_0px_#000] border-2 border-zinc-950 flex items-center gap-1">
               <span>GWEN // 65</span>
               <Sparkles className="w-3 h-3 text-amber-200 fill-amber-200" />
+            </div>
+
+            {/* Washi tape crossing the card corners, and comic-burst stickers
+                popping directly off the card edges — so the card itself reads
+                as decorated, not just the space around it. */}
+            <div className="absolute -top-3 left-1/4 -translate-x-1/2 tape-pink-solid w-24 h-6 -rotate-6 z-40 pointer-events-none" />
+            <div className="absolute -top-3 right-1/4 translate-x-1/2 tape-gold-solid w-24 h-6 rotate-6 z-40 pointer-events-none" />
+
+            <div className="absolute -right-7 top-1/3 z-40 pointer-events-none select-none rotate-12">
+              <div className="relative bg-[#facc15] text-zinc-950 border-[3px] border-zinc-950 px-3 py-1.5 rounded-lg shadow-[4px_4px_0px_#000]">
+                <span className="font-black text-lg tracking-tighter italic">THWIP!</span>
+              </div>
+            </div>
+
+            <div className="absolute -left-8 -bottom-6 z-40 pointer-events-none select-none -rotate-[16deg]">
+              <div className="relative bg-[#b91c1c] text-amber-100 border-[3px] border-zinc-950 px-3.5 py-1.5 rounded-lg shadow-[4px_4px_0px_#000] flex items-center gap-1">
+                <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                <span className="font-black text-lg tracking-tighter italic">POW!</span>
+              </div>
             </div>
 
             <div className="relative bg-[#f4eee1] text-zinc-900 rounded-xl p-6 sm:p-8 border-[3.5px] border-zinc-950 shadow-[8px_8px_0px_#000]">
