@@ -10,7 +10,7 @@ export default function SpideyBackground() {
       {/* Full skyline artwork */}
       <div className="absolute inset-0 opacity-90 animate-skyline-flicker">
         <img
-          src="/images/nyc-skyline.png"
+          src="/images/nyc-skyline.webp"
           alt="Illustrated New York skyline"
           className="absolute inset-0 w-full h-full object-cover object-center mix-blend-screen opacity-65"
         />
@@ -29,7 +29,7 @@ export default function SpideyBackground() {
         <div className="w-[3px] h-52 bg-gradient-to-b from-white to-[#D47B91]/50 mx-auto" />
         <div className="relative -mt-3 flex flex-col items-center drop-shadow-[6px_8px_0_rgba(9,12,16,.6)]">
           <img 
-            src="/images/peter.png" 
+            src="/images/peter.webp" 
             alt="Spider-Man" 
             className="w-28 h-40 object-contain drop-shadow-xl" 
             onError={(e) => {
@@ -52,7 +52,7 @@ export default function SpideyBackground() {
         <div className="w-[3px] h-60 bg-gradient-to-b from-white to-[#D47B91]/50 mx-auto" />
         <div className="relative -mt-3 flex flex-col items-center drop-shadow-[6px_8px_0_rgba(9,12,16,.6)]">
           <img 
-            src="/images/gwen.png" 
+            src="/images/gwen.webp" 
             alt="Spider-Gwen" 
             className="w-28 h-40 object-contain drop-shadow-xl" 
             onError={(e) => {

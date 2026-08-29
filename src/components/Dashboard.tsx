@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import SpideyBackground from "./SpideyBackground";
@@ -62,6 +62,7 @@ export default function Dashboard({
   const [pageImageErrors, setPageImageErrors] = useState<Record<number, boolean>>({});
 
   const [bloomPhase, setBloomPhase] = useState<"bursting" | "sliding-down" | null>(null);
+  const openTimersRef = useRef<number[]>([]);
   const [unlinking, setUnlinking] = useState(false);
 
   // Big & Fun Transition State for Live Clock Warp
@@ -102,45 +103,44 @@ export default function Dashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
+  /* Opening sequence, in order. Each step has one owner and one timer, so the
+     phases cannot overlap or fire twice the way they used to.
+
+       0ms    cover starts swinging open, container shifts right
+       520ms  rapid page-flip leaves over the book
+       600ms  BURSTING     the flowers explode outward and cover the screen
+       1500ms the screen is covered; swap the book to its opened state behind
+       1780ms SLIDING-DOWN the whole bouquet falls away, revealing the TOC
+       3100ms teardown                                                      */
   const handleOpenBook = () => {
+    if (isOpeningSequence || isClosingSequence) return;
     setIsOpeningSequence(true);
 
-    setTimeout(() => {
-      const coverBounds = coverRef.current?.getBoundingClientRect();
-      if (coverBounds) {
-        setPageFlipRect({
-          left: coverBounds.left,
-          top: coverBounds.top,
-          width: coverBounds.width,
-          height: coverBounds.height,
-        });
+    const timers: number[] = [];
+    const at = (ms: number, fn: () => void) => timers.push(window.setTimeout(fn, ms));
+
+    at(520, () => {
+      const b = coverRef.current?.getBoundingClientRect();
+      if (b) {
+        setPageFlipRect({ left: b.left, top: b.top, width: b.width, height: b.height });
       }
       setIsPageFlipSequence(true);
-    }, 550);
+    });
 
-    setTimeout(() => {
-      setBloomPhase("bursting");
-    }, 590);
+    at(600, () => setBloomPhase("bursting"));
 
-    setTimeout(() => {
+    at(1500, () => {
+      setIsPageFlipSequence(false);
       setIsBookOpened(true);
       sessionStorage.setItem("albiverse_book_opened", "true");
       setIsOpeningSequence(false);
-    }, 1600);
+    });
 
-    setTimeout(() => {
-      setIsPageFlipSequence(false);
-      setBloomPhase("sliding-down");
-    }, 1450);
+    at(1780, () => setBloomPhase("sliding-down"));
 
-    setTimeout(() => {
-      setIsPageFlipSequence(false);
-      setBloomPhase("sliding-down");
-    }, 1900);
+    at(3100, () => setBloomPhase(null));
 
-    setTimeout(() => {
-      setBloomPhase(null);
-    }, 3000);
+    openTimersRef.current = timers;
   };
 
   const handleCloseBook = () => {
@@ -222,7 +222,6 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     href: "/clock", 
     tag: "CH. 01", 
     icon: Clock, 
-    sticker: "⏰ 🕸️", 
     note: "Every second across dimensions", 
     onClick: handleGoToClock 
   },
@@ -232,19 +231,18 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     href: "/countdowns", 
     tag: "CH. 02", 
     icon: Calendar, 
-    sticker: "🎂 ✈️", 
     note: "Mark our future timelines",
     onClick: handleGoToCountdowns // <--- Added handler
   },
-    { title: "Red String Timeline", desc: "Fate threads & milestone polaroids", href: "/timeline", tag: "CH. 03", icon: Compass, sticker: "🧵 📸", note: "Connected by destiny", onClick: handleOpenTimeline },
-    { title: "Retro Digicam", desc: "Instant snapshots & viewfinder clips", href: "/media", tag: "CH. 04", icon: Camera, sticker: "📷 ✨", note: "Earth-65 & 616 gallery" },
-    { title: "Love Letter Jar", desc: "Folded scrolls & wax-sealed notes", href: "/letters", tag: "CH. 05", icon: Mail, sticker: "💌 📜", note: "Confidential unsealed letters" },
-    { title: "Spider Diary", desc: "Daily mood entries & shared doodles", href: "/diary", tag: "CH. 06", icon: BookHeart, sticker: "🕷️ 📖", note: "Our private logbook" },
-    { title: "Web Planner", desc: "Shared date schedules & reminders", href: "/planner", tag: "CH. 07", icon: CheckSquare, sticker: "📅 🎀", note: "Adventures on the docket" },
-    { title: "Multiverse Bucket List", desc: "Adventures across dimensions to complete", href: "/bucket-list", tag: "CH. 08", icon: Sparkles, sticker: "🌟 🗺️", note: "Cross off our milestones" },
-    { title: "Soundtrack Deck", desc: "Spinning vinyl & our special playlist", href: "/soundtrack", tag: "CH. 09", icon: Disc, sticker: "🎵 🌸", note: "Songs for our universe" },
-    { title: "Secret Wishlist", desc: "Gift ideas & surprise drops (Vault)", href: "/wishlist", tag: "CH. 10", icon: Gift, sticker: "🎁 🔒", note: "Surprise vault items" },
-    { title: "About Him Dossier", desc: "Confidential intel, sizes & favorites", href: "/about-him", tag: "CH. 11", icon: Lock, sticker: "📂 🕶️", note: "Classified Peter Parker Intel" },
+    { title: "Red String Timeline", desc: "Fate threads & milestone polaroids", href: "/timeline", tag: "CH. 03", icon: Compass, note: "Connected by destiny", onClick: handleOpenTimeline },
+    { title: "Retro Digicam", desc: "Instant snapshots & viewfinder clips", href: "/media", tag: "CH. 04", icon: Camera, note: "Earth-65 & 616 gallery" },
+    { title: "Love Letter Jar", desc: "Folded scrolls & wax-sealed notes", href: "/letters", tag: "CH. 05", icon: Mail, note: "Confidential unsealed letters" },
+    { title: "Spider Diary", desc: "Daily mood entries & shared doodles", href: "/diary", tag: "CH. 06", icon: BookHeart, note: "Our private logbook" },
+    { title: "Web Planner", desc: "Shared date schedules & reminders", href: "/planner", tag: "CH. 07", icon: CheckSquare, note: "Adventures on the docket" },
+    { title: "Multiverse Bucket List", desc: "Adventures across dimensions to complete", href: "/bucket-list", tag: "CH. 08", icon: Sparkles, note: "Cross off our milestones" },
+    { title: "Soundtrack Deck", desc: "Spinning vinyl & our special playlist", href: "/soundtrack", tag: "CH. 09", icon: Disc, note: "Songs for our universe" },
+    { title: "Secret Wishlist", desc: "Gift ideas & surprise drops (Vault)", href: "/wishlist", tag: "CH. 10", icon: Gift, note: "Surprise vault items" },
+    { title: "About Him Dossier", desc: "Confidential intel, sizes & favorites", href: "/about-him", tag: "CH. 11", icon: Lock, note: "Classified Peter Parker Intel" },
   ];
 
   const totalSpreads = Math.ceil(features.length / 2);
@@ -255,7 +253,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
       setTimeout(() => {
         setCurrentSpread((prev) => prev + 1);
         setFlippingState(null);
-      }, 950);
+      }, 820);
     }
   };
 
@@ -265,7 +263,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
       setTimeout(() => {
         setCurrentSpread((prev) => prev - 1);
         setFlippingState(null);
-      }, 950);
+      }, 820);
     }
   };
 
@@ -300,59 +298,95 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
   const renderChapterContent = (item: typeof features[0] | undefined, pageNum: number) => {
     if (!item) {
       return (
-        <div className="flex flex-col items-center justify-center p-6 text-center h-full bg-[#FAF6EE] rounded-lg border border-[#261D24]/20">
-          <span className="text-4xl mb-2">🌸🕸️</span>
-          <h4 className="font-marker text-xl text-[#1A0D10]">End of Table of Contents</h4>
-          <p className="font-handwriting text-lg text-stone-600 mt-1">
-            Connected across every universe with {partnerName} ❤️
-          </p>
+        <div className="toc-page h-full flex flex-col items-center justify-center p-6 text-center">
+          <span className="toc-numeral" aria-hidden>fin</span>
+          <div className="relative z-10">
+            <div className="toc-medallion mx-auto mb-3">
+              <Feather className="w-5 h-5" strokeWidth={2} />
+            </div>
+            <h4 className="font-marker text-xl text-[#1A0D10]">End of the contents</h4>
+            <p className="font-handwriting text-lg text-stone-600 mt-1 leading-relaxed">
+              the rest is still being written with {partnerName}
+            </p>
+            <div className="w-16 h-px bg-[#781420]/40 mx-auto mt-4" />
+          </div>
         </div>
       );
     }
 
     const hasImageError = pageImageErrors[pageNum];
+    const Icon = item.icon;
+    const chapterNo = item.tag.replace(/[^0-9]/g, "");
 
     return (
-      <div className="h-full relative rounded-lg border border-[#261D24]/20 shadow-inner overflow-hidden flex flex-col justify-between p-4 sm:p-6 bg-[#FAF6EE]">
-        {/* Page PNG Image from /public/images/scrapbook/page-[pageNum].png */}
+      <div className="toc-page h-full relative overflow-hidden flex flex-col p-4 sm:p-5">
+        {/* Optional hand-made page art. Absent by default; the CSS page is the
+            finished look, so a missing file changes nothing. */}
         {!hasImageError && (
           <img
             src={`/images/scrapbook/page-${pageNum}.png`}
-            alt={`Page ${pageNum}`}
-            onError={() =>
-              setPageImageErrors((prev) => ({ ...prev, [pageNum]: true }))
-            }
-            className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none"
+            alt=""
+            aria-hidden
+            onError={() => setPageImageErrors((prev) => ({ ...prev, [pageNum]: true }))}
+            className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none opacity-90"
           />
         )}
 
-        {/* Dynamic Chapter Info & Buttons */}
-        <div className="relative z-10 flex flex-col justify-between h-full">
-          <div>
-            <div className="flex items-center justify-between border-b-2 border-dashed border-[#8A7550] pb-3 mb-4 bg-[#FAF6EE]/75 p-2 rounded backdrop-blur-xs">
-              <span className="feature-stamp">{item.tag}</span>
-              <span className="text-3xl">{item.sticker}</span>
-            </div>
+        {/* the chapter number, ghosted into the paper */}
+        <span className="toc-numeral" aria-hidden>{chapterNo}</span>
 
-            <div className="bg-[#FAF6EE]/85 p-3 rounded backdrop-blur-xs shadow-xs">
-              <h3 className="font-marker text-2xl sm:text-3xl text-[#1A0D10] mb-2">
-                {item.title}
-              </h3>
-              <p className="font-handwriting text-xl text-stone-700 leading-snug">
-                {item.desc}
-              </p>
-              <p className="font-mono text-[11px] text-[#781420] mt-3 italic">
-                Note: {item.note}
+        {/* a strip of tape holding the page down */}
+        <span
+          className="absolute -top-2 right-9 tape-pink-solid w-16 h-5 rotate-6 z-20 pointer-events-none"
+          aria-hidden
+        />
+
+        <div className="relative z-10 flex flex-col h-full pl-7">
+          {/* header: stamp, rule, medallion */}
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <span className="feature-stamp">{item.tag}</span>
+              <p className="font-mono text-[9px] font-black uppercase tracking-[0.22em] text-[#8A7550] mt-2">
+                Albiverse
               </p>
             </div>
+            <span className="toc-medallion shrink-0">
+              <Icon className="w-5 h-5" strokeWidth={2} />
+            </span>
           </div>
 
-          <div className="pt-4 mt-6 border-t border-[#261D24]/20 flex items-center justify-between bg-[#FAF6EE]/80 p-2 rounded backdrop-blur-xs">
-            <span className="font-mono text-[10px] text-stone-700 font-bold uppercase">PAGE {pageNum}</span>
+          <div className="h-px bg-[#8A7550]/45 my-3" />
+
+          {/* the entry itself */}
+          <h3 className="font-marker text-2xl sm:text-3xl text-[#1A0D10] leading-tight">
+            {item.title}
+          </h3>
+          <p className="font-handwriting text-xl text-stone-700 leading-snug mt-1">
+            {item.desc}
+          </p>
+
+          {/* pinned index card carrying the note */}
+          <div className="toc-note-card mt-4 px-3 pt-3 pb-2.5 -rotate-1">
+            <p className="font-mono text-[10px] font-black uppercase tracking-[0.16em] text-[#781420]/70 mb-1">
+              Note
+            </p>
+            <p className="font-handwriting text-lg text-[#3A2A22] leading-snug">
+              {item.note}
+            </p>
+          </div>
+
+          {/* footer */}
+          <div className="mt-auto pt-4 flex items-end justify-between gap-2">
+            <div className="flex flex-col">
+              <span className="font-mono text-[9px] text-stone-500 font-bold uppercase tracking-[0.18em]">
+                Page {pageNum}
+              </span>
+              <span className="w-8 h-px bg-[#781420]/35 mt-1" />
+            </div>
             {item.onClick ? (
               <button
                 onClick={item.onClick}
-                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black rounded border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition active:scale-95 cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition active:translate-y-px cursor-pointer"
               >
                 <span>OPEN ENTRY</span>
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -360,7 +394,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
             ) : (
               <Link
                 href={item.href}
-                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black rounded border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition active:scale-95"
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition active:translate-y-px"
               >
                 <span>OPEN ENTRY</span>
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -372,39 +406,105 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     );
   };
 
-  const burstParticles = [
-    { x: "0vw", y: "0vh", scale: 1.5, delay: "0s", rot: "12deg", icon: "🌸", file: "flower-1.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "-4vw", y: "-4vh", scale: 1.4, delay: "0.01s", rot: "-25deg", icon: "🌺", file: "flower-2.png", size: "w-56 h-56 sm:w-80 sm:h-80" },
-    { x: "5vw", y: "4vh", scale: 1.4, delay: "0.02s", rot: "35deg", icon: "🌹", file: "flower-3.png", size: "w-56 h-56 sm:w-80 sm:h-80" },
-    { x: "-15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "-40deg", icon: "🌼", file: "flower-4.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
-    { x: "15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "45deg", icon: "🌻", file: "flower-5.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
-    { x: "-18vw", y: "14vh", scale: 1.35, delay: "0.04s", rot: "20deg", icon: "🌷", file: "flower-6.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
-    { x: "18vw", y: "15vh", scale: 1.35, delay: "0.04s", rot: "-30deg", icon: "💐", file: "flower-7.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
-    { x: "0vw", y: "-22vh", scale: 1.4, delay: "0.03s", rot: "10deg", icon: "🌸", file: "flower-1.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
-    { x: "0vw", y: "22vh", scale: 1.4, delay: "0.04s", rot: "-15deg", icon: "🌺", file: "flower-2.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
-    { x: "-24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "30deg", icon: "🌹", file: "flower-3.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
-    { x: "24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "-45deg", icon: "🌼", file: "flower-4.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
-    { x: "-32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "55deg", icon: "🌻", file: "flower-5.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "0vw", y: "-36vh", scale: 1.45, delay: "0.05s", rot: "-20deg", icon: "🌷", file: "flower-6.png", size: "w-64 h-64 sm:w-92 sm:h-92" },
-    { x: "32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "-60deg", icon: "💐", file: "flower-7.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "-38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "15deg", icon: "🌸", file: "flower-1.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "-35deg", icon: "🌺", file: "flower-2.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "-32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "-40deg", icon: "🌹", file: "flower-3.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "0vw", y: "36vh", scale: 1.45, delay: "0.06s", rot: "45deg", icon: "🌼", file: "flower-4.png", size: "w-64 h-64 sm:w-92 sm:h-92" },
-    { x: "32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "25deg", icon: "🌻", file: "flower-5.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "-48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "-15deg", icon: "🌷", file: "flower-6.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
-    { x: "48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "35deg", icon: "💐", file: "flower-7.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
-    { x: "-48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "50deg", icon: "🌸", file: "flower-1.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
-    { x: "48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "-45deg", icon: "🌺", file: "flower-2.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
-    { x: "-54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "20deg", icon: "🌹", file: "flower-3.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "-25deg", icon: "🌼", file: "flower-4.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "-54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "-30deg", icon: "🌻", file: "flower-5.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "40deg", icon: "🌷", file: "flower-6.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "-35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "-10deg", icon: "💐", file: "flower-7.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
-    { x: "-12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "25deg", icon: "🌸", file: "flower-1.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
-    { x: "12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "-35deg", icon: "🌺", file: "flower-2.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
-    { x: "35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "45deg", icon: "🌹", file: "flower-3.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
-  ];
+  /* The original bouquet burst. Every entry is one flower cutout flying from
+     the middle of the screen out to its own spot; there is no veil behind
+     them, so the thing that covers the screen IS the flowers.
+
+     BASE is the original hand-placed spread. FILL is a staggered lattice laid
+     under it that closes the gaps, because these are cutouts: two flowers
+     whose boxes overlap can still leave a hole between their petals, and a
+     hole is a place you can read the page through before the reveal.
+
+     Sizes are `max(rem, vw)` rather than fixed pixels. Fixed pixels covered a
+     laptop and left dark holes all over a 1920-wide screen, since the same
+     flower is a smaller share of a bigger viewport. Checked at 1920x1080,
+     1440x900 and 390x844. */
+  const burstParticles = useMemo(() => {
+    const MID = "max(11rem, 19vw)";
+    const BIG = "max(13rem, 22vw)";
+
+    const BASE = [
+      { x: "0vw", y: "0vh", scale: 1.5, delay: "0s", rot: "12deg", icon: "\u{1F338}", file: "flower-1.webp", size: MID },
+      { x: "-4vw", y: "-4vh", scale: 1.4, delay: "0.01s", rot: "-25deg", icon: "\u{1F33A}", file: "flower-2.webp", size: MID },
+      { x: "5vw", y: "4vh", scale: 1.4, delay: "0.02s", rot: "35deg", icon: "\u{1F339}", file: "flower-3.webp", size: MID },
+      { x: "-15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "-40deg", icon: "\u{1F33C}", file: "flower-4.webp", size: MID },
+      { x: "15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "45deg", icon: "\u{1F33B}", file: "flower-5.webp", size: MID },
+      { x: "-18vw", y: "14vh", scale: 1.35, delay: "0.04s", rot: "20deg", icon: "\u{1F337}", file: "flower-6.webp", size: MID },
+      { x: "18vw", y: "15vh", scale: 1.35, delay: "0.04s", rot: "-30deg", icon: "\u{1F490}", file: "flower-7.webp", size: MID },
+      { x: "0vw", y: "-22vh", scale: 1.4, delay: "0.03s", rot: "10deg", icon: "\u{1F338}", file: "flower-1.webp", size: MID },
+      { x: "0vw", y: "22vh", scale: 1.4, delay: "0.04s", rot: "-15deg", icon: "\u{1F33A}", file: "flower-2.webp", size: MID },
+      { x: "-24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "30deg", icon: "\u{1F339}", file: "flower-3.webp", size: MID },
+      { x: "24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "-45deg", icon: "\u{1F33C}", file: "flower-4.webp", size: MID },
+      { x: "-32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "55deg", icon: "\u{1F33B}", file: "flower-5.webp", size: MID },
+      { x: "0vw", y: "-36vh", scale: 1.45, delay: "0.05s", rot: "-20deg", icon: "\u{1F337}", file: "flower-6.webp", size: BIG },
+      { x: "32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "-60deg", icon: "\u{1F490}", file: "flower-7.webp", size: MID },
+      { x: "-38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "15deg", icon: "\u{1F338}", file: "flower-1.webp", size: BIG },
+      { x: "38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "-35deg", icon: "\u{1F33A}", file: "flower-2.webp", size: BIG },
+      { x: "-32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "-40deg", icon: "\u{1F339}", file: "flower-3.webp", size: MID },
+      { x: "0vw", y: "36vh", scale: 1.45, delay: "0.06s", rot: "45deg", icon: "\u{1F33C}", file: "flower-4.webp", size: BIG },
+      { x: "32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "25deg", icon: "\u{1F33B}", file: "flower-5.webp", size: MID },
+      { x: "-48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "-15deg", icon: "\u{1F337}", file: "flower-6.webp", size: BIG },
+      { x: "48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "35deg", icon: "\u{1F490}", file: "flower-7.webp", size: BIG },
+      { x: "-48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "50deg", icon: "\u{1F338}", file: "flower-1.webp", size: BIG },
+      { x: "48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "-45deg", icon: "\u{1F33A}", file: "flower-2.webp", size: BIG },
+      { x: "-54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "20deg", icon: "\u{1F339}", file: "flower-3.webp", size: BIG },
+      { x: "54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "-25deg", icon: "\u{1F33C}", file: "flower-4.webp", size: BIG },
+      { x: "-54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "-30deg", icon: "\u{1F33B}", file: "flower-5.webp", size: BIG },
+      { x: "54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "40deg", icon: "\u{1F337}", file: "flower-6.webp", size: BIG },
+      { x: "-35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "-10deg", icon: "\u{1F490}", file: "flower-7.webp", size: BIG },
+      { x: "-12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "25deg", icon: "\u{1F338}", file: "flower-1.webp", size: BIG },
+      { x: "12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "-35deg", icon: "\u{1F33A}", file: "flower-2.webp", size: BIG },
+      { x: "35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "45deg", icon: "\u{1F339}", file: "flower-3.webp", size: BIG },
+    ];
+
+    const ICONS = ["\u{1F338}", "\u{1F33A}", "\u{1F339}", "\u{1F33C}", "\u{1F33B}", "\u{1F337}", "\u{1F490}"];
+    const COLS = [-56, -40, -24, -8, 8, 24, 40, 56];
+    const ROWS = [-48, -24, 0, 24, 48];
+    const FILL = COLS.flatMap((cx, ci) =>
+      ROWS.map((ry, ri) => {
+        const n = ci * ROWS.length + ri;
+        // half-step stagger per column, so the lattice never reads as a grid
+        const y = ry + (ci % 2 ? 7 : -7);
+        return {
+          x: `${cx}vw`,
+          y: `${y}vh`,
+          scale: 1.62,
+          delay: `${(0.02 + (n % 5) * 0.014).toFixed(3)}s`,
+          rot: `${((n * 53) % 100) - 50}deg`,
+          icon: ICONS[n % 7],
+          file: `flower-${(n % 7) + 1}.webp`,
+          size: n % 3 === 0 ? BIG : MID,
+        };
+      })
+    );
+
+    return [...FILL, ...BASE];
+  }, []);
+
+  /* Cancel any in-flight opening timers if the dashboard goes away mid-sequence. */
+  useEffect(() => () => openTimersRef.current.forEach(clearTimeout), []);
+
+  /* Decode every bloom image up front. Without this the browser is fetching
+     and decoding the art *during* the burst, which is what made the bloom
+     stall halfway through. */
+  useEffect(() => {
+    const files = Array.from({ length: 7 }, (_, n) => `/images/bloom/flower-${n + 1}.webp`);
+    Promise.all(
+      files.map(
+        (src) =>
+          new Promise<void>((resolve) => {
+            const img = new Image();
+            img.src = src;
+            const done = () => resolve();
+            if (img.decode) img.decode().then(done, done);
+            else {
+              img.onload = done;
+              img.onerror = done;
+            }
+          })
+      )
+    );
+  }, []);
 
   return (
     <main className="min-h-screen p-3 sm:p-6 lg:p-8 flex flex-col justify-between relative overflow-hidden select-none bg-[#181114]">
@@ -509,7 +609,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
                 {!hasCoverImageError ? (
                   <div className="ml-5 sm:ml-7 flex-1 border-3 border-[#261D24] rounded-lg shadow-inner relative overflow-hidden flex flex-col justify-between bg-[#1B0D12]">
                     <img 
-                      src="/images/scrapbook/journal-cover.png" 
+                      src="/images/scrapbook/Journal-cover.webp" 
                       alt="Scrapbook Cover"
                       loading="eager"
                       fetchPriority="high"
@@ -607,38 +707,39 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
         </div>
       )}
 
-      {/* ================= FLORAL CASCADE WITH 7 CUTOUTS ================= */}
+      {/* ================= FLORAL CASCADE WITH 7 CUTOUTS =================
+          No veil, no wash: the flower cutouts themselves are what covers the
+          screen, and the whole layer slides off together to reveal the TOC. */}
       {bloomPhase && (
-        <div 
+        <div
           className={`fixed inset-0 z-50 pointer-events-none overflow-visible ${
             bloomPhase === "sliding-down" ? "animate-bloom-curtain-drop" : ""
           }`}
         >
           <div className="bloom-top-flowers" aria-hidden="true">
             {[
-              { file: "flower-1.png", fallback: "🌸" },
-              { file: "flower-2.png", fallback: "🌺" },
-              { file: "flower-3.png", fallback: "🌹" },
-              { file: "flower-4.png", fallback: "🌼" },
-              { file: "flower-5.png", fallback: "🌻" },
-              { file: "flower-6.png", fallback: "🌷" },
-              { file: "flower-7.png", fallback: "💐" },
-              { file: "flower-1.png", fallback: "🌸" },
+              { file: "flower-1.webp", fallback: "\u{1F338}" },
+              { file: "flower-2.webp", fallback: "\u{1F33A}" },
+              { file: "flower-3.webp", fallback: "\u{1F339}" },
+              { file: "flower-4.webp", fallback: "\u{1F33C}" },
+              { file: "flower-5.webp", fallback: "\u{1F33B}" },
+              { file: "flower-6.webp", fallback: "\u{1F337}" },
+              { file: "flower-7.webp", fallback: "\u{1F490}" },
+              { file: "flower-1.webp", fallback: "\u{1F338}" },
             ].map((flower, index) => (
               <div key={index} className="relative w-20 h-20 sm:w-28 sm:h-28 flex items-center justify-center">
                 <img
                   src={`/images/bloom/${flower.file}`}
                   alt=""
+                  draggable={false}
                   onError={(e) => {
                     e.currentTarget.style.display = "none";
                     const fallbackSpan = e.currentTarget.nextElementSibling as HTMLElement;
                     if (fallbackSpan) fallbackSpan.style.display = "inline-block";
                   }}
-                  className="w-full h-full object-contain drop-shadow-[0_4px_12px_rgba(0,0,0,0.5)]"
+                  className="w-full h-full object-contain"
                 />
-                <span className="hidden text-6xl drop-shadow-[0_0_18px_#ECA8B8]">
-                  {flower.fallback}
-                </span>
+                <span className="hidden text-6xl">{flower.fallback}</span>
               </div>
             ))}
           </div>
@@ -648,36 +749,40 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
               <div
                 key={idx}
                 style={{
-                  ['--dest-x' as any]: flower.x,
-                  ['--dest-y' as any]: flower.y,
-                  ['--dest-scale' as any]: flower.scale,
-                  ['--dest-rot' as any]: flower.rot,
+                  ["--dest-x" as any]: flower.x,
+                  ["--dest-y" as any]: flower.y,
+                  ["--dest-scale" as any]: flower.scale,
+                  ["--dest-rot" as any]: flower.rot,
+                  width: flower.size,
+                  height: flower.size,
                   animationDelay: flower.delay,
                 }}
-                className={`absolute ${flower.size} flex items-center justify-center animate-bloom-particle pointer-events-none`}
+                className="absolute flex items-center justify-center animate-bloom-particle pointer-events-none"
               >
+                {/* No per-flower drop-shadow. It is a filter, and a filter on
+                    fifty-odd animated nodes repaints every frame, which is
+                    what used to make the bloom stutter halfway through. */}
                 <img
                   src={`/images/bloom/${flower.file}`}
                   alt=""
+                  draggable={false}
                   onError={(e) => {
                     e.currentTarget.style.display = "none";
                     const fallbackSpan = e.currentTarget.nextElementSibling as HTMLElement;
                     if (fallbackSpan) fallbackSpan.style.display = "inline-block";
                   }}
-                  className="w-full h-full object-contain drop-shadow-[0_12px_28px_rgba(0,0,0,0.65)] select-none"
+                  className="w-full h-full object-contain select-none"
                 />
-                <span className="hidden text-9xl drop-shadow-[0_0_24px_#ECA8B8]">
-                  {flower.icon}
-                </span>
+                <span className="hidden text-9xl">{flower.icon}</span>
               </div>
             ))}
           </div>
 
-          {["A", "L", "B", "I", "V", "E", "R", "S", "E", "❤️", "🕷️"].map((char, idx) => (
+          {["A", "L", "B", "I", "V", "E", "R", "S", "E", "\u2764\uFE0F", "\u{1F577}\uFE0F"].map((char, idx) => (
             <div
               key={idx}
               style={{
-                left: `${18 + (idx * 6.5)}%`,
+                left: `${18 + idx * 6.5}%`,
                 animationDelay: `${idx * 0.05}s`,
               }}
               className="absolute bottom-10 font-marker text-3xl sm:text-5xl text-[#FDF6F0] drop-shadow-[0_0_20px_#ECA8B8] animate-letter-float"
@@ -784,24 +889,33 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
                 : renderChapterContent(curRight, currentSpread * 2 + 2)}
             </div>
 
-            {/* Dynamic Leaves */}
+            {/* Dynamic Leaves.
+                The geometry here has to match the base pages EXACTLY or the
+                leaf jumps sideways the instant a flip starts and again when it
+                lands, which is most of what made the old turn look wonky.
+                The spread is `p-4 sm:p-8` with `gap-6`, so a page runs from the
+                outer padding edge to half the gap (12px) short of the spine.
+                The leaf therefore hinges ON the spine (left-1/2 / right-1/2)
+                and its faces sit 12px in from it — which puts the face exactly
+                over the base page it covers, and exactly over the opposite
+                page once it has turned 180deg. */}
             {flippingState === "forward" && (
-              <div className="hidden md:block absolute inset-y-0 right-0 w-1/2 p-4 sm:p-8 animate-fluid-flip-forward z-40">
-                <div className="absolute inset-4 sm:inset-8 page-face-front">
+              <div className="hidden md:block absolute top-4 bottom-4 sm:top-8 sm:bottom-8 left-1/2 right-4 sm:right-8 flip-leaf flip-leaf-forward z-40">
+                <div className="absolute inset-y-0 left-3 right-0 page-face-front">
                   {renderChapterContent(curRight, currentSpread * 2 + 2)}
                 </div>
-                <div className="absolute inset-4 sm:inset-8 page-face-back">
+                <div className="absolute inset-y-0 left-3 right-0 page-face-back">
                   {renderChapterContent(nextLeft, (currentSpread + 1) * 2 + 1)}
                 </div>
               </div>
             )}
 
             {flippingState === "backward" && (
-              <div className="hidden md:block absolute inset-y-0 left-0 w-1/2 p-4 sm:p-8 animate-fluid-flip-backward z-40">
-                <div className="absolute inset-4 sm:inset-8 page-face-front">
+              <div className="hidden md:block absolute top-4 bottom-4 sm:top-8 sm:bottom-8 left-4 sm:left-8 right-1/2 flip-leaf flip-leaf-backward z-40">
+                <div className="absolute inset-y-0 left-0 right-3 page-face-front">
                   {renderChapterContent(curLeft, currentSpread * 2 + 1)}
                 </div>
-                <div className="absolute inset-4 sm:inset-8 page-face-back">
+                <div className="absolute inset-y-0 left-0 right-3 page-face-back">
                   {renderChapterContent(prevRight, (currentSpread - 1) * 2 + 2)}
                 </div>
               </div>

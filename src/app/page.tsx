@@ -475,11 +475,15 @@ export default function AuthPage() {
               <Sparkles className="w-3 h-3 text-amber-200 fill-amber-200" />
             </div>
 
-            {/* Washi tape crossing the card corners, and comic-burst stickers
-                popping directly off the card edges — so the card itself reads
-                as decorated, not just the space around it. */}
-            <div className="absolute -top-3 left-1/4 -translate-x-1/2 tape-pink-solid w-24 h-6 -rotate-6 z-40 pointer-events-none" />
-            <div className="absolute -top-3 right-1/4 translate-x-1/2 tape-gold-solid w-24 h-6 rotate-6 z-40 pointer-events-none" />
+            {/* Washi tape holding the card down, and comic-burst stickers
+                popping off the card edges, so the card itself reads as
+                decorated rather than just the space around it.
+                Layering is physical: tape goes down first (z-20), then the
+                universe badges (z-30), then the stickers on top (z-40). The
+                tape is placed in the gap BETWEEN the two badges and along the
+                clear stretch of the bottom edge, so it never covers a label. */}
+            <div className="absolute -top-3 left-1/2 -translate-x-1/2 tape-pink-solid w-40 h-6 -rotate-2 z-20 pointer-events-none" />
+            <div className="absolute -bottom-3 left-[38%] -translate-x-1/2 tape-gold-solid w-28 h-5 rotate-3 z-20 pointer-events-none" />
 
             <div className="absolute -right-7 top-1/3 z-40 pointer-events-none select-none rotate-12">
               <div className="relative bg-[#facc15] text-zinc-950 border-[3px] border-zinc-950 px-3 py-1.5 rounded-lg shadow-[4px_4px_0px_#000]">

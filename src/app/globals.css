@@ -281,6 +281,114 @@ body {
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.9), inset 0 2px 5px rgba(255, 255, 255, 0.35);
 }
 
+/* ================= TOC PAGE FURNITURE =================
+   The table-of-contents pages used to be flat cream with an emoji in the
+   corner. These give each page the anatomy of a real journal leaf: ruled
+   lines, a red margin rule, a punched binder edge, a ghosted chapter numeral
+   and a deckled foot. All CSS, so there is nothing to load and nothing to
+   404. */
+
+.toc-page {
+  position: relative;
+  background-color: #FAF6EE;
+  background-image:
+    /* faint ruling */
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0 27px,
+      rgba(120, 20, 32, 0.09) 27px 28px
+    ),
+    /* paper tooth */
+    radial-gradient(rgba(90, 60, 45, 0.06) 0.7px, transparent 0.7px);
+  background-size: 100% 28px, 7px 7px;
+  border: 1px solid rgba(38, 29, 36, 0.22);
+  border-radius: 3px;
+  box-shadow: inset 0 0 40px rgba(160, 120, 80, 0.14);
+}
+
+/* the red margin rule every school notebook has */
+.toc-page::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 34px;
+  width: 1px;
+  background: rgba(168, 40, 55, 0.38);
+  pointer-events: none;
+}
+
+/* torn deckle along the foot of the page */
+.toc-page::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 7px;
+  pointer-events: none;
+  background:
+    repeating-conic-gradient(from -45deg at 50% 0%, #FAF6EE 0deg 90deg, transparent 90deg 180deg)
+      0 0 / 12px 7px repeat-x;
+  filter: drop-shadow(0 -1px 0 rgba(38, 29, 36, 0.18));
+}
+
+/* the chapter number, set huge and ghosted as a page watermark */
+.toc-numeral {
+  position: absolute;
+  right: 12px;
+  bottom: 34px;
+  font-family: 'Permanent Marker', cursive;
+  font-size: clamp(80px, 15vw, 150px);
+  line-height: 0.8;
+  color: rgba(120, 20, 32, 0.07);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* inked circular medallion holding the chapter's icon */
+.toc-medallion {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  color: #781420;
+  border: 2px solid #781420;
+  background: #FAF4EB;
+  box-shadow: 0 0 0 3px #FAF4EB, 0 0 0 4px rgba(120, 20, 32, 0.35);
+  transform: rotate(4deg);
+}
+
+/* the pinned index card that carries the chapter note */
+.toc-note-card {
+  position: relative;
+  background: #FFFDF6;
+  border: 1px dashed rgba(120, 20, 32, 0.45);
+  box-shadow: 2px 3px 0 rgba(38, 29, 36, 0.14);
+}
+.toc-note-card::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  left: 18px;
+  width: 34px;
+  height: 12px;
+  background: rgba(212, 123, 145, 0.72);
+  border-left: 2px dashed rgba(255, 255, 255, 0.75);
+  border-right: 2px dashed rgba(255, 255, 255, 0.75);
+  transform: rotate(-4deg);
+}
+
+/* photo corner, for the pages that carry a picture slot */
+.toc-corner {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  pointer-events: none;
+}
+
 /* Table of Contents Chapter Cards */
 .dashboard-feature-card {
   display: block;
@@ -467,82 +575,232 @@ body {
   );
 }
 
-/* Fluid Front & Back Face Alignment */
-.page-face-front {
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-  transform: rotateY(0deg);
-}
+/* Front & back face of a turning leaf.
+   backface-visibility belongs HERE, on the two faces, and nowhere else.
+   Putting it on the rotating wrapper hides the entire leaf the moment it
+   passes 90deg, which is the "page vanishes halfway through the turn" bug.
+   The wrapper stays backface-visible and only carries preserve-3d so the two
+   faces can separate in depth.
 
+   overflow:hidden is safe here and ONLY here: these are the leaves of the 3D
+   tree, so clipping them cannot break the read-through the way clipping a
+   preserve-3d ancestor does. It is what lets the corner round as the sheet
+   curls. */
+.page-face-front,
 .page-face-back {
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
-  transform: rotateY(180deg);
+  overflow: hidden;
+  border-radius: 3px;
 }
 
-/* Ultra Smooth Forward Page Curl (Right leaf turns fully over to the Left)
-   The scaleX pinch around the midpoint sells the leaf as thin physical paper
-   instead of a rigid flat rotation — real paper narrows in projection as it
-   turns edge-on, it doesn't stay full-width the whole way through. */
-@keyframes fluid-curl-forward {
-  0% {
-    transform: rotateY(0deg) scaleX(1);
-    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.15));
-  }
-  30% {
-    transform: rotateY(-70deg) scaleX(0.94);
-    filter: drop-shadow(-18px 16px 28px rgba(0,0,0,0.45));
-  }
-  50% {
-    transform: rotateY(-90deg) scaleX(0.88);
-  }
-  60% {
-    transform: rotateY(-110deg) scaleX(0.94);
-    filter: drop-shadow(-28px 22px 40px rgba(0,0,0,0.55));
-  }
-  100% {
-    transform: rotateY(-180deg) scaleX(1);
-    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.15));
-  }
+.page-face-front { transform: rotateY(0deg); }
+.page-face-back  { transform: rotateY(180deg); }
+
+/* ---- paper lighting -------------------------------------------------------
+   The one thing that makes a turning page read as paper rather than as a
+   rotating rectangle is the light on it. Two overlays per face:
+
+     ::before  a soft specular band sweeping across the sheet as it turns,
+               the desk lamp sliding over the paper
+     ::after   the gutter shadow, deepest along the spine edge, which deepens
+               as the leaf goes edge-on and clears as it lands flat
+
+   Both are opacity/transform only. A filter here would turn the face into a
+   grouping element and force transform-style:flat on its ancestor, which
+   collapses the two 3D faces onto each other. */
+.page-face-front::after,
+.page-face-back::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    rgba(14, 9, 13, 0.72) 0%,
+    rgba(14, 9, 13, 0.34) 22%,
+    rgba(14, 9, 13, 0.10) 52%,
+    rgba(14, 9, 13, 0) 78%
+  );
 }
 
-/* Ultra Smooth Backward Page Curl (Left leaf turns fully over to the Right) */
-@keyframes fluid-curl-backward {
-  0% {
-    transform: rotateY(0deg) scaleX(1);
-    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.15));
-  }
-  30% {
-    transform: rotateY(70deg) scaleX(0.94);
-    filter: drop-shadow(18px 16px 28px rgba(0,0,0,0.45));
-  }
-  50% {
-    transform: rotateY(90deg) scaleX(0.88);
-  }
-  60% {
-    transform: rotateY(110deg) scaleX(0.94);
-    filter: drop-shadow(28px 22px 40px rgba(0,0,0,0.55));
-  }
-  100% {
-    transform: rotateY(180deg) scaleX(1);
-    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.15));
-  }
+.page-face-front::before,
+.page-face-back::before {
+  content: "";
+  position: absolute;
+  top: -20%;
+  bottom: -20%;
+  left: -55%;
+  width: 42%;
+  z-index: 7;
+  opacity: 0;
+  pointer-events: none;
+  transform: skewX(-12deg);
+  background: linear-gradient(
+    90deg,
+    rgba(255, 251, 240, 0) 0%,
+    rgba(255, 251, 240, 0.55) 50%,
+    rgba(255, 251, 240, 0) 100%
+  );
 }
 
-.animate-fluid-flip-forward {
-  animation: fluid-curl-forward 0.95s cubic-bezier(0.4, 0.05, 0.2, 1) forwards;
+/* The backward leaf swings the other way, so its shadowed edge is the other
+   edge. */
+.flip-leaf-backward .page-face-front::after,
+.flip-leaf-backward .page-face-back::after {
+  background: linear-gradient(
+    270deg,
+    rgba(14, 9, 13, 0.72) 0%,
+    rgba(14, 9, 13, 0.34) 22%,
+    rgba(14, 9, 13, 0.10) 52%,
+    rgba(14, 9, 13, 0) 78%
+  );
+}
+
+/* ---- the turn -------------------------------------------------------------
+   Pure rotateY about the spine plus a small lift off the stack. Deliberately
+   NO skewY and NO rotateX: shearing the whole leaf drags the text diagonally,
+   which is what read as wonky and trippy instead of as paper. The
+   foreshortening a real page has already comes free from the book's
+   perspective.
+
+   The shape of the motion is the peel: the first fifth barely rotates while
+   the sheet lifts off the stack (a thumb picking the corner up), the middle
+   swings through fast, then it decelerates and settles onto the far side. */
+@keyframes page-turn-forward {
+  0%   { transform: rotateY(0deg)    translateZ(0);    }
+  16%  { transform: rotateY(-11deg)  translateZ(16px); }
+  38%  { transform: rotateY(-58deg)  translateZ(28px); }
+  50%  { transform: rotateY(-90deg)  translateZ(30px); }
+  68%  { transform: rotateY(-129deg) translateZ(24px); }
+  88%  { transform: rotateY(-171deg) translateZ(9px);  }
+  100% { transform: rotateY(-180deg) translateZ(0);    }
+}
+
+@keyframes page-turn-backward {
+  0%   { transform: rotateY(0deg)    translateZ(0);    }
+  16%  { transform: rotateY(11deg)   translateZ(16px); }
+  38%  { transform: rotateY(58deg)   translateZ(28px); }
+  50%  { transform: rotateY(90deg)   translateZ(30px); }
+  68%  { transform: rotateY(129deg)  translateZ(24px); }
+  88%  { transform: rotateY(171deg)  translateZ(9px);  }
+  100% { transform: rotateY(180deg)  translateZ(0);    }
+}
+
+/* The curl. A sheet under its own weight rounds off along its free edge as it
+   comes up off the stack and flattens again as it lands, so the radius on the
+   outer edge swells through the middle of the turn. Elliptical radii, because
+   paper bows over its height rather than into a quarter circle. */
+@keyframes leaf-curl-right-edge {
+  0%   { border-radius: 3px; }
+  30%  { border-radius: 3px 26px 26px 3px / 3px 60px 60px 3px; }
+  50%  { border-radius: 3px 34px 34px 3px / 3px 78px 78px 3px; }
+  74%  { border-radius: 3px 22px 22px 3px / 3px 50px 50px 3px; }
+  100% { border-radius: 3px; }
+}
+
+@keyframes leaf-curl-left-edge {
+  0%   { border-radius: 3px; }
+  30%  { border-radius: 26px 3px 3px 26px / 60px 3px 3px 60px; }
+  50%  { border-radius: 34px 3px 3px 34px / 78px 3px 3px 78px; }
+  74%  { border-radius: 22px 3px 3px 22px / 50px 3px 3px 50px; }
+  100% { border-radius: 3px; }
+}
+
+/* Front face: lit and flat, then swallowed by the gutter shadow as it turns
+   away. Back face: starts in shadow and comes up into the light. */
+@keyframes leaf-shade-front {
+  0%   { opacity: 0; }
+  30%  { opacity: 0.34; }
+  62%  { opacity: 0.70; }
+  100% { opacity: 0.78; }
+}
+
+@keyframes leaf-shade-back {
+  0%   { opacity: 0.82; }
+  46%  { opacity: 0.55; }
+  100% { opacity: 0; }
+}
+
+/* The lamp crossing the sheet, only while that face is actually pointing at
+   the reader, hence the opacity window on each. */
+@keyframes leaf-sheen-front {
+  0%   { transform: translateX(0)    skewX(-12deg); opacity: 0; }
+  18%  { opacity: 0.85; }
+  46%  { transform: translateX(230%) skewX(-12deg); opacity: 0.5; }
+  55%  { opacity: 0; }
+  100% { transform: translateX(300%) skewX(-12deg); opacity: 0; }
+}
+
+@keyframes leaf-sheen-back {
+  0%   { transform: translateX(300%) skewX(-12deg); opacity: 0; }
+  48%  { opacity: 0; }
+  62%  { transform: translateX(190%) skewX(-12deg); opacity: 0.60; }
+  86%  { transform: translateX(20%)  skewX(-12deg); opacity: 0.35; }
+  100% { transform: translateX(0)    skewX(-12deg); opacity: 0; }
+}
+
+/* One duration and one easing shared by every layer of the turn, so the
+   shading, the curl and the rotation can never drift apart. */
+.flip-leaf {
+  transform-style: preserve-3d;
+  will-change: transform;
+  animation-duration: 0.82s;
+  animation-timing-function: cubic-bezier(0.52, 0.02, 0.3, 1);
+  animation-fill-mode: forwards;
+}
+
+.flip-leaf-forward {
   transform-origin: left center;
-  transform-style: preserve-3d;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
+  animation-name: page-turn-forward;
 }
 
-.animate-fluid-flip-backward {
-  animation: fluid-curl-backward 0.95s cubic-bezier(0.4, 0.05, 0.2, 1) forwards;
+.flip-leaf-backward {
   transform-origin: right center;
-  transform-style: preserve-3d;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
+  animation-name: page-turn-backward;
+}
+
+.flip-leaf .page-face-front,
+.flip-leaf .page-face-back,
+.flip-leaf .page-face-front::after,
+.flip-leaf .page-face-back::after,
+.flip-leaf .page-face-front::before,
+.flip-leaf .page-face-back::before {
+  animation-duration: 0.82s;
+  animation-timing-function: cubic-bezier(0.52, 0.02, 0.3, 1);
+  animation-fill-mode: forwards;
+}
+
+.flip-leaf .page-face-front::after  { animation-name: leaf-shade-front; }
+.flip-leaf .page-face-back::after   { animation-name: leaf-shade-back; }
+.flip-leaf .page-face-front::before { animation-name: leaf-sheen-front; }
+.flip-leaf .page-face-back::before  { animation-name: leaf-sheen-back; }
+
+.flip-leaf-forward .page-face-front,
+.flip-leaf-forward .page-face-back {
+  animation-name: leaf-curl-right-edge;
+}
+
+.flip-leaf-backward .page-face-front,
+.flip-leaf-backward .page-face-back {
+  animation-name: leaf-curl-left-edge;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flip-leaf,
+  .flip-leaf .page-face-front,
+  .flip-leaf .page-face-back,
+  .flip-leaf .page-face-front::after,
+  .flip-leaf .page-face-back::after {
+    animation-duration: 1ms !important;
+  }
+  .flip-leaf .page-face-front::before,
+  .flip-leaf .page-face-back::before {
+    animation: none !important;
+    opacity: 0 !important;
+  }
 }
 
 /* ================= TRUE BOOK OPENING & RAPID LEAF FLIPS ================= */
@@ -711,7 +969,11 @@ body {
   animation: toc-fold-close 0.65s cubic-bezier(0.35, 0.05, 0.2, 1) forwards;
 }
 
-/* ================= ZERO-LAG BURST & SEAMLESS CASCADE ================= */
+/* ================= ZERO-LAG BURST & SEAMLESS CASCADE =================
+   The original bloom, restored. No veil: the cover over the screen is the
+   flowers themselves and nothing else, so what falls away at the end is a
+   bouquet rather than a coloured sheet with petals printed on it.
+   Transform + opacity only, so all of it stays on the compositor. */
 
 @keyframes true-bloom-burst-pop {
   0% {
@@ -762,6 +1024,10 @@ body {
   transform: translateZ(0);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .animate-bloom-particle,
+  .bloom-top-flowers { animation-duration: 1ms !important; }
+}
 .rapid-page-flip-overlay {
   position: fixed;
   z-index: 49;
@@ -827,6 +1093,7 @@ body {
   }
 }
 
+/* The whole bloom layer sliding off the screen once the TOC is ready. */
 .animate-bloom-curtain-drop {
   animation: bloom-slide-down-drop 1.35s cubic-bezier(0.35, 0.05, 0.2, 1) forwards;
 }
@@ -1252,12 +1519,19 @@ body {
    sailing off-screen, and lines the hinge up with where the spread's gutter
    will land once opened. */
 
+/* The closed book is one page wide; the TOC it opens into is a two-page spread
+   centred on screen. Shifting the container right by about half a page width
+   parks the closed cover exactly where the spread's right-hand page will land,
+   so the cover swings open into the spread instead of jumping sideways. */
 @keyframes book-container-shift-right {
   0% {
     transform: translateX(0);
   }
   100% {
-    transform: translateX(clamp(56px, 15vw, 170px));
+    /* 16.3vw puts the closed cover's centre on the open spread's right-page
+       centre (measured: right page centres at x=955 in a 1440 viewport, cover
+       centres at 720, so the gap to close is 235px = 16.3vw). */
+    transform: translateX(clamp(70px, 16.3vw, 250px));
   }
 }
 
