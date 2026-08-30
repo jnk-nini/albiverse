@@ -10,7 +10,9 @@ import {
   Flower2,
   Heart,
   Infinity as InfinityIcon,
+  KeyRound,
   Lightbulb,
+  Moon,
   Loader2,
   Lock,
   Pencil,
@@ -25,6 +27,43 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
+import {
+  CandleJar,
+  CorkLid,
+  DriedBunch,
+  FairyString,
+  HeartTag,
+  JarLabel,
+  LaceDoily,
+  LetterJarDefs,
+  PAPERS,
+  PAPER_EDGES,
+  PATINAS,
+  RIBBONS,
+  RIBBON_STYLES,
+  SPRIGS,
+  STAMPS,
+  STICKER_PALETTE,
+  SprigMark,
+  ScrollGlyph,
+  SpiderOnThread,
+  StampMark,
+  TAPES,
+  TiedBundle,
+  TwineBow,
+  WAXES,
+  WAX_SHAPES,
+  WaxEnvelope,
+  WebCorner,
+  FONTS,
+  INKS,
+  OCCASION_PRESETS,
+  fontOf,
+  paperOf,
+  sprigOf,
+  stampOf,
+  tapeOf,
+} from "./LetterJarArt";
 
 /* ============================================================================
    CH.05 - LOVE LETTER JAR
@@ -70,6 +109,11 @@ interface Letter {
   seal_emblem: string;
   tape_style: string;
   stamp_style: string;
+  paper_edge: string;
+  paper_patina: string;
+  ribbon_style: string;
+  wax_shape: string;
+  sprig: string;
   stickers: Sticker[];
   reply_to_id: string | null;
   is_private: boolean;
@@ -108,6 +152,11 @@ type Draft = {
   seal_emblem: string;
   tape_style: string;
   stamp_style: string;
+  paper_edge: string;
+  paper_patina: string;
+  ribbon_style: string;
+  wax_shape: string;
+  sprig: string;
   stickers: Sticker[];
   is_private: boolean;
   scheduled_for: string; // datetime-local value, empty when not scheduled
@@ -121,96 +170,12 @@ type FilterId = "all" | "theirs" | "mine" | "sealed" | "keepsakes" | "locked" | 
 /* Must stay ONE string literal: Supabase types the response off the literal, so
    splitting it widens the row type to GenericStringError[]. */
 const LETTER_COLUMNS =
-  "id, couple_id, sender_id, receiver_id, title, body, theme_style, occasion, ink_color, font_style, ribbon_color, wax_color, seal_emblem, tape_style, stamp_style, stickers, reply_to_id, is_private, scheduled_for, created_at, updated_at";
+  "id, couple_id, sender_id, receiver_id, title, body, theme_style, occasion, ink_color, font_style, ribbon_color, wax_color, seal_emblem, tape_style, stamp_style, paper_edge, paper_patina, ribbon_style, wax_shape, sprig, stickers, reply_to_id, is_private, scheduled_for, created_at, updated_at";
 
 /* ------------------------------------------------------- design tokens --- */
-
-/* Papers. `bg` goes straight into the background shorthand, `ink` is the pen
-   colour the paper defaults to, `edge` is the deckled border. */
-const PAPERS = [
-  {
-    id: "parchment",
-    label: "PARCHMENT",
-    chip: "#F1E3C6",
-    ink: "#4A3524",
-    edge: "#C4A472",
-    bg: "radial-gradient(circle at 18% 12%, rgba(178,138,88,.20), transparent 55%), radial-gradient(circle at 82% 88%, rgba(150,110,70,.18), transparent 52%), linear-gradient(#F8EFDC, #EEDFC0)",
-  },
-  {
-    id: "kraft",
-    label: "KRAFT",
-    chip: "#D3BB94",
-    ink: "#3A2716",
-    edge: "#9C7F52",
-    bg: "radial-gradient(rgba(70,45,25,.11) 1px, transparent 1px) 0 0/7px 7px, linear-gradient(#DDC8A4, #C9B084)",
-  },
-  {
-    id: "grid",
-    label: "GRID",
-    chip: "#FAF5EB",
-    ink: "#2C2130",
-    edge: "#D2B9C0",
-    bg: "linear-gradient(to right, rgba(217,136,158,.22) 1px, transparent 1px) 0 0/18px 18px, linear-gradient(to bottom, rgba(217,136,158,.22) 1px, transparent 1px) 0 0/18px 18px, linear-gradient(#FBF6EC,#F5EDE0)",
-  },
-  {
-    id: "ruled",
-    label: "RULED",
-    chip: "#FBF7EF",
-    ink: "#23304A",
-    edge: "#BFC7D4",
-    bg: "linear-gradient(to right, transparent 42px, rgba(150,30,45,.32) 42px, rgba(150,30,45,.32) 43px, transparent 43px), repeating-linear-gradient(transparent 0 27px, rgba(60,80,120,.20) 27px 28px), linear-gradient(#FCF8F1,#F6F0E5)",
-  },
-  {
-    id: "music",
-    label: "MUSIC SHEET",
-    chip: "#EFE5D3",
-    ink: "#2E0509",
-    edge: "#C0AE8C",
-    bg: "repeating-linear-gradient(transparent 0 11px, rgba(60,24,32,.24) 12px 13px), linear-gradient(#F2E9D8,#E8DCC4)",
-  },
-  {
-    id: "rose",
-    label: "ROSE",
-    chip: "#F0D2D6",
-    ink: "#5A2029",
-    edge: "#CE9BA4",
-    bg: "radial-gradient(circle at 75% 18%, rgba(255,255,255,.55), transparent 45%), linear-gradient(#F6DCE0, #E9C3CA)",
-  },
-  {
-    id: "newsprint",
-    label: "NEWSPRINT",
-    chip: "#E4E0D4",
-    ink: "#1A1A1A",
-    edge: "#A9A493",
-    bg: "radial-gradient(rgba(30,30,30,.16) 1.1px, transparent 1.2px) 0 0/6px 6px, linear-gradient(#E8E4D8,#DCD7C7)",
-  },
-  {
-    id: "midnight",
-    label: "MIDNIGHT",
-    chip: "#241A2C",
-    ink: "#F0E2C8",
-    edge: "#4C3A55",
-    bg: "radial-gradient(circle at 26% 22%, rgba(217,136,158,.22), transparent 55%), radial-gradient(circle at 78% 80%, rgba(120,20,32,.28), transparent 55%), linear-gradient(#2A1E30,#1B1420)",
-  },
-] as const;
-
-const INKS = [
-  "#3A2A22", "#1F2A44", "#6E1220", "#2F4536",
-  "#4A2350", "#7A3E12", "#141018", "#F0E2C8",
-];
-
-const FONTS = [
-  { id: "handwriting", label: "HANDWRITTEN", cls: "font-handwriting", size: "text-[25px] leading-[1.42]" },
-  { id: "marker", label: "MARKER", cls: "font-marker", size: "text-[18px] leading-[1.65]" },
-  { id: "mono", label: "TYPEWRITER", cls: "font-mono", size: "text-[13px] leading-[1.9]" },
-] as const;
-
-const RIBBONS = [
-  "#B34B63", "#7D2834", "#C5A467", "#EFE3CC",
-  "#8FAEAA", "#6E4B7A", "#2F3E5B", "#2A2126",
-];
-
-const WAXES = ["#8B121E", "#450A10", "#B4566C", "#A8823A", "#5C3468", "#25313F"];
+/* The materials themselves (papers, edges, patinas, ribbons, waxes, stamps,
+   tapes, sprigs, stickers) live in ./LetterJarArt so this file can stay about
+   data and behaviour. Only the tables that need a lucide icon stay here. */
 
 const EMBLEMS = [
   { id: "spider", label: "SPIDER", Icon: Bug },
@@ -219,41 +184,9 @@ const EMBLEMS = [
   { id: "rose", label: "BLOOM", Icon: Flower2 },
   { id: "forever", label: "FOREVER", Icon: InfinityIcon },
   { id: "thwip", label: "THWIP", Icon: Zap },
+  { id: "key", label: "KEY", Icon: KeyRound },
+  { id: "moon", label: "MOON", Icon: Moon },
 ] as const;
-
-const TAPES = [
-  { id: "none", label: "NO TAPE", css: "" },
-  { id: "pink", label: "PINK", css: "tape-pink-solid" },
-  { id: "red", label: "CRIMSON", css: "tape-red-solid" },
-  { id: "gold", label: "GOLD", css: "tape-gold-solid" },
-  { id: "dotted", label: "DOTTED", css: "lj-tape-dotted" },
-] as const;
-
-const STAMPS = [
-  { id: "none", label: "NO STAMP", tag: "", tone: "" },
-  { id: "gwen", label: "EARTH-65", tag: "EARTH-65", tone: "#D9889E" },
-  { id: "peter", label: "EARTH-616", tag: "EARTH-616", tone: "#7D2834" },
-  { id: "heart", label: "SEALED", tag: "SEALED WITH LOVE", tone: "#B4566C" },
-  { id: "web", label: "AIR MAIL", tag: "WEB AIR MAIL", tone: "#8FAEAA" },
-] as const;
-
-const STICKER_PALETTE = [
-  "🕷️", "🕸️", "💗", "🤍", "🌷", "🌾", "🌙", "⭐",
-  "✨", "📌", "🎀", "🧵", "🫧", "🍓", "☕", "🎧",
-  "🪩", "💌", "🔥", "🐝", "🍯", "🌈", "💫", "🖤",
-];
-
-/* The classic jar prompts. One click writes the tag, it stays editable. */
-const OCCASION_PRESETS = [
-  "open when you miss me",
-  "open when you need a smile",
-  "open when you can't sleep",
-  "open when you're proud of yourself",
-  "open on a bad day",
-  "open on our anniversary",
-  "open when you need a push",
-  "open when I'm far away",
-];
 
 const FILTERS: { id: FilterId; label: string }[] = [
   { id: "all", label: "EVERYTHING" },
@@ -272,10 +205,6 @@ const MAX_STICKERS = 14;
 
 /* -------------------------------------------------------------- helpers --- */
 
-const paperOf = (id: string) => PAPERS.find((p) => p.id === id) ?? PAPERS[0];
-const fontOf = (id: string) => FONTS.find((f) => f.id === id) ?? FONTS[0];
-const tapeOf = (id: string) => TAPES.find((t) => t.id === id) ?? TAPES[0];
-const stampOf = (id: string) => STAMPS.find((s) => s.id === id) ?? STAMPS[0];
 const emblemOf = (id: string) => EMBLEMS.find((e) => e.id === id) ?? EMBLEMS[0];
 
 /* Deterministic per-letter jitter. The same id always lands in the same spot,
@@ -359,6 +288,11 @@ function emptyDraft(): Draft {
     seal_emblem: "spider",
     tape_style: "pink",
     stamp_style: "gwen",
+    paper_edge: "deckle",
+    paper_patina: "aged",
+    ribbon_style: "satin",
+    wax_shape: "round",
+    sprig: "none",
     stickers: [],
     is_private: false,
     scheduled_for: "",
@@ -380,6 +314,11 @@ function draftFromLetter(l: Letter): Draft {
     seal_emblem: l.seal_emblem,
     tape_style: l.tape_style,
     stamp_style: l.stamp_style,
+    paper_edge: l.paper_edge,
+    paper_patina: l.paper_patina,
+    ribbon_style: l.ribbon_style,
+    wax_shape: l.wax_shape,
+    sprig: l.sprig,
     stickers: l.stickers,
     is_private: l.is_private,
     scheduled_for: toDatetimeLocal(l.scheduled_for),
@@ -388,6 +327,24 @@ function draftFromLetter(l: Letter): Draft {
 }
 
 /* ------------------------------------------------- jar packing geometry --- */
+
+/* Warm bulbs threaded down through the pile, following the wire drawn in the
+   glass. Fixed positions rather than random ones so they never jump. */
+const JAR_BULBS = [
+  { x: 16, y: 15, delay: 0 },
+  { x: 62, y: 24, delay: 0.4 },
+  { x: 30, y: 36, delay: 0.9 },
+  { x: 74, y: 46, delay: 1.3 },
+  { x: 22, y: 55, delay: 0.2 },
+  { x: 58, y: 63, delay: 1.7 },
+  { x: 36, y: 72, delay: 0.7 },
+  { x: 72, y: 80, delay: 1.1 },
+  { x: 20, y: 86, delay: 1.5 },
+];
+
+/* Kept in step with `.lj-jar-wrap { aspect-ratio }` and the ScrollGlyph viewBox. */
+const JAR_ASPECT = 0.74;
+const SCROLL_RATIO = 220 / 64;
 
 interface Slot {
   x: number;      // percent, centre
@@ -409,13 +366,13 @@ function computeSlots(ids: string[]): Record<string, Slot> {
   const cols = n <= 3 ? 2 : n <= 8 ? 3 : n <= 16 ? 4 : 5;
   const rows = Math.ceil(n / cols);
 
-  const FLOOR = 91;
+  const FLOOR = 93;
   const CEIL = 7;
   const cellW = 86 / cols;
   // Rows overlap rather than sitting in a grid, and the whole stack hugs the
   // floor, so the pile reads as letters dropped on top of each other and
   // settled by gravity instead of a shelf of them floating mid-jar.
-  const rowStep = Math.min(11.5, (FLOOR - CEIL) / rows);
+  const rowStep = Math.min(13.5, (FLOOR - CEIL) / rows);
 
   ids.forEach((id, i) => {
     const row = Math.floor(i / cols);
@@ -423,7 +380,7 @@ function computeSlots(ids: string[]): Record<string, Slot> {
     const baseX = 7 + (col + 0.5) * cellW;
     const baseY = FLOOR - (row + 0.5) * rowStep;
 
-    const len = cellW * randRange(id, 3, 1.2, 1.58);
+    const len = cellW * randRange(id, 3, 1.18, 1.52);
     // keep the roll inside the glass: an unrotated one hanging half out of the
     // jar reads as a rendering bug, not as a letter pressed against the side
     const margin = Math.min(24, len / 2);
@@ -435,14 +392,22 @@ function computeSlots(ids: string[]): Record<string, Slot> {
       ),
       y: baseY + randRange(id, 2, -rowStep * 0.26, rowStep * 0.26),
       len,
-      thick: Math.min(6.2, Math.max(3.6, rowStep * 0.42)),
-      rot: randRange(id, 4, -46, 46),
+      /* The scroll is drawn on a 220x64 viewBox with preserveAspectRatio="none",
+         so its box has to keep that ratio or the rolled ends stretch into
+         ovals. The jar's own aspect is pinned in CSS, which lets the
+         conversion from a width percentage to a height percentage be a
+         constant rather than something measured at runtime. */
+      thick: len * JAR_ASPECT / SCROLL_RATIO,
+      /* The rolls at the bottom of the pile have been pressed flat by the
+         ones on top; the loose ones near the surface can lie at any angle. */
+      rot: randRange(id, 4, -46, 46) * (0.45 + 0.55 * (row / Math.max(1, rows - 1))),
       z: 10 + (rows - row) * 2 + (i % 3),
     };
   });
 
   return out;
 }
+
 
 
 /* ============================================================== component == */
@@ -489,6 +454,12 @@ export default function LetterJarScreen({
      while the jar is open should fall away on its own. One slow tick does both. */
   const [now, setNow] = useState(() => Date.now());
 
+  /* Optional character art in the far background. If either file is missing the
+     scene just loses a silhouette. */
+  const [artError, setArtError] = useState({ gwen: false, peter: false });
+
+  const rootRef = useRef<HTMLElement>(null);
+  const parallaxRaf = useRef(0);
   const scrollRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const phaseTimers = useRef<number[]>([]);
   const fxTimer = useRef<number | null>(null);
@@ -538,6 +509,32 @@ export default function LetterJarScreen({
       return next;
     });
   };
+
+  /* The room drifts very slightly against the pointer. Writes CSS variables on
+     the root rather than going through state, so moving the mouse never causes
+     a React render, and it is throttled to one frame. */
+  const handleParallax = useCallback(
+    (e: React.PointerEvent) => {
+      if (reduceMotion || parallaxRaf.current) return;
+      const el = rootRef.current;
+      if (!el) return;
+      const x = (e.clientX / window.innerWidth - 0.5) * 2;
+      const y = (e.clientY / window.innerHeight - 0.5) * 2;
+      parallaxRaf.current = requestAnimationFrame(() => {
+        parallaxRaf.current = 0;
+        el.style.setProperty("--mx", x.toFixed(3));
+        el.style.setProperty("--my", y.toFixed(3));
+      });
+    },
+    [reduceMotion]
+  );
+
+  useEffect(
+    () => () => {
+      if (parallaxRaf.current) cancelAnimationFrame(parallaxRaf.current);
+    },
+    []
+  );
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -598,6 +595,11 @@ export default function LetterJarScreen({
           seal_emblem: (r.seal_emblem as string) || "spider",
           tape_style: (r.tape_style as string) || "pink",
           stamp_style: (r.stamp_style as string) || "gwen",
+          paper_edge: (r.paper_edge as string) || "deckle",
+          paper_patina: (r.paper_patina as string) || "aged",
+          ribbon_style: (r.ribbon_style as string) || "satin",
+          wax_shape: (r.wax_shape as string) || "round",
+          sprig: (r.sprig as string) || "none",
           stickers: normalizeStickers(r.stickers),
           reply_to_id: (r.reply_to_id as string | null) ?? null,
           is_private: Boolean(r.is_private),
@@ -711,6 +713,11 @@ export default function LetterJarScreen({
     ).length;
     return { total: letters.length, sealed, opened: letters.length - sealed, keepsakes, locked };
   }, [letters, myMarks, now]);
+
+  const keepsakes = useMemo(
+    () => letters.filter((l) => myMarks[l.id]?.is_favorite),
+    [letters, myMarks]
+  );
 
   const active = activeId ? letters.find((l) => l.id === activeId) ?? null : null;
 
@@ -973,6 +980,11 @@ export default function LetterJarScreen({
       seal_emblem: draft.seal_emblem,
       tape_style: draft.tape_style,
       stamp_style: draft.stamp_style,
+      paper_edge: draft.paper_edge,
+      paper_patina: draft.paper_patina,
+      ribbon_style: draft.ribbon_style,
+      wax_shape: draft.wax_shape,
+      sprig: draft.sprig,
       stickers: draft.stickers.slice(0, MAX_STICKERS),
       reply_to_id: draft.reply_to_id,
       is_private: draft.is_private,
@@ -1007,33 +1019,146 @@ export default function LetterJarScreen({
 
   const target = active ?? null;
 
+  /* Soft out-of-focus lights and drifting dust. Both are index-derived rather
+     than random so they are stable across renders and identical on the server. */
+  const bokeh = useMemo(
+    () =>
+      Array.from({ length: 22 }).map((_, i) => ({
+        x: (i * 37) % 100,
+        y: (i * 61) % 96,
+        size: 26 + ((i * 29) % 74),
+        delay: ((i * 13) % 90) / 10,
+        dur: 14 + ((i * 7) % 12),
+        warm: i % 3 !== 0,
+        depth: 1 + (i % 3),
+      })),
+    []
+  );
+
+  const motes = useMemo(
+    () =>
+      Array.from({ length: 34 }).map((_, i) => ({
+        x: (i * 53) % 100,
+        y: (i * 71) % 100,
+        delay: ((i * 17) % 120) / 10,
+        dur: 9 + ((i * 5) % 11),
+        size: 1.5 + ((i * 3) % 4) * 0.6,
+      })),
+    []
+  );
+
+  /* Three loose rolls resting on the board. They are decoration, so they take
+     their look from whatever is actually in the jar when there is anything. */
+  const loose = useMemo(() => visible.slice(0, 3), [visible]);
+
   return (
-    <main className={`lj-root ${lightsOn ? "lights-on" : "lights-off"}`}>
+    <main
+      ref={rootRef}
+      onPointerMove={handleParallax}
+      className={`lj-root ${lightsOn ? "lights-on" : "lights-off"}`}
+    >
       <ScopedStyles />
+      <LetterJarDefs />
 
-      {/* ---------------------------------------------- ambient scenery --- */}
-      <div className="lj-desk" aria-hidden />
-      <div className="lj-lamp" aria-hidden />
-      <div className="lj-vignette" aria-hidden />
-      <FairyString bulbs={17} className="lj-string-top" />
-      <FairyString bulbs={13} className="lj-string-second" />
-      <div className="lj-spider-drop" aria-hidden>
-        <span className="lj-spider-thread" />
-        <span className="lj-spider-body">🕷️</span>
+      {/* ============================================ the room behind it all */}
+      <div className="lj-bg" aria-hidden>
+        <div className="lj-bg-wall" />
+        <div className="lj-bg-paper" />
+        <div className="lj-bg-window" />
+        <div className="lj-bg-beam" />
+        <div className="lj-bg-shelf" />
+
+        {/* Gwen and Peter swinging far back in the dark. Optional art: if the
+            file is missing the scene simply loses two silhouettes. */}
+        {!artError.gwen && (
+          <img
+            src="/images/gwen.webp"
+            alt=""
+            className="lj-swinger lj-swinger-gwen"
+            onError={() => setArtError((e) => ({ ...e, gwen: true }))}
+          />
+        )}
+        {!artError.peter && (
+          <img
+            src="/images/peter.webp"
+            alt=""
+            className="lj-swinger lj-swinger-peter"
+            onError={() => setArtError((e) => ({ ...e, peter: true }))}
+          />
+        )}
+
+        <div className="lj-bokeh">
+          {bokeh.map((b, i) => (
+            <span
+              key={i}
+              className="lj-bokeh-dot"
+              style={{
+                left: `${b.x}%`,
+                top: `${b.y}%`,
+                width: b.size,
+                height: b.size,
+                animationDelay: `${b.delay}s`,
+                animationDuration: `${b.dur}s`,
+                ["--depth" as string]: b.depth,
+                background: b.warm
+                  ? "radial-gradient(circle, rgba(255,206,140,.55), rgba(255,180,110,.12) 55%, transparent 72%)"
+                  : "radial-gradient(circle, rgba(255,182,200,.45), rgba(220,150,175,.10) 55%, transparent 72%)",
+              }}
+            />
+          ))}
+        </div>
+
+        <div className="lj-motes">
+          {motes.map((m, i) => (
+            <span
+              key={i}
+              className="lj-mote"
+              style={{
+                left: `${m.x}%`,
+                top: `${m.y}%`,
+                width: m.size,
+                height: m.size,
+                animationDelay: `${m.delay}s`,
+                animationDuration: `${m.dur}s`,
+              }}
+            />
+          ))}
+        </div>
+
+        <WebCorner className="lj-web lj-web-tl" />
+        <WebCorner className="lj-web lj-web-tr" />
+        <WebCorner className="lj-web lj-web-bl" />
+
+        <FairyString bulbs={19} className="lj-string-a" />
+        <FairyString bulbs={15} className="lj-string-b" depth={1.8} />
+        <FairyString bulbs={11} className="lj-string-c" depth={2.7} />
+
+        <SpiderOnThread className="lj-spider-a" threadLength={150} />
+        <SpiderOnThread className="lj-spider-b" threadLength={92} />
+
+        <div className="lj-vignette" />
       </div>
-      <WebCorner className="lj-web-tl" />
-      <WebCorner className="lj-web-br" />
 
-      {/* ------------------------------------------------------- header --- */}
-      <header className="relative z-20 flex flex-wrap items-center gap-3 px-4 sm:px-8 pt-5 pb-2">
+      {/* ==================================================== the top bar === */}
+      <header className="lj-topbar">
         <button onClick={onBack} className="lj-chip-btn" type="button">
           <ArrowLeft className="w-3.5 h-3.5" />
-          BACK TO CONTENTS
+          <span className="hidden sm:inline">BACK TO CONTENTS</span>
+          <span className="sm:hidden">BACK</span>
         </button>
 
-        <span className="postage-stamp -rotate-2 hidden sm:inline-block">CH. 05 • LETTER JAR</span>
+        <span className="lj-chapter-stamp">CH. 05</span>
 
-        <div className="flex-1 min-w-[120px]" />
+        <div className="lj-titleblock">
+          <h1 className="font-marker text-2xl sm:text-4xl leading-none text-[#F6E7D2]">
+            Love Letter Jar
+          </h1>
+          <p className="font-handwriting text-lg sm:text-xl text-[#E0B1AE] leading-none mt-0.5">
+            every note we ever rolled up, kept behind glass
+          </p>
+        </div>
+
+        <div className="flex-1" />
 
         <button
           onClick={toggleLights}
@@ -1042,46 +1167,42 @@ export default function LetterJarScreen({
           aria-pressed={lightsOn}
         >
           <Lightbulb className="w-3.5 h-3.5" />
-          {lightsOn ? "LIGHTS ON" : "LIGHTS OFF"}
+          <span className="hidden sm:inline">{lightsOn ? "LIGHTS ON" : "LIGHTS OFF"}</span>
         </button>
       </header>
 
-      <div className="relative z-20 px-4 sm:px-8">
-        <h1 className="font-marker text-4xl sm:text-6xl text-[#F6E7D2] leading-none">
-          Love Letter Jar
-        </h1>
-        <p className="font-handwriting text-2xl text-[#E0B1AE] mt-1">
-          every note we ever rolled up, kept behind glass
-        </p>
-      </div>
-
-      {/* --------------------------------------------------------- body --- */}
-      <div className="relative z-20 grid gap-5 px-4 sm:px-8 pt-5 pb-14 lg:grid-cols-[268px_minmax(0,1fr)_286px]">
-        {/* ============ LEFT RAIL: the writing desk ============ */}
-        <aside className="flex flex-col gap-4 order-2 lg:order-1">
-          <button onClick={startNewLetter} className="lj-write-btn group" type="button">
+      {/* ======================================================= the room === */}
+      <div className="lj-columns">
+        {/* ------------------------------ left: the writing desk collage --- */}
+        <aside className="lj-rail lj-rail-l">
+          <button onClick={startNewLetter} className="lj-write-card group" type="button">
             <span className="lj-write-thwip">THWIP!</span>
-            <Feather className="w-6 h-6" />
-            <span className="text-left leading-tight">
-              <span className="block font-marker text-2xl">Write a letter</span>
-              <span className="block font-mono text-[9px] tracking-[.18em] opacity-80">
+            <span className="lj-write-flap" />
+            <span className="lj-write-seal">
+              <Feather className="w-4 h-4" />
+            </span>
+            <span className="block relative z-10">
+              <span className="block font-marker text-2xl leading-none">Write a letter</span>
+              <span className="block font-mono text-[9px] tracking-[.18em] opacity-85 mt-1.5">
                 ROLL IT UP AND DROP IT IN
               </span>
             </span>
           </button>
 
-          <button onClick={() => runPickRandom()} className="lj-panel-btn" type="button">
-            <Shuffle className="w-4 h-4" />
-            <span>
-              <span className="block font-marker text-lg leading-tight">Pick one for me</span>
-              <span className="block font-mono text-[9px] tracking-[.16em] opacity-70">
+          <button onClick={() => runPickRandom()} className="lj-draw-tag" type="button">
+            <span className="lj-draw-hole" />
+            <Shuffle className="w-4 h-4 shrink-0" />
+            <span className="text-left leading-tight">
+              <span className="block font-marker text-lg leading-none">Pick one for me</span>
+              <span className="block font-mono text-[8px] tracking-[.16em] opacity-70 mt-1">
                 SHAKE THE JAR
               </span>
             </span>
           </button>
 
-          <div className="lj-panel">
-            <span className="lj-panel-title">FIND A LETTER</span>
+          <div className="lj-card lj-card-find">
+            <span className="lj-tape-strip lj-tape-strip-a" aria-hidden />
+            <span className="lj-card-title">FIND A LETTER</span>
             <div className="relative mt-2">
               <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[#7D2834]" />
               <input
@@ -1092,8 +1213,8 @@ export default function LetterJarScreen({
               />
             </div>
 
-            <span className="lj-panel-title mt-4 block">THE PILE</span>
-            <div className="flex flex-wrap gap-1.5 mt-2">
+            <span className="lj-card-title mt-4 block">THE PILE</span>
+            <div className="lj-filter-row">
               {FILTERS.map((f) => (
                 <button
                   key={f.id}
@@ -1101,6 +1222,7 @@ export default function LetterJarScreen({
                   type="button"
                   className={`lj-filter ${filter === f.id ? "is-active" : ""}`}
                 >
+                  <span className="lj-filter-hole" />
                   {f.label}
                 </button>
               ))}
@@ -1113,20 +1235,25 @@ export default function LetterJarScreen({
             )}
           </div>
 
-          <div className="lj-panel">
-            <span className="lj-panel-title">THE COUNT</span>
-            <ul className="mt-2 space-y-1.5">
-              <StatRow label="in the jar" value={stats.total} />
-              <StatRow label="still sealed" value={stats.sealed} />
-              <StatRow label="read" value={stats.opened} />
-              <StatRow label="keepsakes" value={stats.keepsakes} />
-              {stats.locked > 0 && <StatRow label="time locked" value={stats.locked} />}
-            </ul>
+          <div className="lj-card lj-card-count">
+            <span className="lj-pin" aria-hidden />
+            <span className="lj-card-title">THE COUNT</span>
+            <div className="lj-count-grid">
+              <CountChip label="in the jar" value={stats.total} tone="cream" />
+              <CountChip label="sealed" value={stats.sealed} tone="wax" />
+              <CountChip label="read" value={stats.opened} tone="sage" />
+              <CountChip label="keepsakes" value={stats.keepsakes} tone="gold" />
+              {stats.locked > 0 && <CountChip label="locked" value={stats.locked} tone="ink" />}
+            </div>
           </div>
         </aside>
 
-        {/* ============ CENTRE: the jar ============ */}
-        <section className="order-1 lg:order-2 flex flex-col items-center">
+        {/* ------------------------------------- centre: the jar, the hero --- */}
+        <section className="lj-scene">
+          <span className="lj-ghost" aria-hidden>
+            LETTERS
+          </span>
+
           {loading ? (
             <div className="lj-jar-loading">
               <Loader2 className="w-6 h-6 animate-spin text-[#E0B1AE]" />
@@ -1135,42 +1262,83 @@ export default function LetterJarScreen({
               </p>
             </div>
           ) : (
-            <>
+            <div className="lj-scene-inner">
+              {/* the surface everything is standing on */}
+              <div className="lj-board" aria-hidden>
+                <span className="lj-board-grain" />
+                <span className="lj-board-edge" />
+              </div>
+              <div className="lj-cloth" aria-hidden />
+              <LaceDoily className="lj-doily" />
+
+              {/* the objects around the jar */}
+              <DriedBunch className="lj-bunch lj-bunch-l" lean={-17} count={8} />
+              <DriedBunch
+                className="lj-bunch lj-bunch-r"
+                lean={15}
+                count={7}
+                tone="#DED3B4"
+                stem="#7E8A62"
+              />
+              <CandleJar className="lj-candle" />
+              <WaxEnvelope className="lj-envelope" wax="#7D2834" />
+              <TiedBundle className="lj-bundle" />
+
+              {loose.map((l, i) => (
+                <span key={l.id} className={`lj-loose lj-loose-${i + 1}`} aria-hidden>
+                  <ScrollGlyph
+                    paperId={l.theme_style}
+                    ribbon={l.ribbon_color}
+                    ribbonStyle={l.ribbon_style}
+                    wax={l.wax_color}
+                    waxShape={l.wax_shape}
+                    sprig={l.sprig}
+                    sealed={!myMarks[l.id]?.opened_at}
+                    className="w-full h-full"
+                  />
+                </span>
+              ))}
+
+              {/* ------------------------------------------- the jar --- */}
               <div className={`lj-jar-wrap ${jarFx ? `fx-${jarFx}` : ""}`}>
-                {/* lid, twine and the heart tag */}
-                <div className="lj-lid" aria-hidden />
+                <span className="lj-jar-cast" aria-hidden />
+
+                <CorkLid className="lj-lid" />
                 <div className="lj-neck" aria-hidden>
                   <span className="lj-neck-thread" />
                   <span className="lj-neck-thread second" />
+                  <span className="lj-neck-lip" />
                 </div>
-                <span className="lj-twine" aria-hidden />
-                <span className="lj-bow" aria-hidden />
-                <span className="lj-tag" aria-hidden>
-                  <Heart className="w-3.5 h-3.5" />
-                </span>
 
-                {/* the glass */}
                 <div className="lj-glass">
+                  <span className="lj-glass-back" aria-hidden />
                   <span className="lj-glass-glow" aria-hidden />
-                  <span className="lj-glass-shine" aria-hidden />
-                  <span className="lj-glass-shine second" aria-hidden />
 
-                  {/* fairy lights coiled inside */}
+                  {lightsOn && (
+                    <svg className="lj-innerwire" viewBox="0 0 200 300" aria-hidden preserveAspectRatio="none">
+                      <path
+                        d="M28 40 C 120 78, 60 120, 150 150 C 60 186, 140 220, 40 258"
+                        fill="none"
+                        stroke="#6B5A44"
+                        strokeWidth="2"
+                        opacity="0.55"
+                      />
+                    </svg>
+                  )}
                   {lightsOn &&
-                    Array.from({ length: 9 }).map((_, i) => (
+                    JAR_BULBS.map((b, i) => (
                       <span
                         key={i}
                         className="lj-inner-bulb"
                         aria-hidden
                         style={{
-                          left: `${12 + ((i * 37) % 76)}%`,
-                          top: `${24 + ((i * 53) % 62)}%`,
-                          animationDelay: `${(i % 5) * 0.32}s`,
+                          left: `${b.x}%`,
+                          top: `${b.y}%`,
+                          animationDelay: `${b.delay}s`,
                         }}
                       />
                     ))}
 
-                  {/* the letters themselves */}
                   <div className="lj-field">
                     {visible.map((l) => {
                       const slot = slots[l.id];
@@ -1201,17 +1369,18 @@ export default function LetterJarScreen({
                             height: `${slot.thick}%`,
                             zIndex: hovered === l.id ? 60 : slot.z,
                             ["--rot" as string]: `${slot.rot}deg`,
-                            ["--ribbon" as string]: l.ribbon_color,
-                            ["--wax" as string]: l.wax_color,
-                            ["--paper" as string]: paperOf(l.theme_style).chip,
-                            ["--paper-edge" as string]: paperOf(l.theme_style).edge,
                           }}
                         >
-                          <span className="lj-scroll-tube" />
-                          <span className="lj-scroll-cap left" />
-                          <span className="lj-scroll-cap right" />
-                          <span className="lj-scroll-ribbon" />
-                          {sealed && <span className="lj-scroll-wax" />}
+                          <ScrollGlyph
+                            paperId={l.theme_style}
+                            ribbon={myMarks[l.id]?.is_favorite ? "#D9B45E" : l.ribbon_color}
+                            ribbonStyle={l.ribbon_style}
+                            wax={l.wax_color}
+                            waxShape={l.wax_shape}
+                            sprig={l.sprig}
+                            sealed={sealed}
+                            className="lj-scroll-svg"
+                          />
                           {locked && (
                             <span className="lj-scroll-lock">
                               <Lock className="w-2.5 h-2.5" strokeWidth={3} />
@@ -1226,43 +1395,46 @@ export default function LetterJarScreen({
                     <div className="lj-empty">
                       <Feather className="w-5 h-5 mx-auto" />
                       <p className="font-handwriting text-xl mt-1 leading-tight">
-                        {letters.length === 0
-                          ? "nothing rolled up yet"
-                          : "nothing matches that"}
+                        {letters.length === 0 ? "nothing rolled up yet" : "nothing matches that"}
                       </p>
                       <p className="font-mono text-[9px] tracking-[.15em] mt-1 opacity-70">
                         {letters.length === 0 ? "WRITE THE FIRST ONE" : "TRY ANOTHER FILTER"}
                       </p>
                     </div>
                   )}
+
+                  {/* the glass itself, laid over whatever is inside it */}
+                  <span className="lj-glass-sheen" aria-hidden />
+                  <span className="lj-glass-sheen second" aria-hidden />
+                  <span className="lj-glass-curve" aria-hidden />
+                  <span className="lj-glass-floor" aria-hidden />
                 </div>
 
-                {/* the paper label pasted on the glass */}
-                <div className="lj-label" aria-hidden>
-                  <span className="font-marker text-base leading-none">Our Letters</span>
-                  <span className="font-mono text-[8px] tracking-[.14em] mt-1 block opacity-80">
-                    {stats.sealed} SEALED • {stats.opened} READ
-                  </span>
-                </div>
+                <TwineBow className="lj-twine" />
+                <HeartTag className="lj-hangtag" />
+                <JarLabel
+                  className="lj-label"
+                  title="Our Letters"
+                  line={`${stats.sealed} SEALED  ${stats.opened} READ`}
+                />
 
-                {/* the effect that fires whenever the jar gains or loses one */}
                 {jarFx && jarFx !== "shake" && (
                   <div className="lj-burst" aria-hidden>
-                    {Array.from({ length: 12 }).map((_, i) => (
+                    {Array.from({ length: 16 }).map((_, i) => (
                       <span
                         key={i}
                         className="lj-spark"
                         style={{
-                          ["--sx" as string]: `${Math.cos((i / 12) * Math.PI * 2) * 90}px`,
-                          ["--sy" as string]: `${Math.sin((i / 12) * Math.PI * 2) * 90 - 20}px`,
-                          animationDelay: `${i * 0.022}s`,
+                          ["--sx" as string]: `${Math.cos((i / 16) * Math.PI * 2) * 120}px`,
+                          ["--sy" as string]: `${Math.sin((i / 16) * Math.PI * 2) * 120 - 30}px`,
+                          animationDelay: `${i * 0.018}s`,
                         }}
                       />
                     ))}
+                    <span className="lj-shockwave" />
                   </div>
                 )}
 
-                {/* hover preview, outside the glass so it is never clipped */}
                 {hovered && slots[hovered] && !phase && (
                   <HoverTag
                     letter={letters.find((l) => l.id === hovered) as Letter}
@@ -1273,55 +1445,72 @@ export default function LetterJarScreen({
                   />
                 )}
               </div>
-
-              <p className="font-handwriting text-xl text-[#C9A9A2] mt-4 text-center max-w-sm">
-                {stats.total === 0
-                  ? "the glass is empty. Write the first one and it rolls itself up."
-                  : stats.sealed > 0
-                    ? `${stats.sealed} still sealed. Tap a roll to break the wax.`
-                    : "every letter in here has been read at least once"}
-              </p>
-            </>
+            </div>
           )}
 
+          <p className="lj-scene-caption">
+            {stats.total === 0
+              ? "the glass is empty. Write the first one and it rolls itself up."
+              : stats.sealed > 0
+                ? `${stats.sealed} still sealed. Tap a roll to break the wax.`
+                : "every letter in here has been read at least once"}
+          </p>
+
           {error && (
-            <div className="paper-kraft-torn px-4 py-3 mt-4 max-w-sm rotate-1">
-              <p className="font-mono text-[11px] text-[#4A1018] leading-relaxed">{error}</p>
+            <div className="lj-error-note">
+              <p className="font-mono text-[11px] leading-relaxed">{error}</p>
             </div>
           )}
         </section>
 
-        {/* ============ RIGHT RAIL: the shelf ============ */}
-        <aside className="flex flex-col gap-4 order-3">
-          <div className="lj-panel">
-            <span className="lj-panel-title">THE KEEPSAKE SHELF</span>
-            <div className="mt-2 space-y-1.5">
-              {letters.filter((l) => myMarks[l.id]?.is_favorite).length === 0 ? (
-                <p className="font-handwriting text-lg text-[#5A2029]/80 leading-tight">
-                  star a letter and it lives up here
-                </p>
-              ) : (
-                letters
-                  .filter((l) => myMarks[l.id]?.is_favorite)
-                  .slice(0, 6)
-                  .map((l) => (
-                    <IndexRow
+        {/* ---------------------------------- right: the shelf and index --- */}
+        <aside className="lj-rail lj-rail-r">
+          <div className="lj-card lj-card-shelf">
+            <span className="lj-tape-strip lj-tape-strip-b" aria-hidden />
+            <span className="lj-card-title">THE KEEPSAKE SHELF</span>
+
+            {keepsakes.length === 0 ? (
+              <p className="font-handwriting text-lg text-[#5A2029]/80 leading-tight mt-2">
+                star a letter and it stands up here
+              </p>
+            ) : (
+              <div className="lj-shelf">
+                <div className="lj-shelf-row">
+                  {keepsakes.slice(0, 5).map((l) => (
+                    <button
                       key={l.id}
-                      letter={l}
-                      fromName={nameOf(l.sender_id)}
-                      sealed={!myMarks[l.id]?.opened_at}
-                      locked={isLocked(l)}
-                      keepsake
-                      onOpen={(el) => openLetter(l, el)}
-                    />
-                  ))
-              )}
-            </div>
+                      type="button"
+                      onClick={(e) => openLetter(l, e.currentTarget)}
+                      className="lj-standing"
+                      title={l.title}
+                      aria-label={`Keepsake: ${l.title}`}
+                    >
+                      <ScrollGlyph
+                        paperId={l.theme_style}
+                        ribbon="#D9B45E"
+                        ribbonStyle={l.ribbon_style}
+                        wax={l.wax_color}
+                        waxShape={l.wax_shape}
+                        sprig={l.sprig}
+                        sealed={!myMarks[l.id]?.opened_at}
+                        className="lj-standing-svg"
+                      />
+                    </button>
+                  ))}
+                </div>
+                <span className="lj-shelf-plank" aria-hidden />
+              </div>
+            )}
           </div>
 
-          <div className="lj-panel">
-            <span className="lj-panel-title">EVERY LETTER</span>
-            <div className="mt-2 space-y-1.5 max-h-[52vh] overflow-y-auto lj-scrollbar pr-1">
+          <div className="lj-card lj-card-index">
+            <span className="lj-spiral" aria-hidden>
+              {Array.from({ length: 9 }).map((_, i) => (
+                <span key={i} className="spiral-binder-ring lj-ring" />
+              ))}
+            </span>
+            <span className="lj-card-title">EVERY LETTER</span>
+            <div className="lj-index-list lj-scrollbar">
               {[...visible].reverse().map((l) => (
                 <IndexRow
                   key={l.id}
@@ -1345,6 +1534,7 @@ export default function LetterJarScreen({
       {target && phase && (
         <div className="lj-reader" role="dialog" aria-modal="true" aria-label={target.title}>
           <button className="lj-reader-scrim" onClick={closeLetter} aria-label="Close the letter" />
+          {ready && <div className="lj-reader-rays" aria-hidden />}
 
           <div
             className={`lj-stage phase-${phase}`}
@@ -1356,8 +1546,14 @@ export default function LetterJarScreen({
               ["--fk" as string]: `${flight?.k ?? 0.2}`,
             }}
           >
-            <span className="lj-rollbar top" style={{ ["--ribbon" as string]: target.ribbon_color }} />
-            <span className="lj-rollbar bottom" style={{ ["--ribbon" as string]: target.ribbon_color }} />
+            <span className="lj-rollbar top" style={{ ["--ribbon" as string]: target.ribbon_color }}>
+              <span className="lj-rollbar-face" />
+              <span className="lj-rollbar-tie" />
+            </span>
+            <span className="lj-rollbar bottom" style={{ ["--ribbon" as string]: target.ribbon_color }}>
+              <span className="lj-rollbar-face" />
+              <span className="lj-rollbar-tie" />
+            </span>
 
             <div className="lj-paper-clip">
               <LetterPaper
@@ -1379,7 +1575,6 @@ export default function LetterJarScreen({
             </div>
           </div>
 
-          {/* the action bar rides under the scroll, never on the paper */}
           {ready && (
             <div className="lj-actions">
               <div className="lj-receipt">
@@ -1445,20 +1640,20 @@ export default function LetterJarScreen({
             </div>
           )}
 
-          {/* a soft petal fall the first time a sealed letter is broken open */}
           {ready && brokeSeal && (
             <div className="lj-petals" aria-hidden>
-              {Array.from({ length: 10 }).map((_, i) => (
+              {Array.from({ length: 14 }).map((_, i) => (
                 <span
                   key={i}
                   className="lj-petal"
                   style={{
-                    left: `${8 + i * 9}%`,
-                    animationDelay: `${i * 0.24}s`,
+                    left: `${5 + i * 6.8}%`,
+                    animationDelay: `${i * 0.2}s`,
                     ["--drift" as string]: `${(i % 2 ? 1 : -1) * (18 + i * 4)}px`,
+                    ["--spin" as string]: `${(i % 2 ? 1 : -1) * 320}deg`,
                   }}
                 >
-                  {i % 3 === 0 ? "🌸" : i % 3 === 1 ? "✨" : "🤍"}
+                  {i % 4 === 0 ? "🌸" : i % 4 === 1 ? "✨" : i % 4 === 2 ? "🤍" : "🌾"}
                 </span>
               ))}
             </div>
@@ -1534,75 +1729,16 @@ export default function LetterJarScreen({
 
 /* ============================================================ sub-parts == */
 
-function StatRow({ label, value }: { label: string; value: number }) {
+/* A count as a little enamel chip rather than another line in a list, so the
+   panel reads as a set of objects instead of a stack of rows. */
+function CountChip({ label, value, tone }: { label: string; value: number; tone: string }) {
   return (
-    <li className="flex items-baseline justify-between gap-2">
-      <span className="font-handwriting text-lg text-[#5A2029]">{label}</span>
-      <span className="flex-1 border-b border-dotted border-[#7D2834]/35 translate-y-[-3px]" />
-      <span className="font-marker text-lg text-[#450A10]">{value}</span>
-    </li>
-  );
-}
-
-function FairyString({ bulbs, className }: { bulbs: number; className: string }) {
-  return (
-    <div className={`lj-string ${className}`} aria-hidden>
-      <svg viewBox="0 0 1200 140" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
-        <path d="M0 6 Q 300 122 600 66 T 1200 10" fill="none" stroke="#4A392C" strokeWidth="2.5" />
-      </svg>
-      {Array.from({ length: bulbs }).map((_, i) => {
-        const t = i / (bulbs - 1);
-        // rounded, or the server and the client serialise the float differently
-        // and React reports a hydration mismatch on every bulb
-        const x = (t * 100).toFixed(3);
-        const y = (
-          6 + Math.sin(t * Math.PI) * 58 + (t > 0.5 ? -14 * (t - 0.5) * 2 : 0)
-        ).toFixed(2);
-        return (
-          <span
-            key={i}
-            className="lj-bulb"
-            style={{
-              left: `${x}%`,
-              top: `${y}px`,
-              ["--bulb" as string]:
-                i % 3 === 0 ? "#FFD9A0" : i % 3 === 1 ? "#FFC1CE" : "#FFEBC4",
-              animationDelay: `${(i % 6) * 0.26}s`,
-            }}
-          />
-        );
-      })}
-    </div>
-  );
-}
-
-function WebCorner({ className }: { className: string }) {
-  return (
-    <svg className={`lj-web ${className}`} viewBox="0 0 120 120" aria-hidden>
-      {[22, 44, 66, 88, 110].map((r) => (
-        <path
-          key={r}
-          d={`M0 ${r} Q ${r * 0.42} ${r * 0.42} ${r} 0`}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.4"
-        />
-      ))}
-      {[0, 22.5, 45, 67.5, 90].map((a) => {
-        const rad = (a * Math.PI) / 180;
-        return (
-          <line
-            key={a}
-            x1="0"
-            y1="0"
-            x2={Math.sin(rad) * 118}
-            y2={Math.cos(rad) * 118}
-            stroke="currentColor"
-            strokeWidth="1.2"
-          />
-        );
-      })}
-    </svg>
+    <span className={`lj-chip lj-chip-${tone}`}>
+      <span className="font-marker text-xl leading-none">{value}</span>
+      <span className="font-mono text-[8px] tracking-[.12em] uppercase opacity-80 mt-0.5">
+        {label}
+      </span>
+    </span>
   );
 }
 
@@ -1623,11 +1759,12 @@ function HoverTag({
     <div
       className="lj-hovertag"
       style={{
-        left: `${Math.min(88, Math.max(12, slot.x))}%`,
+        left: `${Math.min(86, Math.max(14, slot.x))}%`,
         top: `${slot.y}%`,
       }}
     >
-      <span className="tape-gold-solid absolute -top-2.5 left-1/2 -translate-x-1/2 w-12 h-4 -rotate-3" />
+      <span className="lj-hovertag-string" aria-hidden />
+      <span className="lj-hovertag-hole" aria-hidden />
       <span className="font-mono text-[9px] font-black tracking-[.16em] text-[#7D2834]">
         FROM {fromName.toUpperCase()}
       </span>
@@ -1667,14 +1804,19 @@ function IndexRow({
   keepsake: boolean;
   onOpen: (el: HTMLElement) => void;
 }) {
+  const paper = paperOf(letter.theme_style);
   return (
     <button
       type="button"
       onClick={(e) => onOpen(e.currentTarget)}
       className={`lj-indexrow ${sealed ? "is-sealed" : ""}`}
-      style={{ ["--ribbon" as string]: letter.ribbon_color }}
+      style={{
+        ["--ribbon" as string]: letter.ribbon_color,
+        ["--swatch" as string]: paper.chip,
+      }}
     >
       <span className="lj-indexrow-knot" />
+      <span className="lj-indexrow-swatch" />
       <span className="flex-1 min-w-0 text-left">
         <span className="block font-marker text-sm text-[#1A0D10] truncate">{letter.title}</span>
         <span className="block font-mono text-[9px] text-[#5A2029]/80 truncate">
@@ -1693,6 +1835,9 @@ function IndexRow({
 
 /* --------------------------------------------------- the letter itself --- */
 
+/* The sheet is built in layers the way a real one is: the stock underneath, a
+   turbulence grain over it, the patina (foxing, coffee, ink) above that, then
+   the edge treatment, and only then the writing. */
 function LetterPaper({
   letter,
   fromName,
@@ -1712,45 +1857,61 @@ function LetterPaper({
 
   return (
     <article
-      className={`lj-paper lj-scrollbar ${stamp.tag ? "lj-has-stamp" : ""}`}
-      style={{ background: paper.bg, borderColor: paper.edge, color: letter.ink_color }}
+      className={`lj-paper edge-${letter.paper_edge} patina-${letter.paper_patina} ${
+        stamp.tag ? "lj-has-stamp" : ""
+      }`}
+      style={{
+        background: paper.base,
+        color: letter.ink_color,
+        ["--sheet" as string]: paper.chip,
+        ["--sheet-edge" as string]: paper.edge,
+      }}
     >
-      {tape.css && (
-        <span className={`${tape.css} lj-paper-tape left`} aria-hidden />
-      )}
-      {tape.css && (
-        <span className={`${tape.css} lj-paper-tape right`} aria-hidden />
-      )}
+      <span className="lj-paper-grain" aria-hidden />
+      <span className="lj-paper-patina" aria-hidden />
+      <span className="lj-paper-fold" aria-hidden />
+      <span className="lj-paper-edge" aria-hidden />
 
-      {stamp.tag && (
-        <span className="lj-paper-stamp" style={{ borderColor: stamp.tone, color: stamp.tone }} aria-hidden>
-          <span className="text-lg leading-none">🕸️</span>
-          <span className="block font-mono text-[7px] font-black tracking-[.1em] mt-0.5">
-            {stamp.tag}
-          </span>
-        </span>
-      )}
+      {tape.css && <span className={`${tape.css} lj-paper-tape left`} aria-hidden />}
+      {tape.css && <span className={`${tape.css} lj-paper-tape right`} aria-hidden />}
 
+      <StampMark id={letter.stamp_style} className="lj-paper-stamp" />
+
+      <div className="lj-paper-well lj-scrollbar">
       <div className="lj-paper-body">
         <div className="lj-paper-head">
-          {letter.occasion && (
-            <span className="lj-occasion-tag">{letter.occasion}</span>
-          )}
+          {letter.occasion && <span className="lj-occasion-tag">{letter.occasion}</span>}
 
-          <h2 className="font-marker text-3xl sm:text-4xl leading-tight mt-1" style={{ color: letter.ink_color }}>
+          <h2
+            className="font-marker text-3xl sm:text-4xl leading-tight mt-1"
+            style={{ color: letter.ink_color }}
+          >
             {letter.title}
           </h2>
 
           <p className="font-mono text-[10px] tracking-[.15em] opacity-70 mt-1.5">
-            FROM {fromName.toUpperCase()} • TO {toName.toUpperCase()} • {formatDate(letter.created_at).toUpperCase()}
+            FROM {fromName.toUpperCase()} • TO {toName.toUpperCase()} •{" "}
+            {formatDate(letter.created_at).toUpperCase()}
           </p>
 
           {replyTo && (
-            <p className="font-handwriting text-lg opacity-75 mt-1">in reply to &ldquo;{replyTo}&rdquo;</p>
+            <p className="font-handwriting text-lg opacity-75 mt-1">
+              in reply to &ldquo;{replyTo}&rdquo;
+            </p>
           )}
         </div>
 
-        <span className="block h-px my-4" style={{ background: `${letter.ink_color}33` }} />
+        {/* a rule drawn by hand, not a border */}
+        <svg className="lj-rule" viewBox="0 0 400 8" preserveAspectRatio="none" aria-hidden>
+          <path
+            d="M2 5 C 60 2, 120 7, 190 4 C 260 1, 330 6, 398 3"
+            fill="none"
+            stroke="currentColor"
+            strokeOpacity="0.32"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+          />
+        </svg>
 
         <div className={`${font.cls} ${font.size} whitespace-pre-wrap break-words`}>
           {letter.body}
@@ -1759,16 +1920,26 @@ function LetterPaper({
         <div className="lj-paper-sign flex items-end justify-between gap-4">
           <span className="font-handwriting text-2xl opacity-90">yours, {fromName}</span>
           <span
-            className="lj-paper-seal"
-            style={{ background: `radial-gradient(circle at 35% 32%, ${letter.wax_color}, #2b0407)` }}
+            className={`lj-paper-seal wax-${letter.wax_shape}`}
+            style={{ ["--wax" as string]: letter.wax_color }}
             aria-hidden
           >
-            <Emblem className="w-5 h-5" strokeWidth={2.2} />
+            <span className="lj-paper-seal-face">
+              <Emblem className="w-5 h-5" strokeWidth={2.2} />
+            </span>
           </span>
         </div>
       </div>
 
-      {/* whatever the writer pressed onto the page */}
+      </div>
+
+      {/* a pressed stem tucked into the corner of the sheet */}
+      {letter.sprig !== "none" && (
+        <svg className="lj-paper-sprig" viewBox="0 0 60 40" aria-hidden>
+          <SprigMark def={sprigOf(letter.sprig)} x={8} y={30} />
+        </svg>
+      )}
+
       {letter.stickers.map((s) => (
         <span
           key={s.id}
@@ -1795,7 +1966,7 @@ const COMPOSER_TABS: { id: ComposerTab; label: string }[] = [
   { id: "write", label: "WRITE" },
   { id: "paper", label: "PAPER" },
   { id: "ink", label: "INK" },
-  { id: "seal", label: "RIBBON & SEAL" },
+  { id: "seal", label: "TIE & SEAL" },
   { id: "trim", label: "TAPE & STAMP" },
   { id: "stickers", label: "STICKERS" },
   { id: "deliver", label: "DELIVER" },
@@ -1888,8 +2059,8 @@ function Composer({
     if (draft.stickers.length >= MAX_STICKERS) return;
     const n = stickerSeq.current++;
     const id = `s${n}`;
-    // Walk each new sticker to its own spot instead of dropping them all on
-    // top of each other, then let the writer drag it wherever they want.
+    // Co-prime strides walk each new sticker to its own spot instead of
+    // dropping them all on top of each other.
     setDraft((d) => ({
       ...d,
       stickers: [
@@ -1928,9 +2099,7 @@ function Composer({
   return (
     <div className="lj-composer" role="dialog" aria-modal="true" aria-label="Write a letter">
       <div className="lj-composer-head">
-        <span className="postage-stamp -rotate-2">
-          {draft.id ? "REWRITING" : "NEW LETTER"}
-        </span>
+        <span className="lj-chapter-stamp">{draft.id ? "REWRITING" : "NEW LETTER"}</span>
         <h2 className="font-marker text-2xl sm:text-3xl text-[#F6E7D2]">
           {draft.id ? "Unroll and rewrite" : "Write it, roll it, drop it in"}
         </h2>
@@ -1946,98 +2115,140 @@ function Composer({
       </div>
 
       <div className="lj-composer-body">
-        {/* -------- live preview: the exact paper that goes in the jar ---- */}
+        {/* -------- live preview: the exact sheet that goes in the jar ---- */}
         <div className="lj-preview-stage">
           <span className="font-mono text-[9px] tracking-[.2em] text-[#C9A9A2] mb-2 block">
             HOW IT WILL LOOK WHEN THEY UNROLL IT
           </span>
 
-          <div
-            ref={previewRef}
-            className={`lj-preview lj-scrollbar ${stamp.tag ? "lj-has-stamp" : ""}`}
-            style={{ background: paper.bg, borderColor: paper.edge, color: draft.ink_color }}
-            onPointerDown={() => setSelected(null)}
-          >
-            {tape.css && <span className={`${tape.css} lj-paper-tape left`} aria-hidden />}
-            {tape.css && <span className={`${tape.css} lj-paper-tape right`} aria-hidden />}
+          <div className="lj-preview-frame">
+            <div
+              ref={previewRef}
+              className={`lj-preview lj-paper edge-${draft.paper_edge} patina-${draft.paper_patina} ${
+                stamp.tag ? "lj-has-stamp" : ""
+              }`}
+              style={{
+                background: paper.base,
+                color: draft.ink_color,
+                ["--sheet" as string]: paper.chip,
+                ["--sheet-edge" as string]: paper.edge,
+              }}
+              onPointerDown={() => setSelected(null)}
+            >
+              <span className="lj-paper-grain" aria-hidden />
+              <span className="lj-paper-patina" aria-hidden />
+              <span className="lj-paper-fold" aria-hidden />
+              <span className="lj-paper-edge" aria-hidden />
 
-            {stamp.tag && (
-              <span
-                className="lj-paper-stamp"
-                style={{ borderColor: stamp.tone, color: stamp.tone }}
-                aria-hidden
-              >
-                <span className="text-lg leading-none">🕸️</span>
-                <span className="block font-mono text-[7px] font-black tracking-[.1em] mt-0.5">
-                  {stamp.tag}
-                </span>
-              </span>
-            )}
+              {tape.css && <span className={`${tape.css} lj-paper-tape left`} aria-hidden />}
+              {tape.css && <span className={`${tape.css} lj-paper-tape right`} aria-hidden />}
 
-            <div className="lj-paper-body">
-              <div className="lj-paper-head">
-                {draft.occasion && <span className="lj-occasion-tag">{draft.occasion}</span>}
+              <StampMark id={draft.stamp_style} className="lj-paper-stamp" />
 
-                <h3 className="font-marker text-3xl leading-tight mt-1">
-                  {draft.title || "your title here"}
-                </h3>
+              <div className="lj-paper-well lj-scrollbar">
+              <div className="lj-paper-body">
+                <div className="lj-paper-head">
+                  {draft.occasion && <span className="lj-occasion-tag">{draft.occasion}</span>}
 
-                <p className="font-mono text-[10px] tracking-[.15em] opacity-70 mt-1.5">
-                  FROM {myName.toUpperCase()} • TO{" "}
-                  {draft.is_private ? "YOURSELF" : partnerName.toUpperCase()}
-                </p>
+                  <h3 className="font-marker text-3xl leading-tight mt-1">
+                    {draft.title || "your title here"}
+                  </h3>
 
-                {replyToTitle && (
-                  <p className="font-handwriting text-lg opacity-75 mt-1">
-                    in reply to &ldquo;{replyToTitle}&rdquo;
+                  <p className="font-mono text-[10px] tracking-[.15em] opacity-70 mt-1.5">
+                    FROM {myName.toUpperCase()} • TO{" "}
+                    {draft.is_private ? "YOURSELF" : partnerName.toUpperCase()}
                   </p>
-                )}
+
+                  {replyToTitle && (
+                    <p className="font-handwriting text-lg opacity-75 mt-1">
+                      in reply to &ldquo;{replyToTitle}&rdquo;
+                    </p>
+                  )}
+                </div>
+
+                <svg className="lj-rule" viewBox="0 0 400 8" preserveAspectRatio="none" aria-hidden>
+                  <path
+                    d="M2 5 C 60 2, 120 7, 190 4 C 260 1, 330 6, 398 3"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeOpacity="0.32"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                  />
+                </svg>
+
+                <div className={`${font.cls} ${font.size} whitespace-pre-wrap break-words min-h-[80px]`}>
+                  {draft.body || "start writing and it appears here, in your ink, on your paper."}
+                </div>
+
+                <div className="lj-paper-sign flex items-end justify-between gap-4">
+                  <span className="font-handwriting text-2xl opacity-90">yours, {myName}</span>
+                  <span
+                    className={`lj-paper-seal wax-${draft.wax_shape}`}
+                    style={{ ["--wax" as string]: draft.wax_color }}
+                    aria-hidden
+                  >
+                    <span className="lj-paper-seal-face">
+                      <Emblem className="w-5 h-5" strokeWidth={2.2} />
+                    </span>
+                  </span>
+                </div>
               </div>
 
-              <span className="block h-px my-4" style={{ background: `${draft.ink_color}33` }} />
-
-              <div className={`${font.cls} ${font.size} whitespace-pre-wrap break-words min-h-[80px]`}>
-                {draft.body || "start writing and it appears here, in your ink, on your paper."}
               </div>
 
-              <div className="lj-paper-sign flex items-end justify-between gap-4">
-                <span className="font-handwriting text-2xl opacity-90">yours, {myName}</span>
-                <span
-                  className="lj-paper-seal"
-                  style={{ background: `radial-gradient(circle at 35% 32%, ${draft.wax_color}, #2b0407)` }}
-                  aria-hidden
+              {draft.sprig !== "none" && (
+                <svg className="lj-paper-sprig" viewBox="0 0 60 40" aria-hidden>
+                  <SprigMark def={sprigOf(draft.sprig)} x={8} y={30} />
+                </svg>
+              )}
+
+              {draft.stickers.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  className={`lj-sticker is-editable ${selected === s.id ? "is-selected" : ""}`}
+                  style={{
+                    left: `${s.x}%`,
+                    top: `${s.y}%`,
+                    transform: `translate(-50%, -50%) rotate(${s.rot}deg) scale(${s.scale})`,
+                  }}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    dragging.current = s.id;
+                    setSelected(s.id);
+                  }}
+                  aria-label={`Sticker ${s.char}`}
                 >
-                  <Emblem className="w-5 h-5" strokeWidth={2.2} />
-                </span>
-              </div>
+                  {s.char}
+                </button>
+              ))}
             </div>
 
-            {draft.stickers.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                className={`lj-sticker is-editable ${selected === s.id ? "is-selected" : ""}`}
-                style={{
-                  left: `${s.x}%`,
-                  top: `${s.y}%`,
-                  transform: `translate(-50%, -50%) rotate(${s.rot}deg) scale(${s.scale})`,
-                }}
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  dragging.current = s.id;
-                  setSelected(s.id);
-                }}
-                aria-label={`Sticker ${s.char}`}
-              >
-                {s.char}
-              </button>
-            ))}
+            {/* how the same letter will look once it is rolled up */}
+            <div className="lj-roll-preview" aria-hidden>
+              <span className="font-mono text-[8px] tracking-[.18em] block mb-1 opacity-70">
+                ROLLED UP
+              </span>
+              <ScrollGlyph
+                paperId={draft.theme_style}
+                ribbon={draft.ribbon_color}
+                ribbonStyle={draft.ribbon_style}
+                wax={draft.wax_color}
+                waxShape={draft.wax_shape}
+                sprig={draft.sprig}
+                sealed
+                className="lj-roll-preview-svg"
+              />
+            </div>
           </div>
 
           {selectedSticker && (
             <div className="lj-sticker-tools">
-              <span className="font-mono text-[9px] tracking-[.14em]">{selectedSticker.char} SELECTED</span>
+              <span className="font-mono text-[9px] tracking-[.14em]">
+                {selectedSticker.char} SELECTED
+              </span>
               <button type="button" onClick={() => updateSelected({ rot: selectedSticker.rot - 15 })}>
                 ROTATE -
               </button>
@@ -2064,7 +2275,7 @@ function Composer({
         </div>
 
         {/* -------------------------- the customisation rail -------------- */}
-        <div className="lj-rail">
+        <div className="lj-rail-panel">
           <div className="lj-tabs">
             {COMPOSER_TABS.map((t) => (
               <button
@@ -2123,27 +2334,74 @@ function Composer({
             )}
 
             {tab === "paper" && (
-              <Field label="PICK THE PAPER">
-                <div className="grid grid-cols-2 gap-2">
-                  {PAPERS.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => {
-                        set("theme_style", p.id);
-                        set("ink_color", p.ink);
-                      }}
-                      className={`lj-paper-opt ${draft.theme_style === p.id ? "is-active" : ""}`}
-                      style={{ background: p.bg, borderColor: p.edge, color: p.ink }}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-                <p className="font-handwriting text-lg text-[#C9A9A2] mt-3 leading-snug">
-                  picking a paper also sets its matching ink. change the ink after if you like.
-                </p>
-              </Field>
+              <>
+                <Field label="THE STOCK">
+                  <div className="lj-paper-grid">
+                    {PAPERS.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => {
+                          set("theme_style", p.id);
+                          set("ink_color", p.ink);
+                        }}
+                        className={`lj-paper-opt edge-${draft.paper_edge} ${
+                          draft.theme_style === p.id ? "is-active" : ""
+                        }`}
+                        style={{
+                          background: p.base,
+                          color: p.ink,
+                          ["--sheet" as string]: p.chip,
+                          ["--sheet-edge" as string]: p.edge,
+                        }}
+                      >
+                        <span className="lj-paper-grain" aria-hidden />
+                        <span className="lj-paper-edge" aria-hidden />
+                        <span className="relative z-10">{p.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="font-handwriting text-lg text-[#C9A9A2] mt-3 leading-snug">
+                    picking a stock also sets its matching ink. change the ink after if you like.
+                  </p>
+                </Field>
+
+                <Field label="HOW THE EDGE IS FINISHED">
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {PAPER_EDGES.map((e) => (
+                      <button
+                        key={e.id}
+                        type="button"
+                        onClick={() => set("paper_edge", e.id)}
+                        className={`lj-opt lj-opt-tall ${draft.paper_edge === e.id ? "is-active" : ""}`}
+                      >
+                        <span className="block">{e.label}</span>
+                        <span className="block font-handwriting text-base normal-case tracking-normal opacity-75 mt-0.5">
+                          {e.hint}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+
+                <Field label="HOW IT HAS AGED">
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {PATINAS.map((e) => (
+                      <button
+                        key={e.id}
+                        type="button"
+                        onClick={() => set("paper_patina", e.id)}
+                        className={`lj-opt lj-opt-tall ${draft.paper_patina === e.id ? "is-active" : ""}`}
+                      >
+                        <span className="block">{e.label}</span>
+                        <span className="block font-handwriting text-base normal-case tracking-normal opacity-75 mt-0.5">
+                          {e.hint}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+              </>
             )}
 
             {tab === "ink" && (
@@ -2160,7 +2418,7 @@ function Composer({
                     />
                   ))}
                 </div>
-                <span className="lj-panel-title block mt-4 mb-1.5">OR MIX YOUR OWN</span>
+                <span className="lj-card-title block mt-4 mb-1.5">OR MIX YOUR OWN</span>
                 <input
                   type="color"
                   value={draft.ink_color}
@@ -2185,6 +2443,21 @@ function Composer({
                       />
                     ))}
                   </div>
+                  <div className="grid grid-cols-2 gap-1.5 mt-2.5">
+                    {RIBBON_STYLES.map((r) => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        onClick={() => set("ribbon_style", r.id)}
+                        className={`lj-opt lj-opt-tall ${draft.ribbon_style === r.id ? "is-active" : ""}`}
+                      >
+                        <span className="block">{r.label}</span>
+                        <span className="block font-handwriting text-base normal-case tracking-normal opacity-75 mt-0.5">
+                          {r.hint}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                 </Field>
 
                 <Field label="WAX COLOUR">
@@ -2200,10 +2473,25 @@ function Composer({
                       />
                     ))}
                   </div>
+                  <div className="grid grid-cols-2 gap-1.5 mt-2.5">
+                    {WAX_SHAPES.map((w) => (
+                      <button
+                        key={w.id}
+                        type="button"
+                        onClick={() => set("wax_shape", w.id)}
+                        className={`lj-opt lj-opt-tall ${draft.wax_shape === w.id ? "is-active" : ""}`}
+                      >
+                        <span className="block">{w.label}</span>
+                        <span className="block font-handwriting text-base normal-case tracking-normal opacity-75 mt-0.5">
+                          {w.hint}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                 </Field>
 
                 <Field label="WHAT IS PRESSED INTO IT">
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className="grid grid-cols-4 gap-1.5">
                     {EMBLEMS.map((e) => (
                       <button
                         key={e.id}
@@ -2215,6 +2503,21 @@ function Composer({
                       >
                         <e.Icon className="w-4 h-4" />
                         {e.label}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+
+                <Field label="TUCKED UNDER THE RIBBON">
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {SPRIGS.map((sp) => (
+                      <button
+                        key={sp.id}
+                        type="button"
+                        onClick={() => set("sprig", sp.id)}
+                        className={`lj-opt ${draft.sprig === sp.id ? "is-active" : ""}`}
+                      >
+                        {sp.label}
                       </button>
                     ))}
                   </div>
@@ -2233,7 +2536,9 @@ function Composer({
                         onClick={() => set("tape_style", t.id)}
                         className={`lj-opt ${draft.tape_style === t.id ? "is-active" : ""}`}
                       >
-                        {t.css && <span className={`${t.css} inline-block w-6 h-2.5 mr-1.5 align-middle`} />}
+                        {t.css && (
+                          <span className={`${t.css} inline-block w-6 h-2.5 mr-1.5 align-middle`} />
+                        )}
                         {t.label}
                       </button>
                     ))}
@@ -2241,16 +2546,20 @@ function Composer({
                 </Field>
 
                 <Field label="POSTAGE STAMP">
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {STAMPS.map((s) => (
+                  <div className="lj-stamp-grid">
+                    {STAMPS.map((st) => (
                       <button
-                        key={s.id}
+                        key={st.id}
                         type="button"
-                        onClick={() => set("stamp_style", s.id)}
-                        className={`lj-opt ${draft.stamp_style === s.id ? "is-active" : ""}`}
-                        style={s.tone ? { borderColor: s.tone } : undefined}
+                        onClick={() => set("stamp_style", st.id)}
+                        className={`lj-stamp-opt ${draft.stamp_style === st.id ? "is-active" : ""}`}
+                        aria-label={st.label}
                       >
-                        {s.label}
+                        {st.tag ? (
+                          <StampMark id={st.id} className="w-full h-auto" />
+                        ) : (
+                          <span className="lj-stamp-none">NONE</span>
+                        )}
                       </button>
                     ))}
                   </div>
@@ -2305,15 +2614,16 @@ function Composer({
                     placeholder="open when you miss me"
                     className="lj-input"
                   />
-                  <div className="flex flex-wrap gap-1.5 mt-2">
-                    {OCCASION_PRESETS.map((p) => (
+                  <div className="lj-filter-row mt-2">
+                    {OCCASION_PRESETS.map((pr) => (
                       <button
-                        key={p}
+                        key={pr}
                         type="button"
-                        onClick={() => set("occasion", p)}
-                        className={`lj-filter ${draft.occasion === p ? "is-active" : ""}`}
+                        onClick={() => set("occasion", pr)}
+                        className={`lj-filter ${draft.occasion === pr ? "is-active" : ""}`}
                       >
-                        {p}
+                        <span className="lj-filter-hole" />
+                        {pr}
                       </button>
                     ))}
                   </div>
@@ -2370,7 +2680,7 @@ function Composer({
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mb-5">
-      <span className="lj-panel-title block mb-1.5">{label}</span>
+      <span className="lj-card-title block mb-1.5">{label}</span>
       {children}
     </div>
   );
@@ -2378,130 +2688,676 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 /* =============================================================== styles == */
 /* Chapter-scoped, per the house rule that a chapter carries its own CSS so it
-   stays independently droppable. Motion is transform/opacity/clip-path only,
-   so nothing here forces a per-frame repaint of the jar. */
+   stays independently droppable. Rules of the room:
+     - motion is transform, opacity and clip-path only, so nothing forces a
+       per-frame repaint;
+     - SVG filters appear only on static elements (paper edges), never on
+       anything that animates;
+     - the grain is one data-URI turbulence tile the browser rasterises once. */
 
 function ScopedStyles() {
   return (
     <style>{`
       .lj-root {
+        --lj-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)'/%3E%3C/svg%3E");
+        --mx: 0; --my: 0;
         position: relative;
-        min-height: 100vh;
+        min-height: 100svh;
         overflow-x: hidden;
-        background:
-          radial-gradient(ellipse at 50% -10%, #3A2129 0%, transparent 55%),
-          linear-gradient(#1B1216 0%, #140D11 60%, #0F0A0D 100%);
+        background: #0C0709;
         color: #F2E6D2;
       }
 
-      /* ---------- desk, lamp, vignette ---------- */
-      .lj-desk {
-        position: absolute; inset: auto 0 0 0; height: 34vh; pointer-events: none;
+      /* ======================================================== the room === */
+      .lj-bg { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+
+      .lj-bg-wall {
+        position: absolute; inset: -4%;
         background:
-          repeating-linear-gradient(92deg, rgba(0,0,0,.16) 0 2px, transparent 2px 26px),
-          linear-gradient(#3A2419, #24160F);
-        box-shadow: inset 0 14px 40px rgba(0,0,0,.7);
+          repeating-linear-gradient(90deg, rgba(255,255,255,.018) 0 2px, transparent 2px 46px),
+          radial-gradient(ellipse 80% 60% at 50% 8%, #4A2C33 0%, transparent 62%),
+          linear-gradient(#241519 0%, #180F13 46%, #0D080A 100%);
+        transform: translate3d(calc(var(--mx) * -8px), calc(var(--my) * -6px), 0);
       }
-      .lj-lamp {
-        position: absolute; inset: 0; pointer-events: none;
-        background: radial-gradient(ellipse 70% 46% at 50% 46%, rgba(255,196,128,.22), transparent 62%);
-        transition: opacity .5s ease;
+      .lj-bg-paper {
+        position: absolute; inset: 0;
+        background-image: var(--lj-grain);
+        opacity: .10;
+        mix-blend-mode: overlay;
       }
-      .lj-vignette {
-        position: absolute; inset: 0; pointer-events: none;
-        background: radial-gradient(ellipse at 50% 40%, transparent 42%, rgba(8,5,7,.72) 100%);
+      .lj-bg-window {
+        position: absolute; left: 4%; top: -6%; width: 30%; height: 62%;
+        background:
+          linear-gradient(180deg, rgba(255,214,164,.16), rgba(255,180,140,.04) 60%, transparent),
+          repeating-linear-gradient(90deg, transparent 0 46%, rgba(20,12,14,.5) 46% 48%, transparent 48%);
+        transform: skewY(6deg) translate3d(calc(var(--mx) * -14px), 0, 0);
+        filter: none;
       }
-      .lights-off .lj-lamp { opacity: .28; }
-      .lights-off .lj-bulb, .lights-off .lj-inner-bulb { opacity: .12 !important; animation: none !important; }
+      .lj-bg-beam {
+        position: absolute; left: 2%; top: -20%; width: 46%; height: 130%;
+        background: linear-gradient(163deg, rgba(255,206,150,.13), transparent 46%);
+        transform: translate3d(calc(var(--mx) * -20px), calc(var(--my) * -10px), 0);
+      }
+      .lj-bg-shelf {
+        position: absolute; right: -4%; top: 16%; width: 44%; height: 16px;
+        background: linear-gradient(#40291B, #21140D);
+        box-shadow: 0 16px 34px rgba(0,0,0,.7);
+        transform: rotate(-1.2deg) translate3d(calc(var(--mx) * 10px), calc(var(--my) * 5px), 0);
+      }
 
-      /* ---------- fairy lights ---------- */
-      .lj-string { position: absolute; left: 0; right: 0; height: 130px; pointer-events: none; z-index: 5; }
-      .lj-string-top { top: -6px; }
-      .lj-string-second { top: 46px; opacity: .55; transform: scaleX(-1); }
-      .lj-bulb {
-        position: absolute; width: 9px; height: 9px; border-radius: 999px;
-        background: var(--bulb);
-        box-shadow: 0 0 12px 4px color-mix(in srgb, var(--bulb) 55%, transparent);
-        animation: lj-twinkle 2.6s ease-in-out infinite;
-      }
-      @keyframes lj-twinkle { 0%,100% { opacity: .42; } 50% { opacity: 1; } }
-
-      /* ---------- spider on a thread ---------- */
-      .lj-spider-drop {
-        position: absolute; top: 0; right: 12%; z-index: 6; pointer-events: none;
-        display: flex; flex-direction: column; align-items: center;
+      .lj-swinger {
+        position: absolute; width: 190px; opacity: .12;
+        filter: brightness(0.35) contrast(1.3);
         transform-origin: top center;
-        animation: lj-swing 6.5s ease-in-out infinite;
       }
-      .lj-spider-thread { width: 1px; height: 108px; background: linear-gradient(#6B5A50, #B9A79A); }
-      .lj-spider-body { font-size: 22px; line-height: 1; margin-top: -2px; }
-      @keyframes lj-swing { 0%,100% { transform: rotate(-4deg); } 50% { transform: rotate(4deg); } }
+      .lj-swinger-gwen {
+        left: 6%; top: -3%;
+        animation: lj-swing-far 13s ease-in-out infinite;
+      }
+      .lj-swinger-peter {
+        right: 8%; top: -6%; width: 165px; opacity: .10;
+        animation: lj-swing-far 17s ease-in-out infinite reverse;
+      }
+      @keyframes lj-swing-far {
+        0%, 100% { transform: rotate(-7deg) translateY(0); }
+        50% { transform: rotate(7deg) translateY(14px); }
+      }
 
-      /* ---------- web corners ---------- */
-      .lj-web { position: absolute; width: 190px; height: 190px; color: rgba(224,177,174,.16); pointer-events: none; z-index: 2; }
-      .lj-web-tl { top: 84px; left: -14px; }
-      .lj-web-br { bottom: -14px; right: -14px; transform: rotate(180deg); }
+      .lj-bokeh { position: absolute; inset: 0; }
+      .lj-bokeh-dot {
+        position: absolute; border-radius: 999px;
+        animation-name: lj-bokeh-drift;
+        animation-timing-function: ease-in-out;
+        animation-iteration-count: infinite;
+        transform: translate3d(calc(var(--mx) * var(--depth) * 8px), calc(var(--my) * var(--depth) * 6px), 0);
+      }
+      @keyframes lj-bokeh-drift {
+        0%, 100% { opacity: .22; transform: translate3d(0, 0, 0) scale(1); }
+        50% { opacity: .62; transform: translate3d(14px, -22px, 0) scale(1.16); }
+      }
 
-      /* ---------- chrome ---------- */
+      .lj-motes { position: absolute; inset: 0; }
+      .lj-mote {
+        position: absolute; border-radius: 999px; background: #FFE3B8;
+        box-shadow: 0 0 6px 2px rgba(255,214,150,.55);
+        animation-name: lj-mote-rise;
+        animation-timing-function: linear;
+        animation-iteration-count: infinite;
+      }
+      @keyframes lj-mote-rise {
+        0% { opacity: 0; transform: translate3d(0, 20px, 0); }
+        18% { opacity: .85; }
+        76% { opacity: .5; }
+        100% { opacity: 0; transform: translate3d(26px, -120px, 0); }
+      }
+
+      .lj-web { position: absolute; color: rgba(224,177,174,.15); width: 230px; height: 230px; }
+      .lj-web-tl { top: 64px; left: -18px; }
+      .lj-web-tr { top: 40px; right: -18px; transform: scaleX(-1); }
+      .lj-web-bl { bottom: -20px; left: -22px; transform: scaleY(-1); }
+
+      .lj-string { position: absolute; left: -4%; right: -4%; height: 150px; }
+      .lj-string-wire { position: absolute; inset: 0; width: 100%; height: 100%; }
+      .lj-string-a { top: -10px; transform: translate3d(calc(var(--mx) * 12px), 0, 0); }
+      .lj-string-b { top: 54px; transform: scaleX(-1) translate3d(calc(var(--mx) * 7px), 0, 0); }
+      .lj-string-c { top: 128px; transform: translate3d(calc(var(--mx) * 4px), 0, 0); }
+
+      .lj-bulb-holder { position: absolute; display: block; }
+      .lj-bulb-cap {
+        position: absolute; left: 50%; translate: -50% 0; top: -5px;
+        width: 6px; height: 6px; border-radius: 1px;
+        background: linear-gradient(#7C6A52, #4A3D2E);
+      }
+      .lj-bulb {
+        display: block; width: 10px; height: 12px;
+        border-radius: 50% 50% 55% 55% / 42% 42% 60% 60%;
+        background: radial-gradient(circle at 38% 30%, #fff, var(--bulb) 58%, rgba(0,0,0,.2));
+        box-shadow: 0 0 14px 5px color-mix(in srgb, var(--bulb) 52%, transparent);
+        animation: lj-twinkle 2.8s ease-in-out infinite;
+      }
+      @keyframes lj-twinkle { 0%, 100% { opacity: .38; } 50% { opacity: 1; } }
+
+      .lj-spider-drop, .lj-spider-a, .lj-spider-b {
+        position: absolute; display: flex; flex-direction: column; align-items: center;
+        transform-origin: top center;
+      }
+      .lj-spider-a { top: 0; right: 14%; animation: lj-swing 7s ease-in-out infinite; }
+      .lj-spider-b { top: 0; left: 22%; animation: lj-swing 9.5s ease-in-out infinite reverse; }
+      .lj-thread { width: 1px; background: linear-gradient(rgba(150,130,120,.1), #BCA79A); display: block; }
+      .lj-spider-svg { width: 26px; height: 24px; margin-top: -1px; }
+      .lj-spider-b .lj-spider-svg { width: 17px; height: 16px; }
+      @keyframes lj-swing { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(5deg); } }
+
+      .lj-vignette {
+        position: absolute; inset: 0;
+        background: radial-gradient(ellipse 76% 62% at 50% 52%, transparent 34%, rgba(6,4,5,.82) 100%);
+      }
+
+      .lights-off .lj-bulb, .lights-off .lj-inner-bulb { opacity: .10 !important; animation: none !important; }
+      .lights-off .lj-bokeh-dot { opacity: .1 !important; }
+      .lights-off .lj-bg-beam, .lights-off .lj-bg-window { opacity: .3; }
+
+      /* ======================================================= the top bar = */
+      .lj-topbar {
+        position: relative; z-index: 30;
+        display: flex; align-items: center; flex-wrap: wrap; gap: .55rem;
+        padding: .7rem 1rem .5rem;
+      }
+      .lj-titleblock { line-height: 1; margin-left: .35rem; }
+      @media (max-width: 640px) { .lj-titleblock { flex-basis: 100%; margin-left: 0; } }
+
       .lj-chip-btn {
         display: inline-flex; align-items: center; gap: .4rem;
         font-family: 'Space Grotesk', monospace; font-size: 10px; font-weight: 900;
         letter-spacing: .14em; text-transform: uppercase;
-        color: #2A1B20; background: #E8D9C1;
+        color: #2A1B20; background: linear-gradient(#F0E4CC, #DECBAA);
         border: 2px solid #261D24; box-shadow: 3px 3px 0 #0C0709;
-        padding: .4rem .7rem; cursor: pointer;
+        padding: .4rem .7rem; cursor: pointer; border-radius: 3px;
         transition: transform .12s ease, background .2s ease;
       }
-      .lj-chip-btn:hover { background: #F2E6D2; }
+      .lj-chip-btn:hover { background: linear-gradient(#F8F0DE, #E8D8BC); }
       .lj-chip-btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #0C0709; }
-      .lj-chip-btn.is-on { background: #EAD9A9; }
+      .lj-chip-btn.is-on { background: linear-gradient(#F2DFA6, #DFC684); }
 
-      .lj-panel {
+      .lj-chapter-stamp {
+        display: inline-block; padding: .3rem .6rem;
+        font-family: 'Space Grotesk', monospace; font-size: 9px; font-weight: 900;
+        letter-spacing: .2em; color: #7D2834;
+        background: #FBF4E6; border: 2px dashed #7D2834; border-radius: 3px;
+        rotate: -2.5deg; box-shadow: 2px 2px 0 rgba(0,0,0,.35);
+      }
+
+      /* ========================================================= the room == */
+      .lj-columns {
+        position: relative; z-index: 20;
+        display: grid; gap: 1rem;
+        padding: 0 1rem 2rem;
+      }
+      .lj-rail { display: flex; flex-direction: column; gap: .85rem; }
+
+      @media (min-width: 1120px) {
+        .lj-root { height: 100svh; overflow: hidden; }
+        .lj-columns {
+          grid-template-columns: 292px minmax(0, 1fr) 302px;
+          height: calc(100svh - 78px);
+          padding-bottom: 1rem;
+        }
+        .lj-rail { overflow-y: auto; overflow-x: hidden; padding: 4px 6px 12px 4px; min-height: 0; }
+        .lj-scene { min-height: 0; }
+      }
+      @media (max-width: 1119px) {
+        .lj-scene { order: -1; }
+      }
+
+      /* ========================================================= the scene = */
+      .lj-scene {
+        position: relative;
+        display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+      }
+      .lj-scene-inner {
+        position: relative; flex: 1; min-height: 0;
+        width: 100%;
+        display: flex; align-items: flex-end; justify-content: center;
+        padding-bottom: 8%;
+      }
+      @media (max-width: 1119px) {
+        .lj-scene-inner { min-height: 62svh; }
+      }
+      /* Below the three-column layout the jar fills nearly the whole width, so
+         the tall props would read as being inside the glass rather than beside
+         it. The low, wide ones stay; the standing bunches step out. */
+      @media (max-width: 1023px) {
+        .lj-bunch { display: none; }
+        .lj-envelope { width: 128px; left: -2%; }
+        .lj-bundle { width: 118px; right: -3%; }
+        .lj-candle { width: 66px; right: 6%; }
+        .lj-loose-1, .lj-loose-2, .lj-loose-3 { display: none; }
+      }
+
+      .lj-ghost {
+        position: absolute; left: 50%; top: 6%; translate: -50% 0;
+        font-family: 'Permanent Marker', cursive;
+        font-size: clamp(70px, 15vw, 190px); line-height: .8;
+        letter-spacing: .04em;
+        color: transparent;
+        -webkit-text-stroke: 2px rgba(224,177,174,.10);
+        pointer-events: none; user-select: none; z-index: 1;
+        animation: lj-ghost-breathe 9s ease-in-out infinite;
+      }
+      @keyframes lj-ghost-breathe {
+        0%, 100% { opacity: .7; transform: scale(1); }
+        50% { opacity: 1; transform: scale(1.02); }
+      }
+
+      .lj-scene-caption {
+        position: relative; z-index: 4;
+        font-family: 'Caveat', cursive; font-size: 21px; color: #C9A9A2;
+        text-align: center; max-width: 26rem; margin: .5rem auto 0;
+      }
+      .lj-error-note {
+        position: relative; z-index: 4; margin-top: .6rem; rotate: 1deg;
+        background: #D8C29D; color: #4A1018;
+        border: 1px dashed rgba(60,24,32,.5); padding: .5rem .8rem;
+        box-shadow: 4px 6px 14px rgba(0,0,0,.45);
+      }
+
+      /* ------------------------------------------- the surface and props -- */
+      .lj-board {
+        position: absolute; left: 50%; translate: -50% 0; bottom: 4%;
+        width: min(96%, 780px); height: 78px; border-radius: 10px 10px 16px 16px;
+        background: linear-gradient(178deg, #6E4A2C 0%, #573820 42%, #3E2716 100%);
+        box-shadow: 0 26px 44px rgba(0,0,0,.72), inset 0 2px 0 rgba(255,214,164,.22);
+        z-index: 1;
+      }
+      .lj-board-grain {
+        position: absolute; inset: 0; border-radius: inherit; overflow: hidden;
+        background:
+          repeating-linear-gradient(92deg, rgba(0,0,0,.16) 0 2px, transparent 2px 22px),
+          repeating-linear-gradient(88deg, rgba(255,220,170,.05) 0 1px, transparent 1px 40px);
+      }
+      .lj-board-edge {
+        position: absolute; left: 2%; right: 2%; top: -5px; height: 8px; border-radius: 999px;
+        background: linear-gradient(#8A6038, #6A4526);
+      }
+      .lj-cloth {
+        position: absolute; left: 50%; translate: -50% 0; bottom: -2%;
+        width: min(104%, 900px); height: 120px; z-index: 0;
+        background:
+          repeating-linear-gradient(96deg, rgba(0,0,0,.10) 0 8px, transparent 8px 26px),
+          linear-gradient(178deg, #B8AC94 0%, #8E836E 60%, #5F5747 100%);
+        border-radius: 40% 46% 12% 14% / 60% 54% 20% 22%;
+        opacity: .5;
+        box-shadow: 0 -8px 30px rgba(0,0,0,.5);
+      }
+      .lj-doily {
+        position: absolute; left: 50%; translate: -50% 0; bottom: 3%;
+        width: min(90%, 620px); height: auto; z-index: 2; opacity: .8;
+      }
+
+      .lj-bunch { position: absolute; bottom: 5%; width: 250px; height: 330px; z-index: 3; opacity: .95; }
+      .lj-bunch-l { left: -1%; transform: translate3d(calc(var(--mx) * 6px), 0, 0); }
+      .lj-bunch-r { right: -2%; width: 224px; height: 300px; transform: scaleX(-1) translate3d(calc(var(--mx) * -5px), 0, 0); }
+
+      .lj-candle { position: absolute; right: 13%; bottom: 8%; width: 92px; height: auto; z-index: 6; }
+      .lj-flame { transform-origin: 55px 62px; animation: lj-flicker 2.6s ease-in-out infinite; }
+      @keyframes lj-flicker {
+        0%, 100% { transform: scale(1, 1) translateX(0); opacity: .95; }
+        22% { transform: scale(.94, 1.08) translateX(-1px); opacity: 1; }
+        48% { transform: scale(1.05, .95) translateX(1.5px); opacity: .88; }
+        73% { transform: scale(.97, 1.05) translateX(-.5px); opacity: 1; }
+      }
+      .lights-off .lj-flame { opacity: .55; }
+
+      .lj-envelope { position: absolute; left: 5%; bottom: 4.5%; width: 186px; height: auto; z-index: 6; rotate: -7deg; }
+      .lj-bundle { position: absolute; right: 3%; bottom: 3.5%; width: 172px; height: auto; z-index: 5; rotate: 5deg; }
+
+      .lj-loose { position: absolute; z-index: 7; display: block; }
+      .lj-loose-1 { left: 24%; bottom: 5.5%; width: 122px; height: 36px; rotate: -9deg; }
+      .lj-loose-2 { left: 33%; bottom: 3.5%; width: 104px; height: 30px; rotate: 6deg; }
+      .lj-loose-3 { right: 26%; bottom: 6%; width: 96px; height: 28px; rotate: -14deg; }
+
+      /* =========================================================== the jar = */
+      .lj-jar-wrap {
+        position: relative; z-index: 10;
+        height: min(67vh, 570px);
+        aspect-ratio: 0.74;
+        transform-origin: 50% 100%;
+        transform: translate3d(calc(var(--mx) * -3px), 0, 0);
+      }
+      @media (max-width: 1119px) { .lj-jar-wrap { height: min(56svh, 470px); } }
+
+      .lj-jar-loading {
+        display: grid; place-items: center; text-align: center;
+        height: min(67vh, 570px); aspect-ratio: 0.74; margin: auto;
+        border: 3px dashed rgba(224,177,174,.3); border-radius: 18px 18px 44px 44px;
+      }
+
+      .lj-jar-cast {
+        position: absolute; left: 50%; translate: -50% 0; bottom: -22px;
+        width: 118%; height: 46px; border-radius: 50%;
+        background: radial-gradient(ellipse at 50% 50%, rgba(0,0,0,.7), transparent 68%);
+      }
+
+      .lj-lid {
+        position: absolute; left: 50%; translate: -50% 0; top: -3.6%;
+        width: 78%; height: 10.5%;
+        filter: drop-shadow(0 6px 10px rgba(0,0,0,.55));
+        z-index: 6;
+      }
+      .lj-neck {
+        position: absolute; left: 50%; translate: -50% 0; top: 2.4%;
+        width: 70%; height: 10.4%;
+        border: 3px solid rgba(186,206,205,.58); border-bottom: 0;
+        border-radius: 9px 9px 0 0;
+        background: linear-gradient(112deg, rgba(226,236,233,.26), rgba(226,236,233,.07) 44%, rgba(226,236,233,.30));
+        box-shadow: inset 0 -12px 20px rgba(0,0,0,.26);
+        z-index: 3;
+      }
+      .lj-neck-thread {
+        position: absolute; left: 5%; right: 5%; top: 26%; height: 2px; border-radius: 999px;
+        background: rgba(226,236,233,.22);
+      }
+      .lj-neck-thread.second { top: 52%; }
+      .lj-neck-lip {
+        position: absolute; left: -4%; right: -4%; top: -3px; height: 7px; border-radius: 999px;
+        background: linear-gradient(rgba(240,248,246,.5), rgba(150,175,172,.3));
+      }
+
+      .lj-glass {
+        position: absolute; inset: 10.6% 0 0 0;
+        border: 3px solid rgba(178,198,197,.55);
+        border-radius: 14px 14px 46px 46px;
+        overflow: hidden;
+        box-shadow:
+          inset 0 -24px 46px rgba(0,0,0,.34),
+          inset 0 12px 26px rgba(255,255,255,.10),
+          0 30px 54px rgba(0,0,0,.65);
+      }
+      .lj-glass-back {
+        position: absolute; inset: 0;
+        background: linear-gradient(112deg, rgba(214,232,229,.16), rgba(180,206,202,.04) 42%, rgba(214,232,229,.20));
+      }
+      .lj-glass-glow {
+        position: absolute; inset: 0;
+        background:
+          radial-gradient(ellipse 70% 46% at 50% 100%, rgba(255,196,128,.40), transparent 72%),
+          radial-gradient(ellipse 46% 30% at 50% 62%, rgba(255,168,120,.16), transparent 74%);
+        transition: opacity .45s ease;
+        animation: lj-jar-breathe 6s ease-in-out infinite;
+      }
+      @keyframes lj-jar-breathe { 0%, 100% { opacity: .86; } 50% { opacity: 1; } }
+      .lights-off .lj-glass-glow { opacity: .2; animation: none; }
+
+      .lj-glass-sheen {
+        position: absolute; left: 6%; top: 4%; bottom: 14%; width: 9px; z-index: 22;
+        border-radius: 999px;
+        background: linear-gradient(rgba(255,255,255,.34), rgba(255,255,255,.06));
+        pointer-events: none;
+      }
+      .lj-glass-sheen.second { left: auto; right: 9%; width: 4px; top: 10%; bottom: 26%; opacity: .5; }
+      .lj-glass-curve {
+        position: absolute; inset: 0; z-index: 21; pointer-events: none; border-radius: inherit;
+        background: linear-gradient(100deg,
+          rgba(255,255,255,.14) 0%, transparent 16%,
+          transparent 78%, rgba(255,255,255,.10) 96%);
+      }
+      .lj-glass-floor {
+        position: absolute; left: 6%; right: 6%; bottom: 3%; height: 20px; z-index: 20;
+        border-radius: 50%; pointer-events: none;
+        background: radial-gradient(ellipse at 50% 40%, rgba(226,240,236,.26), transparent 70%);
+        box-shadow: inset 0 3px 8px rgba(255,255,255,.18);
+      }
+
+      .lj-innerwire { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 8; }
+      .lj-inner-bulb {
+        position: absolute; width: 7px; height: 8px; z-index: 9; pointer-events: none;
+        border-radius: 50% 50% 55% 55% / 42% 42% 60% 60%;
+        background: radial-gradient(circle at 36% 30%, #fff, #FFD08A 60%, rgba(180,120,40,.6));
+        box-shadow: 0 0 14px 5px rgba(255,201,130,.5);
+        animation: lj-twinkle 3.2s ease-in-out infinite;
+      }
+
+      .lj-field { position: absolute; inset: 0; z-index: 10; }
+
+      /* ------------------------------------------------ one rolled letter -- */
+      .lj-scroll {
+        position: absolute; padding: 0; background: none; border: 0; cursor: pointer;
+        translate: -50% -50%;
+        transform: rotate(var(--rot));
+        transition: transform .22s cubic-bezier(.34,1.56,.64,1), opacity .3s ease;
+        min-width: 30px;
+      }
+      .lj-scroll-svg { display: block; width: 100%; height: 100%; }
+      .lj-scroll:hover, .lj-scroll:focus-visible {
+        transform: rotate(var(--rot)) scale(1.2) translateY(-4px);
+        outline: none;
+      }
+      .lj-scroll.is-out { opacity: 0; pointer-events: none; }
+      .lj-scroll.is-sealed .lj-scroll-svg { filter: drop-shadow(0 0 7px rgba(255,201,130,.42)); }
+      .lj-scroll.is-keepsake .lj-scroll-svg { filter: drop-shadow(0 0 8px rgba(226,182,96,.55)); }
+      .lj-scroll-lock {
+        position: absolute; right: -7px; top: -8px; z-index: 4;
+        display: grid; place-items: center;
+        width: 16px; height: 16px; border-radius: 999px;
+        background: #EAD9A9; color: #7D2834; border: 1.5px solid #45140E;
+      }
+
+      /* ---------------------------------------------------- hover preview -- */
+      .lj-hovertag {
+        position: absolute; translate: -50% calc(-100% - 24px);
+        width: 198px; z-index: 90; pointer-events: none;
+        background:
+          radial-gradient(rgba(60,35,30,.06) .8px, transparent .8px) 0 0/7px 7px,
+          linear-gradient(#F3E7CE, #E3D2AC);
+        border: 2px solid #1C1317; border-radius: 4px 4px 6px 6px;
+        box-shadow: 5px 7px 0 rgba(9,6,8,.7);
+        padding: .8rem .6rem .5rem;
+        animation: lj-tag-in .16s ease-out both;
+      }
+      .lj-hovertag::after {
+        content: ""; position: absolute; left: 50%; bottom: -8px; translate: -50% 0;
+        border: 7px solid transparent; border-top-color: #1C1317;
+      }
+      .lj-hovertag-string {
+        position: absolute; left: 50%; translate: -50% 0; top: -18px;
+        width: 1.5px; height: 18px; background: #B99B6E;
+      }
+      .lj-hovertag-hole {
+        position: absolute; left: 50%; translate: -50% 0; top: 5px;
+        width: 8px; height: 8px; border-radius: 999px;
+        background: #241A20; box-shadow: inset 0 1px 2px rgba(0,0,0,.8);
+      }
+      @keyframes lj-tag-in {
+        from { opacity: 0; transform: translateY(6px) scale(.95); }
+        to { opacity: 1; transform: none; }
+      }
+
+      /* --------------------------------------------------------- the label - */
+      .lj-label {
+        position: absolute; left: 50%; translate: -50% 0; bottom: 5%;
+        z-index: 24; pointer-events: none; rotate: -1.4deg;
+      }
+      .lj-label-sheet {
+        display: block; text-align: center; padding: .5rem 1.1rem;
+        color: #3A2716;
+        background:
+          radial-gradient(rgba(90,60,30,.07) .8px, transparent .8px) 0 0/7px 7px,
+          linear-gradient(#F7F0DF, #E6D8BB);
+        border-radius: 2px;
+        box-shadow: 0 4px 10px rgba(0,0,0,.45), inset 0 0 20px rgba(150,110,60,.16);
+        clip-path: polygon(
+          0% 6%, 3% 0%, 22% 4%, 46% 0%, 71% 5%, 96% 1%, 100% 8%,
+          99% 44%, 100% 92%, 95% 100%, 72% 96%, 48% 100%, 24% 95%, 4% 99%, 0% 90%
+        );
+      }
+      .lj-label-rule {
+        display: block; height: 1px; margin: 3px auto; width: 62%;
+        background: rgba(80,50,20,.35);
+      }
+
+      /* ------------------------------------------------- the jar reacting -- */
+      .fx-in .lj-glass-glow { animation: lj-flare 1.1s ease-out; }
+      .fx-out .lj-glass-glow { animation: lj-dim 1.1s ease-out; }
+      .fx-in { animation: lj-jar-bump 1.1s cubic-bezier(.34,1.56,.64,1); }
+      .fx-out { animation: lj-jar-settle 1.1s ease-out; }
+      .fx-shake { animation: lj-jar-shake .9s cubic-bezier(.36,.07,.19,.97); }
+      .fx-in .lj-lid { animation: lj-lid-bounce 1.1s cubic-bezier(.34,1.56,.64,1); }
+      .fx-in .lj-twine, .fx-in .lj-hangtag { animation: lj-tag-swing 1.3s cubic-bezier(.34,1.56,.64,1); }
+      .fx-shake .lj-field { animation: lj-field-jiggle .9s ease-in-out; }
+      .fx-shake .lj-hangtag { animation: lj-tag-swing .9s ease-in-out; }
+
+      @keyframes lj-flare { 0% { opacity: 1; } 20% { opacity: 1; transform: scale(1.1); } 100% { opacity: 1; transform: none; } }
+      @keyframes lj-dim { 0% { opacity: 1; } 30% { opacity: .3; } 100% { opacity: 1; } }
+      @keyframes lj-jar-bump {
+        0% { transform: none; }
+        26% { transform: translateY(5px) scale(1.05, .95); }
+        52% { transform: translateY(-4px) scale(.97, 1.035); }
+        78% { transform: scale(1.018, .988); }
+        100% { transform: none; }
+      }
+      @keyframes lj-jar-settle {
+        0% { transform: none; }
+        30% { transform: translateY(-4px) scale(.982, 1.022); }
+        62% { transform: translateY(3px) scale(1.014, .99); }
+        100% { transform: none; }
+      }
+      @keyframes lj-jar-shake {
+        0%, 100% { transform: rotate(0deg); }
+        12% { transform: rotate(-5deg); }
+        28% { transform: rotate(4.4deg); }
+        44% { transform: rotate(-3.2deg); }
+        60% { transform: rotate(2.6deg); }
+        78% { transform: rotate(-1.3deg); }
+      }
+      @keyframes lj-lid-bounce {
+        0% { transform: none; } 24% { transform: translateY(-14px) rotate(-4deg); }
+        56% { transform: translateY(3px) rotate(1.6deg); } 100% { transform: none; }
+      }
+      @keyframes lj-tag-swing {
+        0%, 100% { transform: rotate(0deg); }
+        25% { transform: rotate(-11deg); }
+        55% { transform: rotate(8deg); }
+        80% { transform: rotate(-3deg); }
+      }
+      @keyframes lj-field-jiggle {
+        0%, 100% { transform: none; }
+        20% { transform: translate(2px, -3px) rotate(.7deg); }
+        45% { transform: translate(-3px, 1px) rotate(-.8deg); }
+        70% { transform: translate(2px, -1px) rotate(.4deg); }
+      }
+
+      .lj-twine {
+        position: absolute; left: 50%; translate: -50% 0; top: 6.4%;
+        width: 84%; height: auto; z-index: 8; pointer-events: none;
+        transform-origin: 50% 20%;
+        filter: drop-shadow(0 3px 4px rgba(0,0,0,.5));
+      }
+      .lj-hangtag {
+        position: absolute; left: 63%; top: 9.4%;
+        width: 19%; height: auto; z-index: 9; pointer-events: none;
+        transform-origin: 50% 0;
+        filter: drop-shadow(0 4px 6px rgba(0,0,0,.55));
+        animation: lj-tag-idle 8s ease-in-out infinite;
+      }
+      @keyframes lj-tag-idle { 0%, 100% { transform: rotate(-2deg); } 50% { transform: rotate(3deg); } }
+
+      .lj-burst { position: absolute; left: 50%; top: 6%; z-index: 30; pointer-events: none; }
+      .lj-spark {
+        position: absolute; width: 8px; height: 8px; border-radius: 999px;
+        background: #FFD9A0; box-shadow: 0 0 12px 4px rgba(255,201,130,.65);
+        animation: lj-spark-out 1s cubic-bezier(.2,.9,.3,1) forwards;
+      }
+      @keyframes lj-spark-out {
+        0% { transform: translate(0,0) scale(.4); opacity: 0; }
+        18% { opacity: 1; }
+        100% { transform: translate(var(--sx), var(--sy)) scale(.12); opacity: 0; }
+      }
+      .lj-shockwave {
+        position: absolute; left: -70px; top: -70px; width: 140px; height: 140px;
+        border-radius: 999px; border: 2px solid rgba(255,214,150,.6);
+        animation: lj-shock 1s cubic-bezier(.2,.9,.3,1) forwards;
+      }
+      @keyframes lj-shock {
+        0% { transform: scale(.2); opacity: .9; }
+        100% { transform: scale(2.6); opacity: 0; }
+      }
+
+      .lj-empty {
+        position: absolute; left: 50%; top: 48%; translate: -50% -50%;
+        text-align: center; color: #E8D9C1; opacity: .82; width: 78%; z-index: 12;
+      }
+
+      /* ==================================================== the rail cards = */
+      .lj-card {
         position: relative;
         background:
-          radial-gradient(rgba(60,35,30,.07) .8px, transparent .8px) 0 0/8px 8px,
-          linear-gradient(#F6EEDD, #EBDFC7);
-        border: 3px solid #1C1317; border-radius: .6rem;
-        box-shadow: 7px 8px 0 rgba(9,6,8,.75);
-        padding: .85rem .9rem 1rem;
+          radial-gradient(rgba(60,35,30,.06) .8px, transparent .8px) 0 0/8px 8px,
+          linear-gradient(#F6EEDD, #E7DAC0);
+        border: 3px solid #1C1317; border-radius: .55rem;
+        box-shadow: 7px 9px 0 rgba(9,6,8,.72);
+        padding: .9rem .9rem 1rem;
         color: #2A1B20;
       }
-      .lj-panel-title {
+      .lj-card-find { rotate: -1.1deg; }
+      .lj-card-count { rotate: .8deg; margin-left: 6%; width: 94%; }
+      .lj-card-shelf { rotate: 1deg; }
+      .lj-card-index { rotate: -.7deg; padding-top: 1.5rem; }
+      .lj-card-title {
         font-family: 'Space Grotesk', monospace; font-size: 9px; font-weight: 900;
         letter-spacing: .2em; text-transform: uppercase; color: #7D2834;
       }
-
-      .lj-write-btn {
-        position: relative; display: flex; align-items: center; gap: .7rem;
-        background: linear-gradient(#8C1826, #59101B);
-        color: #FBF3E6; border: 3px solid #1C1317; border-radius: .6rem;
-        box-shadow: 7px 8px 0 rgba(9,6,8,.8);
-        padding: .95rem 1rem; cursor: pointer; text-align: left;
-        transition: transform .14s cubic-bezier(.34,1.56,.64,1);
+      .lj-tape-strip {
+        position: absolute; width: 72px; height: 22px; z-index: 4;
+        background: repeating-linear-gradient(102deg, rgba(217,136,158,.85) 0 6px, rgba(198,116,140,.85) 6px 12px);
+        box-shadow: 0 3px 8px rgba(0,0,0,.45);
       }
-      .lj-write-btn:hover { transform: translateY(-3px) rotate(-.6deg); }
-      .lj-write-btn:active { transform: translate(2px,3px); box-shadow: 3px 3px 0 rgba(9,6,8,.8); }
+      .lj-tape-strip-a { top: -11px; left: 16px; rotate: -8deg; }
+      .lj-tape-strip-b { top: -11px; right: 20px; rotate: 7deg; }
+      .lj-pin {
+        position: absolute; top: -9px; left: 50%; translate: -50% 0; z-index: 4;
+        width: 16px; height: 16px; border-radius: 999px;
+        background: radial-gradient(circle at 34% 30%, #FF8FA6, #8C1E32 70%);
+        box-shadow: 0 3px 6px rgba(0,0,0,.6), inset 0 1px 2px rgba(255,255,255,.5);
+      }
+
+      /* the write button, built like a sealed envelope */
+      .lj-write-card {
+        position: relative; overflow: hidden; text-align: left; cursor: pointer;
+        padding: 1.1rem 1rem 1.15rem;
+        color: #FBF3E6;
+        background: linear-gradient(158deg, #96182A 0%, #6A1120 55%, #45090F 100%);
+        border: 3px solid #1C1317; border-radius: .55rem;
+        box-shadow: 7px 9px 0 rgba(9,6,8,.8);
+        rotate: -1.4deg;
+        transition: transform .16s cubic-bezier(.34,1.56,.64,1);
+      }
+      .lj-write-card:hover { transform: translateY(-4px) rotate(.5deg); }
+      .lj-write-card:active { transform: translate(2px, 3px); box-shadow: 3px 4px 0 rgba(9,6,8,.8); }
+      .lj-write-flap {
+        position: absolute; inset: 0 0 auto 0; height: 66%;
+        background: linear-gradient(#B02236, #7C1524);
+        clip-path: polygon(0 0, 100% 0, 50% 100%);
+        opacity: .55;
+      }
+      .lj-write-seal {
+        position: absolute; right: 14px; top: 46%; translate: 0 -50%; z-index: 3;
+        display: grid; place-items: center; width: 40px; height: 40px;
+        border-radius: 46% 54% 51% 49% / 52% 48% 55% 45%;
+        background: radial-gradient(circle at 34% 30%, #E2AF5C, #8A5A18 72%);
+        border: 2px solid rgba(28,2,4,.6); color: #2C1A06;
+        box-shadow: 0 5px 12px rgba(0,0,0,.6), inset 0 2px 5px rgba(255,255,255,.35);
+      }
       .lj-write-thwip {
-        position: absolute; top: -12px; right: -10px; rotate: 12deg;
+        position: absolute; top: -10px; right: -8px; z-index: 5; rotate: 12deg;
         font-family: 'Permanent Marker', cursive; font-size: 13px;
         background: #EAD9A9; color: #7D2834; padding: 1px 8px;
         border: 2px solid #1C1317; box-shadow: 2px 2px 0 #0C0709;
       }
 
-      .lj-panel-btn {
-        display: flex; align-items: center; gap: .6rem; text-align: left;
-        background: #E8D9C1; color: #2A1B20;
-        border: 3px solid #1C1317; border-radius: .6rem;
-        box-shadow: 5px 6px 0 rgba(9,6,8,.7);
-        padding: .7rem .85rem; cursor: pointer;
-        transition: transform .14s ease, background .2s ease;
+      /* the random draw, as a luggage tag on a string */
+      .lj-draw-tag {
+        position: relative; display: flex; align-items: center; gap: .55rem;
+        width: 86%; margin-left: 10%; padding: .6rem .8rem .6rem 1.5rem;
+        cursor: pointer; text-align: left; rotate: 1.6deg;
+        color: #2A1B20;
+        background: linear-gradient(#E4D3AE, #CFBB92);
+        border: 2px solid #1C1317;
+        border-radius: 4px 10px 10px 4px;
+        box-shadow: 5px 6px 0 rgba(9,6,8,.66);
+        clip-path: polygon(0 26%, 8% 0, 100% 0, 100% 100%, 8% 100%, 0 74%);
+        transition: transform .14s ease;
       }
-      .lj-panel-btn:hover { background: #F4E9D6; transform: translateY(-2px); }
-      .lj-panel-btn:active { transform: translate(2px,2px); box-shadow: 2px 2px 0 rgba(9,6,8,.7); }
+      .lj-draw-tag:hover { transform: translateY(-2px) rotate(-.6deg); }
+      .lj-draw-tag:active { transform: translate(2px, 2px); }
+      .lj-draw-hole {
+        position: absolute; left: 9px; top: 50%; translate: 0 -50%;
+        width: 9px; height: 9px; border-radius: 999px;
+        background: #221A1E; box-shadow: inset 0 1px 2px rgba(0,0,0,.9);
+      }
 
       .lj-input {
         width: 100%; background: #FDF8EE; color: #2A1B20;
-        border: 2px solid #7D2834; border-radius: .35rem;
+        border: 2px solid #7D2834; border-radius: .3rem;
         padding: .45rem .6rem;
         font-family: 'Space Grotesk', monospace; font-size: 12px;
         outline: none;
@@ -2509,311 +3365,120 @@ function ScopedStyles() {
       .lj-input:focus { border-color: #450A10; box-shadow: 0 0 0 3px rgba(217,136,158,.35); }
       .lj-input::placeholder { color: rgba(42,27,32,.42); }
 
+      .lj-filter-row { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .5rem; }
       .lj-filter {
+        position: relative; padding: .3rem .5rem .3rem 1rem; cursor: pointer;
         font-family: 'Space Grotesk', monospace; font-size: 9px; font-weight: 900;
-        letter-spacing: .1em; text-transform: uppercase;
-        padding: .28rem .5rem; cursor: pointer;
-        border: 2px solid #7D2834; color: #7D2834; background: transparent;
-        border-radius: .3rem; transition: background .18s ease, color .18s ease;
+        letter-spacing: .08em; text-transform: uppercase;
+        color: #6A2029; background: linear-gradient(#EFE0BF, #DFCCA4);
+        border: 1.5px solid #8A6640; border-radius: 2px 5px 5px 2px;
+        clip-path: polygon(0 30%, 9% 0, 100% 0, 100% 100%, 9% 100%, 0 70%);
+        transition: background .18s ease, color .18s ease, transform .12s ease;
       }
-      .lj-filter:hover { background: rgba(125,40,52,.12); }
-      .lj-filter.is-active { background: #7D2834; color: #F6E7D2; }
-
-      /* ---------- the jar ---------- */
-      .lj-jar-loading {
-        display: grid; place-items: center; text-align: center;
-        width: clamp(250px, 80vw, 384px); height: clamp(330px, 50vh, 492px);
-        border: 3px dashed rgba(224,177,174,.35); border-radius: 18px 18px 44px 44px;
+      .lj-filter:hover { transform: translateY(-1px); }
+      .lj-filter.is-active { background: linear-gradient(#8E1B2A, #61101B); color: #FBF3E6; border-color: #3A0A10; }
+      .lj-filter-hole {
+        position: absolute; left: 5px; top: 50%; translate: 0 -50%;
+        width: 5px; height: 5px; border-radius: 999px; background: rgba(30,20,24,.75);
       }
 
-      .lj-jar-wrap {
-        position: relative;
-        width: clamp(250px, 80vw, 384px);
-        height: clamp(330px, 50vh, 492px);
-        margin-top: 52px;
-        transform-origin: 50% 100%;
+      .lj-count-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; margin-top: .6rem; }
+      .lj-chip {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        padding: .5rem .3rem; border-radius: .35rem;
+        border: 2px solid #1C1317; box-shadow: 3px 3px 0 rgba(9,6,8,.45);
+      }
+      .lj-chip-cream { background: linear-gradient(#F7EFDC, #E4D5B4); color: #3A2716; }
+      .lj-chip-wax { background: linear-gradient(#9C2032, #5F0F1B); color: #FBE9DF; }
+      .lj-chip-sage { background: linear-gradient(#BCCDB4, #94A98C); color: #22301F; }
+      .lj-chip-gold { background: linear-gradient(#E3C57E, #B08F3E); color: #3A2A08; }
+      .lj-chip-ink { background: linear-gradient(#3C4A66, #232C44); color: #DDE5F2; }
+
+      /* the keepsake shelf, with the letters standing up on a plank */
+      .lj-shelf { position: relative; margin-top: .7rem; padding-bottom: 14px; }
+      .lj-shelf-row { display: flex; align-items: flex-end; justify-content: center; gap: .35rem; height: 74px; }
+      .lj-standing {
+        width: 26px; height: 70px; padding: 0; border: 0; background: none; cursor: pointer;
+        transition: transform .16s cubic-bezier(.34,1.56,.64,1);
+      }
+      .lj-standing:nth-child(2n) { transform: rotate(4deg); }
+      .lj-standing:nth-child(3n) { transform: rotate(-5deg); }
+      .lj-standing:hover { transform: translateY(-6px) rotate(0deg) scale(1.08); }
+      .lj-standing-svg {
+        display: block; width: 70px; height: 26px;
+        transform: rotate(-90deg) translate(-22px, 22px);
+        transform-origin: top left;
+        filter: drop-shadow(0 3px 4px rgba(0,0,0,.5));
+      }
+      .lj-shelf-plank {
+        position: absolute; left: -4%; right: -4%; bottom: 0; height: 12px; border-radius: 3px;
+        background: linear-gradient(#7A5330, #4A2F19);
+        box-shadow: 0 6px 12px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,214,164,.3);
       }
 
-      .lj-lid {
-        position: absolute; left: 50%; translate: -50% 0; top: -30px;
-        width: 78%; height: 28px; border-radius: 9px 9px 3px 3px;
-        border: 3px solid #35251A;
-        background:
-          radial-gradient(rgba(90,60,30,.35) 1.2px, transparent 1.3px) 0 0/9px 9px,
-          linear-gradient(180deg, #D9AF75, #A87C46);
-        box-shadow: 0 6px 14px rgba(0,0,0,.55);
-        z-index: 4;
+      .lj-spiral {
+        position: absolute; left: 0; right: 0; top: -9px;
+        display: flex; justify-content: space-around; padding: 0 12px; z-index: 5;
       }
-      .lj-neck {
-        position: absolute; left: 50%; translate: -50% 0; top: -8px;
-        width: 72%; height: 36px;
-        border: 3px solid rgba(176,196,197,.75); border-bottom: 0;
-        border-radius: 8px 8px 0 0;
-        background: linear-gradient(115deg, rgba(226,236,233,.30), rgba(226,236,233,.10) 45%, rgba(226,236,233,.34));
-        box-shadow: inset 0 -10px 18px rgba(0,0,0,.22);
-        z-index: 3;
-      }
-      .lj-neck-thread {
-        position: absolute; left: 6%; right: 6%; top: 9px; height: 2px;
-        background: rgba(226,236,233,.20); border-radius: 999px;
-      }
-      .lj-neck-thread.second { top: 17px; }
+      .lj-ring { width: 9px; height: 18px; }
 
-      .lj-twine {
-        position: absolute; left: 50%; translate: -50% 0; top: 14px;
-        width: 76%; height: 6px; border-radius: 999px;
-        background: repeating-linear-gradient(72deg, #B99B6E 0 3px, #8F764F 3px 6px);
-        z-index: 6;
+      .lj-index-list {
+        margin-top: .55rem; display: flex; flex-direction: column; gap: .35rem;
+        max-height: 44vh; overflow-y: auto; padding-right: .3rem;
       }
-      .lj-bow {
-        position: absolute; left: 50%; translate: -50% 0; top: 8px;
-        width: 16px; height: 16px; border-radius: 999px; background: #A8895C;
-        border: 2px solid #6E5836; z-index: 7;
-      }
-      .lj-bow::before, .lj-bow::after {
-        content: ""; position: absolute; top: 0px;
-        width: 26px; height: 15px; border: 2px solid #6E5836;
-        background: #B99B6E; border-radius: 60% 40% 45% 55%;
-      }
-      .lj-bow::before { right: 12px; rotate: -18deg; }
-      .lj-bow::after { left: 12px; rotate: 18deg; }
-
-      .lj-tag {
-        position: absolute; left: calc(50% + 34px); top: 26px;
-        width: 30px; height: 30px; rotate: 8deg;
-        display: grid; place-items: center;
-        background: #C9A778; color: #6B3E2A;
-        border: 2px solid #8A6E4E; border-radius: 6px;
-        box-shadow: 2px 3px 6px rgba(0,0,0,.5);
-        z-index: 7;
-      }
-      .lj-tag::before {
-        content: ""; position: absolute; top: -16px; left: 50%; translate: -50% 0;
-        width: 1.5px; height: 16px; background: #B99B6E;
-      }
-
-      .lj-glass {
-        position: absolute; inset: 24px 0 0 0;
-        border: 3px solid rgba(159,179,180,.62);
-        border-radius: 12px 12px 44px 44px;
-        background: linear-gradient(112deg, rgba(226,236,233,.16), rgba(226,236,233,.05) 42%, rgba(226,236,233,.19));
-        overflow: hidden;
-        box-shadow: inset 0 -18px 40px rgba(0,0,0,.34), 0 24px 46px rgba(0,0,0,.6);
-      }
-      .lj-glass-glow {
-        position: absolute; inset: 0;
-        background: radial-gradient(ellipse at 50% 100%, rgba(255,196,128,.34), rgba(255,150,120,.12) 48%, transparent 74%);
-        transition: opacity .45s ease;
-      }
-      .lights-off .lj-glass-glow { opacity: .22; }
-      .lj-glass-shine {
-        position: absolute; left: 13px; top: 14px; bottom: 40px; width: 8px;
-        border-radius: 999px; background: rgba(255,255,255,.20);
-      }
-      .lj-glass-shine.second { left: auto; right: 16px; width: 4px; opacity: .55; }
-
-      .lj-inner-bulb {
-        position: absolute; width: 6px; height: 6px; border-radius: 999px;
-        background: #FFD9A0; box-shadow: 0 0 10px 4px rgba(255,201,130,.5);
-        animation: lj-twinkle 3.1s ease-in-out infinite;
-        z-index: 8; pointer-events: none;
-      }
-
-      .lj-field { position: absolute; inset: 0; }
-
-      /* ---------- one rolled letter ---------- */
-      .lj-scroll {
-        position: absolute; padding: 0; background: none; border: 0; cursor: pointer;
-        translate: -50% -50%;
-        transform: rotate(var(--rot));
-        transition: transform .22s cubic-bezier(.34,1.56,.64,1), opacity .3s ease;
-        min-width: 34px; min-height: 9px;
-      }
-      .lj-scroll:hover, .lj-scroll:focus-visible {
-        transform: rotate(var(--rot)) scale(1.16) translateY(-3px);
-        outline: none;
-      }
-      .lj-scroll.is-out { opacity: 0; pointer-events: none; }
-      .lj-scroll-tube {
-        position: absolute; inset: 0; border-radius: 999px;
-        border: 1px solid var(--paper-edge);
-        background: linear-gradient(180deg,
-          color-mix(in srgb, var(--paper) 100%, white 12%) 0%,
-          var(--paper) 42%,
-          color-mix(in srgb, var(--paper) 78%, black 22%) 100%);
-        box-shadow: 0 2px 4px rgba(0,0,0,.45);
-      }
-      .lj-scroll-cap {
-        position: absolute; top: 0; bottom: 0; width: 22%; border-radius: 999px;
-        background: repeating-radial-gradient(circle at 50% 50%,
-          color-mix(in srgb, var(--paper) 84%, black 16%) 0 1px,
-          var(--paper) 1px 2.4px);
-        border: 1px solid var(--paper-edge);
-      }
-      .lj-scroll-cap.left { left: -1px; }
-      .lj-scroll-cap.right { right: -1px; }
-      .lj-scroll-ribbon {
-        position: absolute; left: 42%; top: -12%; bottom: -12%; width: 13%;
-        background: var(--ribbon); border-radius: 2px;
-        box-shadow: inset 0 0 0 1px rgba(0,0,0,.22);
-      }
-      .lj-scroll-wax {
-        position: absolute; left: 44%; top: 50%; translate: -50% -50%;
-        width: 40%; max-width: 13px; aspect-ratio: 1; border-radius: 999px;
-        background: radial-gradient(circle at 34% 32%, var(--wax), #2b0407);
-        border: 1px solid rgba(0,0,0,.5);
-      }
-      .lj-scroll-lock {
-        position: absolute; right: -6px; top: -7px;
-        display: grid; place-items: center;
-        width: 15px; height: 15px; border-radius: 999px;
-        background: #EAD9A9; color: #7D2834; border: 1.5px solid #45140E;
-      }
-      .lj-scroll.is-sealed .lj-scroll-tube {
-        box-shadow: 0 2px 4px rgba(0,0,0,.45), 0 0 12px 2px rgba(255,201,130,.34);
-      }
-      .lj-scroll.is-keepsake .lj-scroll-ribbon {
-        background: linear-gradient(180deg, #E4C778, #A8823A);
-      }
-
-      /* ---------- hover preview ---------- */
-      .lj-hovertag {
-        position: absolute; translate: -50% calc(-100% - 18px);
-        width: 190px; z-index: 90; pointer-events: none;
-        background: linear-gradient(#F3E7CE, #E6D6B4);
-        border: 2px solid #1C1317; border-radius: .4rem;
-        box-shadow: 5px 6px 0 rgba(9,6,8,.72);
-        padding: .55rem .6rem .5rem;
-        animation: lj-tag-in .16s ease-out both;
-      }
-      .lj-hovertag::after {
-        content: ""; position: absolute; left: 50%; bottom: -8px; translate: -50% 0;
-        border: 7px solid transparent; border-top-color: #1C1317;
-      }
-      @keyframes lj-tag-in {
-        from { opacity: 0; transform: translateY(5px) scale(.96); }
-        to   { opacity: 1; transform: none; }
-      }
-
-      /* ---------- jar label + empty state ---------- */
-      .lj-label {
-        position: absolute; left: 50%; translate: -50% 0; bottom: 3.5%;
-        text-align: center; padding: .35rem .8rem;
-        background: linear-gradient(#F6EEDD, #E7D9BC); color: #3A2716;
-        border: 1px solid #A98F63; border-radius: 3px;
-        box-shadow: 0 3px 8px rgba(0,0,0,.4);
-        rotate: -1.2deg; z-index: 20; pointer-events: none;
-      }
-      .lj-empty {
-        position: absolute; left: 50%; top: 52%; translate: -50% -50%;
-        text-align: center; color: #E8D9C1; opacity: .8; width: 78%;
-      }
-
-      /* ---------- jar reactions ---------- */
-      .fx-in .lj-glass-glow { animation: lj-flare 1.1s ease-out; }
-      .fx-out .lj-glass-glow { animation: lj-dim 1.1s ease-out; }
-      .fx-in { animation: lj-jar-bump 1.1s cubic-bezier(.34,1.56,.64,1); }
-      .fx-out { animation: lj-jar-settle 1.1s ease-out; }
-      .fx-shake { animation: lj-jar-shake .9s cubic-bezier(.36,.07,.19,.97); }
-      .fx-in .lj-lid { animation: lj-lid-bounce 1.1s cubic-bezier(.34,1.56,.64,1); }
-      .fx-shake .lj-field { animation: lj-field-jiggle .9s ease-in-out; }
-
-      @keyframes lj-flare {
-        0% { opacity: 1; } 22% { opacity: 2.2; transform: scale(1.06); } 100% { opacity: 1; transform: none; }
-      }
-      @keyframes lj-dim {
-        0% { opacity: 1; } 30% { opacity: .35; } 100% { opacity: 1; }
-      }
-      @keyframes lj-jar-bump {
-        0% { transform: none; }
-        26% { transform: translateY(4px) scale(1.045, .955); }
-        52% { transform: translateY(-3px) scale(.975, 1.03); }
-        78% { transform: scale(1.015, .99); }
-        100% { transform: none; }
-      }
-      @keyframes lj-jar-settle {
-        0% { transform: none; }
-        30% { transform: translateY(-3px) scale(.985, 1.018); }
-        62% { transform: translateY(2px) scale(1.012, .99); }
-        100% { transform: none; }
-      }
-      @keyframes lj-jar-shake {
-        0%,100% { transform: rotate(0deg); }
-        12% { transform: rotate(-4.5deg); }
-        28% { transform: rotate(4deg); }
-        44% { transform: rotate(-3deg); }
-        60% { transform: rotate(2.4deg); }
-        78% { transform: rotate(-1.2deg); }
-      }
-      @keyframes lj-lid-bounce {
-        0% { transform: none; } 24% { transform: translateY(-11px) rotate(-4deg); }
-        56% { transform: translateY(2px) rotate(1.5deg); } 100% { transform: none; }
-      }
-      @keyframes lj-field-jiggle {
-        0%,100% { transform: none; }
-        20% { transform: translate(2px, -2px) rotate(.6deg); }
-        45% { transform: translate(-2px, 1px) rotate(-.7deg); }
-        70% { transform: translate(1px, -1px) rotate(.3deg); }
-      }
-
-      .lj-burst { position: absolute; left: 50%; top: 8%; z-index: 30; pointer-events: none; }
-      .lj-spark {
-        position: absolute; width: 7px; height: 7px; border-radius: 999px;
-        background: #FFD9A0; box-shadow: 0 0 10px 3px rgba(255,201,130,.6);
-        animation: lj-spark-out .95s cubic-bezier(.2,.9,.3,1) forwards;
-      }
-      @keyframes lj-spark-out {
-        0% { transform: translate(0,0) scale(.4); opacity: 0; }
-        18% { opacity: 1; }
-        100% { transform: translate(var(--sx), var(--sy)) scale(.15); opacity: 0; }
-      }
-
-      /* ---------- the index rows ---------- */
       .lj-indexrow {
-        display: flex; align-items: center; gap: .5rem; width: 100%;
-        background: #F0E6D2; color: #2A1B20;
-        border: 2px solid #261D24; border-radius: .3rem;
-        box-shadow: 3px 3px 0 rgba(9,6,8,.5);
-        padding: .35rem .5rem; cursor: pointer;
+        display: flex; align-items: center; gap: .45rem; width: 100%;
+        background: linear-gradient(#F3E9D5, #E5D7B9); color: #2A1B20;
+        border: 2px solid #261D24; border-radius: .25rem;
+        box-shadow: 3px 3px 0 rgba(9,6,8,.45);
+        padding: .32rem .45rem; cursor: pointer;
         transition: transform .14s ease, background .2s ease;
       }
-      .lj-indexrow:hover { background: #FAF3E4; transform: translateX(2px); }
-      .lj-indexrow:active { transform: translate(2px,2px); box-shadow: 1px 1px 0 rgba(9,6,8,.5); }
-      .lj-indexrow-knot {
-        width: 5px; align-self: stretch; border-radius: 999px; background: var(--ribbon); flex: none;
+      .lj-indexrow:hover { background: linear-gradient(#FBF4E4, #EEE1C6); transform: translateX(3px); }
+      .lj-indexrow:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 rgba(9,6,8,.45); }
+      .lj-indexrow-knot { width: 5px; align-self: stretch; border-radius: 999px; background: var(--ribbon); flex: none; }
+      .lj-indexrow-swatch {
+        width: 13px; height: 17px; flex: none; border-radius: 1px;
+        background: var(--swatch); border: 1px solid rgba(60,40,20,.4);
+        box-shadow: 1px 1px 0 rgba(0,0,0,.25);
       }
       .lj-indexrow-dot {
         width: 7px; height: 7px; border-radius: 999px; flex: none;
         background: #7D2834; box-shadow: 0 0 7px 2px rgba(255,201,130,.5);
       }
 
-      /* ---------- the reader ---------- */
+      /* ======================================================== the reader = */
       .lj-reader {
         position: fixed; inset: 0; z-index: 120; display: grid; place-items: center;
-        /* the action bar is anchored to the bottom, so the scroll centres in
-           what is left rather than sliding underneath it */
         padding: 12px 12px 138px;
       }
       @media (min-width: 640px) { .lj-reader { padding-bottom: 118px; } }
       .lj-reader-scrim {
         position: absolute; inset: 0; width: 100%; height: 100%;
-        background: rgba(10,6,8,.82); backdrop-filter: blur(5px);
+        background: rgba(10,6,8,.86); backdrop-filter: blur(5px);
         border: 0; cursor: pointer;
       }
+      .lj-reader-rays {
+        position: absolute; inset: 0; pointer-events: none;
+        background:
+          conic-gradient(from 200deg at 50% 50%,
+            transparent 0deg, rgba(255,206,150,.10) 18deg, transparent 40deg,
+            transparent 160deg, rgba(255,206,150,.08) 182deg, transparent 208deg,
+            transparent 300deg, rgba(255,182,200,.07) 322deg, transparent 344deg);
+        animation: lj-rays 26s linear infinite;
+      }
+      @keyframes lj-rays { to { transform: rotate(360deg); } }
 
       .lj-stage {
         position: relative; z-index: 2;
-        width: min(560px, 88vw);
+        width: min(580px, 90vw);
         transform-origin: 50% 50%;
         transition: transform .58s cubic-bezier(.2,.85,.3,1);
       }
-      .lj-stage.phase-flying,
-      .lj-stage.phase-returning {
+      .lj-stage.phase-flying, .lj-stage.phase-returning {
         transform: translate(var(--fx), var(--fy)) scale(var(--fk)) rotate(-8deg);
       }
-      .lj-stage.phase-unrolling,
-      .lj-stage.phase-open,
-      .lj-stage.phase-rolling { transform: none; }
+      .lj-stage.phase-unrolling, .lj-stage.phase-open, .lj-stage.phase-rolling { transform: none; }
 
       .lj-paper-clip {
         height: 100%; overflow: hidden;
@@ -2823,30 +3488,127 @@ function ScopedStyles() {
       .lj-stage.phase-open .lj-paper-clip { clip-path: inset(0 0 0 0 round 6px); }
 
       .lj-rollbar {
-        position: absolute; left: -8px; right: -8px; height: 26px; z-index: 4;
-        border-radius: 999px; pointer-events: none;
-        background: linear-gradient(180deg, #F2E4C8 0%, #DCC69C 48%, #B99B6E 100%);
-        border: 1px solid #8A6E4E;
-        box-shadow: 0 4px 12px rgba(0,0,0,.55);
+        position: absolute; left: -10px; right: -10px; height: 28px; z-index: 4;
+        pointer-events: none;
         transition: transform .6s cubic-bezier(.35,.9,.3,1);
       }
-      .lj-rollbar::after {
-        content: ""; position: absolute; left: 44%; top: -6px; bottom: -6px; width: 12%;
-        background: var(--ribbon); border-radius: 2px; opacity: .9;
+      .lj-rollbar-face {
+        position: absolute; inset: 0; border-radius: 999px;
+        background: linear-gradient(180deg, #FBF2DE 0%, #EADCBB 30%, #C9AE7E 72%, #9C8253 100%);
+        border: 1px solid #8A6E4E;
+        box-shadow: 0 5px 14px rgba(0,0,0,.6), inset 0 -3px 6px rgba(0,0,0,.2);
       }
-      .lj-rollbar.top { top: -13px; transform: translateY(calc(var(--stage-h) / 2 - 13px)); }
-      .lj-rollbar.bottom { bottom: -13px; transform: translateY(calc(var(--stage-h) / -2 + 13px)); }
+      .lj-rollbar-face::before {
+        content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 16px;
+        border-radius: 999px;
+        background: repeating-radial-gradient(circle at 50% 50%, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
+      }
+      .lj-rollbar-face::after {
+        content: ""; position: absolute; right: 0; top: 0; bottom: 0; width: 16px;
+        border-radius: 999px;
+        background: repeating-radial-gradient(circle at 50% 50%, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
+      }
+      .lj-rollbar-tie {
+        position: absolute; left: 44%; top: -7px; bottom: -7px; width: 12%;
+        background: var(--ribbon); border-radius: 3px; opacity: .95;
+        box-shadow: inset 0 0 0 1px rgba(0,0,0,.25), 0 2px 5px rgba(0,0,0,.4);
+      }
+      .lj-rollbar.top { top: -14px; transform: translateY(calc(var(--stage-h) / 2 - 14px)); }
+      .lj-rollbar.bottom { bottom: -14px; transform: translateY(calc(var(--stage-h) / -2 + 14px)); }
       .lj-stage.phase-open .lj-rollbar { transform: translateY(0); }
 
+      /* ======================================================== the sheet == */
+      /* The sheet is a fixed frame; only the well inside it scrolls, so the
+         grain, patina, edge, tape and stamp stay put on a long letter instead
+         of sliding away with the text. */
       .lj-paper {
-        position: relative; display: flex; flex-direction: column;
-        height: 100%; overflow-y: auto; overflow-x: hidden;
-        border: 2px solid; border-radius: 6px;
-        padding: 2.4rem 1.9rem 2rem;
-        box-shadow: inset 0 0 60px rgba(120,80,40,.16);
+        position: relative; height: 100%; overflow: hidden;
+        border-radius: 5px;
+        box-shadow: inset 0 0 70px rgba(120,80,40,.14);
       }
-      /* Sits ON the paper rather than over its top edge: the unroll clips the
-         stage, so anything hanging past the edge is cut off mid-animation. */
+      .lj-paper-well {
+        position: relative; z-index: 10;
+        height: 100%; overflow-y: auto; overflow-x: hidden;
+        display: flex; flex-direction: column;
+        padding: 2.4rem 1.9rem 2rem;
+      }
+      .lj-paper-grain {
+        position: absolute; inset: 0; z-index: 2; pointer-events: none;
+        background-image: var(--lj-grain);
+        opacity: .17; mix-blend-mode: multiply;
+      }
+      .lj-paper-fold {
+        position: absolute; inset: 0; z-index: 3; pointer-events: none;
+        background:
+          linear-gradient(90deg, transparent 32%, rgba(0,0,0,.055) 33%, rgba(255,255,255,.24) 34%, transparent 35%),
+          linear-gradient(180deg, transparent 47%, rgba(0,0,0,.05) 48%, rgba(255,255,255,.2) 49%, transparent 50%);
+      }
+      .lj-paper-patina { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+      .patina-aged .lj-paper-patina {
+        background:
+          radial-gradient(circle 5px at 18% 22%, rgba(140,96,44,.28), transparent 70%),
+          radial-gradient(circle 3px at 74% 36%, rgba(140,96,44,.24), transparent 70%),
+          radial-gradient(circle 7px at 42% 78%, rgba(140,96,44,.20), transparent 72%),
+          radial-gradient(circle 4px at 86% 66%, rgba(140,96,44,.22), transparent 70%),
+          radial-gradient(circle 3px at 28% 58%, rgba(140,96,44,.20), transparent 70%),
+          linear-gradient(160deg, rgba(150,104,50,.20), transparent 26%, transparent 74%, rgba(150,104,50,.24));
+      }
+      .patina-coffee .lj-paper-patina {
+        background:
+          radial-gradient(circle at 76% 20%, transparent 34px, rgba(118,68,24,.46) 35px, rgba(118,68,24,.46) 42px, transparent 43px),
+          radial-gradient(circle at 22% 74%, transparent 22px, rgba(118,68,24,.40) 23px, rgba(118,68,24,.40) 28px, transparent 29px),
+          radial-gradient(ellipse 60px 26px at 40% 12%, rgba(126,78,32,.14), transparent 70%),
+          radial-gradient(ellipse 40px 20px at 88% 84%, rgba(126,78,32,.16), transparent 70%);
+      }
+      .patina-inked .lj-paper-patina {
+        background:
+          radial-gradient(circle 3.5px at 82% 18%, rgba(24,20,30,.62), transparent 72%),
+          radial-gradient(circle 2px at 87% 24%, rgba(24,20,30,.55), transparent 72%),
+          radial-gradient(circle 1.4px at 78% 27%, rgba(24,20,30,.5), transparent 72%),
+          radial-gradient(circle 2.6px at 16% 84%, rgba(24,20,30,.5), transparent 72%),
+          radial-gradient(circle 1.6px at 22% 88%, rgba(24,20,30,.45), transparent 72%);
+      }
+
+      /* The edge treatment is a ring drawn inside the sheet and pushed about by
+         one shared turbulence filter, so the boundary is ragged instead of
+         geometric. It is a static element, so the filter costs one rasterise. */
+      /* The ring is a BORDER, not a masked padding box. The usual
+         two-layer mask-composite recipe composites away to nothing in Chrome
+         here, whereas a plain border is real paint the displacement filter can
+         push around, which is what makes the edge ragged. */
+      .lj-paper-edge {
+        position: absolute; inset: 0; z-index: 6; pointer-events: none; border-radius: 5px;
+      }
+      .edge-clean .lj-paper-edge { box-shadow: inset 0 0 0 1.5px var(--sheet-edge); }
+      .edge-deckle .lj-paper-edge {
+        border: 10px solid rgba(255,255,255,.66);
+        filter: url(#lj-rough);
+        opacity: .62;
+      }
+      .edge-torn .lj-paper-edge {
+        border: 13px solid var(--sheet-edge);
+        filter: url(#lj-scorch);
+        opacity: .6;
+      }
+      .edge-torn .lj-paper-edge::after {
+        content: ""; position: absolute; inset: -5px;
+        border: 7px solid rgba(255,255,255,.4); border-radius: 5px;
+      }
+      .edge-burnt .lj-paper-edge {
+        border: 15px solid #241004;
+        filter: url(#lj-scorch);
+        opacity: .96;
+      }
+      /* the warm singe that always sits just inside the char line */
+      .edge-burnt .lj-paper-edge::after {
+        content: ""; position: absolute; inset: -6px;
+        border: 11px solid rgba(158,76,22,.55); border-radius: 5px;
+      }
+      .lj-paper.edge-burnt {
+        box-shadow: inset 0 0 64px 16px rgba(104,48,12,.5), inset 0 0 0 2px rgba(30,14,4,.55);
+      }
+      .lj-paper.edge-torn { box-shadow: inset 0 0 50px 8px rgba(120,84,40,.24); }
+
       .lj-paper-tape {
         position: absolute; top: 14px; width: 66px; height: 17px; z-index: 20;
         opacity: .92;
@@ -2860,32 +3622,73 @@ function ScopedStyles() {
         border-left: 3px dashed #fff; border-right: 3px dashed #fff;
         box-shadow: 0 4px 10px rgba(0,0,0,.5);
       }
-      /* Reserves the stamp's column so a long title never runs under it. */
-      .lj-has-stamp .lj-paper-head { padding-right: 72px; }
+      .lj-tape-lace {
+        background-color: rgba(250,244,235,.82);
+        background-image:
+          radial-gradient(circle 3px at 6px 0, transparent 96%, rgba(250,244,235,.82) 100%),
+          radial-gradient(circle 3px at 6px 100%, transparent 96%, rgba(250,244,235,.82) 100%),
+          radial-gradient(rgba(190,160,140,.5) 1.2px, transparent 1.3px);
+        background-size: 12px 100%, 12px 100%, 7px 7px;
+        box-shadow: 0 4px 10px rgba(0,0,0,.4);
+      }
+      .lj-tape-striped {
+        background: repeating-linear-gradient(114deg, #E4D3AE 0 6px, #B44E64 6px 12px);
+        border-left: 3px dashed rgba(255,255,255,.7); border-right: 3px dashed rgba(255,255,255,.7);
+        box-shadow: 0 4px 10px rgba(0,0,0,.5);
+      }
+      .lj-tape-kraft {
+        background:
+          repeating-linear-gradient(0deg, rgba(120,86,44,.16) 0 1px, transparent 1px 4px),
+          linear-gradient(#CDAF83, #B99765);
+        border-left: 2px dashed rgba(255,255,255,.45); border-right: 2px dashed rgba(255,255,255,.45);
+        box-shadow: 0 4px 10px rgba(0,0,0,.5);
+      }
+
+      .lj-has-stamp .lj-paper-head { padding-right: 76px; }
       .lj-paper-stamp {
-        /* clears the corner tape, which now sits diagonally across the top */
-        position: absolute; top: 46px; right: 16px; z-index: 15;
-        width: 58px; text-align: center; rotate: 5deg;
-        border: 2px dashed; border-radius: 3px;
-        background: rgba(253,250,245,.9);
-        padding: .3rem .2rem .25rem;
+        position: absolute; top: 20px; right: 16px; z-index: 15;
+        width: 58px; height: auto; rotate: 5deg;
+        filter: drop-shadow(1px 3px 3px rgba(0,0,0,.4));
       }
+
+      .lj-paper-body { position: relative; z-index: 10; flex: 1; display: flex; flex-direction: column; min-height: 100%; }
+      .lj-paper-sign { margin-top: auto; padding-top: 2rem; }
+      .lj-rule { display: block; width: 100%; height: 8px; margin: 1rem 0 1.1rem; }
+
       .lj-occasion-tag {
-        display: inline-block;
+        display: inline-block; position: relative;
         font-family: 'Caveat', cursive; font-size: 19px; line-height: 1;
-        background: #C9A778; color: #4A2E1C;
-        border: 1.5px solid #8A6E4E; border-radius: 4px;
-        padding: .3rem .7rem; rotate: -1.5deg;
+        background: linear-gradient(#D2B183, #BE9A67); color: #4A2E1C;
+        border: 1.5px solid #8A6E4E; border-radius: 3px;
+        padding: .32rem .7rem .32rem 1.1rem; rotate: -1.5deg;
         box-shadow: 2px 3px 0 rgba(0,0,0,.28);
+        clip-path: polygon(0 32%, 8% 0, 100% 0, 100% 100%, 8% 100%, 0 68%);
       }
+      .lj-occasion-tag::before {
+        content: ""; position: absolute; left: 5px; top: 50%; translate: 0 -50%;
+        width: 5px; height: 5px; border-radius: 999px; background: rgba(40,26,14,.7);
+      }
+
       .lj-paper-seal {
-        display: grid; place-items: center; flex: none;
-        width: 52px; height: 52px; border-radius: 999px;
-        color: rgba(255,255,255,.86);
-        border: 3px solid rgba(28,2,4,.85);
-        box-shadow: 0 8px 18px rgba(0,0,0,.6), inset 0 2px 5px rgba(255,255,255,.3);
+        position: relative; display: grid; place-items: center; flex: none;
+        width: 58px; height: 58px;
+        background: radial-gradient(circle at 34% 30%, color-mix(in srgb, var(--wax) 76%, #fff 24%), var(--wax) 46%, #2b0407 100%);
+        box-shadow: 0 9px 18px rgba(0,0,0,.6), inset 0 2px 6px rgba(255,255,255,.34), inset 0 -4px 8px rgba(0,0,0,.5);
         rotate: -6deg;
       }
+      .lj-paper-seal-face { color: rgba(255,255,255,.82); display: grid; place-items: center; }
+      .wax-round { border-radius: 999px; }
+      .wax-oval { border-radius: 999px; width: 68px; height: 52px; }
+      .wax-blob { border-radius: 46% 54% 38% 62% / 54% 42% 58% 46%; }
+      .wax-drip { border-radius: 50% 50% 44% 56% / 50% 50% 62% 38%; }
+      .wax-drip::after {
+        content: ""; position: absolute; left: 52%; bottom: -13px; translate: -50% 0;
+        width: 12px; height: 20px; border-radius: 0 0 999px 999px;
+        background: linear-gradient(var(--wax), #2b0407);
+      }
+
+      .lj-paper-sprig { position: absolute; left: 10px; bottom: 10px; width: 92px; height: 62px; z-index: 8; opacity: .85; }
+
       .lj-sticker {
         position: absolute; z-index: 25; font-size: 30px; line-height: 1;
         user-select: none; pointer-events: none;
@@ -2897,6 +3700,7 @@ function ScopedStyles() {
       }
       .lj-sticker.is-selected { outline: 2px dashed #7D2834; outline-offset: 3px; border-radius: 4px; }
 
+      /* ------------------------------------------------------ the actions -- */
       .lj-actions {
         position: absolute; left: 50%; translate: -50% 0; bottom: max(14px, 3vh);
         z-index: 5; display: flex; flex-direction: column; align-items: center; gap: .55rem;
@@ -2908,32 +3712,30 @@ function ScopedStyles() {
          instead leaves it double-shifted if the animation is interrupted. */
       @keyframes lj-actions-in {
         from { opacity: 0; translate: -50% 10px; }
-        to   { opacity: 1; translate: -50% 0; }
+        to { opacity: 1; translate: -50% 0; }
       }
       .lj-receipt {
         display: inline-flex; align-items: center; gap: .35rem;
         font-family: 'Space Grotesk', monospace; font-size: 10px; letter-spacing: .1em;
         text-transform: uppercase; color: #E0B1AE;
-        background: rgba(20,12,15,.7); border: 1px solid rgba(224,177,174,.3);
+        background: rgba(20,12,15,.72); border: 1px solid rgba(224,177,174,.3);
         padding: .25rem .6rem; border-radius: 999px;
       }
       .lj-action {
         display: inline-flex; align-items: center; gap: .35rem;
         font-family: 'Space Grotesk', monospace; font-size: 10px; font-weight: 900;
         letter-spacing: .12em; text-transform: uppercase;
-        background: #E8D9C1; color: #2A1B20;
+        background: linear-gradient(#F0E4CC, #DECBAA); color: #2A1B20;
         border: 2px solid #261D24; box-shadow: 3px 3px 0 #0C0709;
-        padding: .42rem .7rem; cursor: pointer; border-radius: .25rem;
+        padding: .42rem .7rem; cursor: pointer; border-radius: .2rem;
         transition: transform .12s ease, background .2s ease;
       }
-      .lj-action:hover { background: #F6EEDD; }
+      .lj-action:hover { background: linear-gradient(#F9F1E0, #E9DABE); }
       .lj-action:active { transform: translate(2px,2px); box-shadow: 1px 1px 0 #0C0709; }
       .lj-action:disabled { opacity: .55; cursor: not-allowed; }
-      .lj-action.is-primary { background: #781420; color: #FBF3E6; }
-      .lj-action.is-primary:hover { background: #8F1A28; }
-      .lj-action.is-danger { background: #45140E; color: #F0C9C4; }
-      .lj-action.is-danger:hover { background: #5C1B12; }
-      .lj-action.is-on { background: #EAD9A9; }
+      .lj-action.is-primary { background: linear-gradient(#8E1B2A, #61101B); color: #FBF3E6; }
+      .lj-action.is-danger { background: linear-gradient(#5A1A12, #37100A); color: #F0C9C4; }
+      .lj-action.is-on { background: linear-gradient(#F2DFA6, #DBBF74); }
 
       .lj-petals { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
       .lj-petal {
@@ -2942,37 +3744,38 @@ function ScopedStyles() {
       }
       @keyframes lj-petal-fall {
         0% { transform: translateY(-40px) translateX(0) rotate(0deg); opacity: 0; }
-        12% { opacity: .9; }
-        100% { transform: translateY(105vh) translateX(var(--drift)) rotate(300deg); opacity: 0; }
+        12% { opacity: .95; }
+        100% { transform: translateY(105vh) translateX(var(--drift)) rotate(var(--spin)); opacity: 0; }
       }
 
-      /* ---------- confirm + toast ---------- */
+      /* ================================================ confirm and toast == */
       .lj-confirm-wrap { position: fixed; inset: 0; z-index: 140; display: grid; place-items: center; }
       .lj-confirm {
         position: relative; z-index: 2; width: min(400px, 90vw);
-        background: linear-gradient(#F6EEDD, #E9DBC2);
-        border: 3px solid #1C1317; border-radius: .6rem;
+        background:
+          radial-gradient(rgba(60,35,30,.06) .8px, transparent .8px) 0 0/8px 8px,
+          linear-gradient(#F6EEDD, #E7DAC0);
+        border: 3px solid #1C1317; border-radius: .55rem;
         box-shadow: 10px 12px 0 rgba(9,6,8,.8);
         padding: 1.4rem 1.3rem 1.2rem; rotate: -.8deg;
       }
-
       .lj-toast {
         position: fixed; left: 50%; translate: -50% 0; bottom: 22px; z-index: 200;
         display: inline-flex; align-items: center; gap: .5rem; max-width: 90vw;
-        background: #EAD9A9; color: #2A1B20;
+        background: linear-gradient(#F2DFA6, #DFC684); color: #2A1B20;
         border: 2px solid #261D24; box-shadow: 4px 4px 0 #0C0709;
-        padding: .5rem .8rem; border-radius: .3rem;
+        padding: .5rem .8rem; border-radius: .25rem;
         font-family: 'Space Grotesk', monospace; font-size: 11px; font-weight: 700;
         animation: lj-toast-in .24s cubic-bezier(.34,1.56,.64,1) both;
       }
-      @keyframes lj-toast-in { from { opacity: 0; transform: translate(-50%, 14px); } to { opacity: 1; } }
+      @keyframes lj-toast-in { from { opacity: 0; translate: -50% 14px; } to { opacity: 1; translate: -50% 0; } }
 
-      /* ---------- the composer ---------- */
+      /* ===================================================== the composer == */
       .lj-composer {
         position: fixed; inset: 0; z-index: 150; display: flex; flex-direction: column;
         background:
-          radial-gradient(ellipse at 50% -10%, #3A2129 0%, transparent 55%),
-          linear-gradient(#1B1216, #0F0A0D);
+          radial-gradient(ellipse 80% 60% at 50% -6%, #40252C 0%, transparent 60%),
+          linear-gradient(#1B1216, #0C0709);
       }
       .lj-composer-head {
         display: flex; flex-wrap: wrap; align-items: center; gap: .6rem;
@@ -2982,11 +3785,10 @@ function ScopedStyles() {
         display: inline-flex; align-items: center; gap: .45rem;
         font-family: 'Space Grotesk', monospace; font-size: 11px; font-weight: 900;
         letter-spacing: .12em; text-transform: uppercase;
-        background: #781420; color: #FBF3E6;
+        background: linear-gradient(#8E1B2A, #61101B); color: #FBF3E6;
         border: 2px solid #FAF4EB; box-shadow: 4px 4px 0 #0C0709;
-        padding: .5rem .85rem; cursor: pointer; border-radius: .25rem;
+        padding: .5rem .85rem; cursor: pointer; border-radius: .2rem;
       }
-      .lj-save-btn:hover { background: #8F1A28; }
       .lj-save-btn:active { transform: translate(2px,2px); box-shadow: 2px 2px 0 #0C0709; }
       .lj-save-btn:disabled { opacity: .6; cursor: not-allowed; }
 
@@ -2995,34 +3797,38 @@ function ScopedStyles() {
         grid-template-columns: 1fr; padding: 1rem; overflow-y: auto;
       }
       @media (min-width: 1024px) {
-        .lj-composer-body { grid-template-columns: minmax(0,1fr) 380px; overflow: hidden; }
+        .lj-composer-body { grid-template-columns: minmax(0,1fr) 392px; overflow: hidden; }
       }
 
       .lj-preview-stage { min-height: 0; display: flex; flex-direction: column; }
+      .lj-preview-frame { position: relative; flex: 1; min-height: 0; display: flex; }
       .lj-preview {
-        position: relative; flex: 1 1 auto; min-height: 260px;
-        display: flex; flex-direction: column;
-        overflow-y: auto; overflow-x: hidden;
-        border: 2px solid; border-radius: 6px;
-        padding: 2.4rem 1.9rem 2rem;
-        box-shadow: 12px 14px 0 rgba(9,6,8,.7), inset 0 0 60px rgba(120,80,40,.16);
+        flex: 1; min-height: 300px;
+        box-shadow: 14px 16px 0 rgba(9,6,8,.66), inset 0 0 70px rgba(120,80,40,.14);
         rotate: -.5deg;
+      }
+      .lj-preview .lj-paper-well { min-height: 300px; }
+      .lj-roll-preview {
+        position: absolute; right: 14px; bottom: 14px; z-index: 30;
+        width: 172px; text-align: center; color: #6A5348; pointer-events: none;
+      }
+      .lj-roll-preview-svg {
+        display: block; width: 172px; height: 50px;
+        filter: drop-shadow(0 6px 10px rgba(0,0,0,.6));
       }
 
       .lj-sticker-tools {
         display: flex; flex-wrap: wrap; align-items: center; gap: .4rem;
-        margin-top: .6rem; flex: none;
-        color: #E0B1AE;
+        margin-top: .6rem; flex: none; color: #E0B1AE;
       }
       .lj-sticker-tools button {
         font-family: 'Space Grotesk', monospace; font-size: 9px; font-weight: 900;
         letter-spacing: .1em; padding: .25rem .5rem; cursor: pointer;
         background: #E8D9C1; color: #2A1B20; border: 2px solid #261D24; border-radius: .2rem;
       }
-      .lj-sticker-tools button:hover { background: #F6EEDD; }
       .lj-sticker-tools button.is-danger { background: #45140E; color: #F0C9C4; }
 
-      .lj-rail { display: flex; flex-direction: column; min-height: 0; }
+      .lj-rail-panel { display: flex; flex-direction: column; min-height: 0; }
       .lj-tabs { display: flex; flex-wrap: wrap; gap: .3rem; margin-bottom: .7rem; }
       .lj-tab {
         font-family: 'Space Grotesk', monospace; font-size: 9px; font-weight: 900;
@@ -3033,54 +3839,67 @@ function ScopedStyles() {
       }
       .lj-tab:hover { background: rgba(224,177,174,.12); }
       .lj-tab.is-active { background: #E8D9C1; color: #2A1B20; border-color: #E8D9C1; }
-
-      .lj-rail-body {
-        flex: 1; min-height: 0; overflow-y: auto; padding-right: .4rem;
-      }
+      .lj-rail-body { flex: 1; min-height: 0; overflow-y: auto; padding-right: .4rem; }
 
       .lj-opt {
         font-family: 'Space Grotesk', monospace; font-size: 9px; font-weight: 900;
         letter-spacing: .08em; padding: .45rem .3rem; cursor: pointer; text-align: center;
-        background: #E8D9C1; color: #2A1B20;
-        border: 2px solid #261D24; border-radius: .25rem;
+        background: linear-gradient(#EFE2C8, #DCC9A6); color: #2A1B20;
+        border: 2px solid #261D24; border-radius: .2rem;
         transition: transform .12s ease;
       }
       .lj-opt:hover { transform: translateY(-2px); }
-      .lj-opt.is-active { background: #781420; color: #FBF3E6; }
+      .lj-opt.is-active { background: linear-gradient(#8E1B2A, #61101B); color: #FBF3E6; }
+      .lj-opt-tall { padding: .5rem .4rem; line-height: 1.15; }
 
+      .lj-paper-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .45rem; }
       .lj-paper-opt {
-        font-family: 'Space Grotesk', monospace; font-size: 9px; font-weight: 900;
-        letter-spacing: .1em; padding: 1.2rem .3rem; cursor: pointer; text-align: center;
-        border: 2px solid; border-radius: .3rem;
-        box-shadow: 3px 3px 0 rgba(9,6,8,.6);
+        position: relative; overflow: hidden;
+        font-family: 'Space Grotesk', monospace; font-size: 8px; font-weight: 900;
+        letter-spacing: .08em; padding: 1.5rem .2rem; cursor: pointer; text-align: center;
+        border: 2px solid rgba(30,20,24,.55); border-radius: .2rem;
+        box-shadow: 3px 3px 0 rgba(9,6,8,.55);
         transition: transform .14s ease;
       }
-      .lj-paper-opt:hover { transform: translateY(-3px) rotate(-1deg); }
+      .lj-paper-opt:hover { transform: translateY(-3px) rotate(-1.2deg); }
       .lj-paper-opt.is-active { outline: 3px solid #EAD9A9; outline-offset: 2px; }
+
+      .lj-stamp-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: .45rem; }
+      .lj-stamp-opt {
+        padding: .25rem; cursor: pointer; border-radius: .2rem;
+        background: rgba(240,228,204,.10); border: 2px solid rgba(224,177,174,.28);
+        transition: transform .14s ease;
+      }
+      .lj-stamp-opt:hover { transform: translateY(-3px); }
+      .lj-stamp-opt.is-active { border-color: #EAD9A9; background: rgba(234,217,169,.22); }
+      .lj-stamp-none {
+        display: grid; place-items: center; height: 56px;
+        font-family: 'Space Grotesk', monospace; font-size: 9px; font-weight: 900;
+        color: #C9A9A2;
+      }
 
       .lj-swatch {
         width: 30px; height: 30px; border-radius: 999px; cursor: pointer;
         border: 2px solid #261D24; box-shadow: 2px 2px 0 rgba(9,6,8,.6);
         transition: transform .14s cubic-bezier(.34,1.56,.64,1);
       }
-      .lj-swatch:hover { transform: scale(1.14); }
+      .lj-swatch:hover { transform: scale(1.16); }
       .lj-swatch.is-active { outline: 3px solid #EAD9A9; outline-offset: 2px; }
 
       .lj-color {
         width: 100%; height: 38px; padding: 0; cursor: pointer;
         background: #FDF8EE; border: 2px solid #7D2834; border-radius: .3rem;
       }
-
       .lj-sticker-opt {
         font-size: 19px; line-height: 1; padding: .3rem 0; cursor: pointer;
         background: #F0E6D2; border: 2px solid #261D24; border-radius: .2rem;
         transition: transform .12s cubic-bezier(.34,1.56,.64,1);
       }
-      .lj-sticker-opt:hover { transform: scale(1.16) rotate(-6deg); }
+      .lj-sticker-opt:hover { transform: scale(1.18) rotate(-7deg); }
 
       .lj-toggle {
         display: inline-flex; align-items: center; gap: .6rem; cursor: pointer;
-        background: #E8D9C1; color: #2A1B20;
+        background: linear-gradient(#EFE2C8, #DCC9A6); color: #2A1B20;
         border: 2px solid #261D24; border-radius: 999px;
         padding: .32rem .8rem .32rem .32rem;
         box-shadow: 3px 3px 0 rgba(9,6,8,.6);
@@ -3089,27 +3908,28 @@ function ScopedStyles() {
         width: 20px; height: 20px; border-radius: 999px; background: #7D2834;
         transition: background .2s ease, transform .2s ease;
       }
-      .lj-toggle.is-on { background: #EAD9A9; }
+      .lj-toggle.is-on { background: linear-gradient(#F2DFA6, #DFC684); }
       .lj-toggle.is-on .lj-toggle-knob { background: #2F4536; transform: rotate(180deg) scale(1.05); }
 
-      /* ---------- scrollbars ---------- */
-      /* the sheet's own column, so the signature block can sit at the foot of
-         the scroll instead of being stranded halfway up a long sheet */
-      .lj-paper-body { position: relative; z-index: 10; flex: 1; display: flex; flex-direction: column; }
-      .lj-paper-sign { margin-top: auto; padding-top: 2rem; }
-
+      /* ========================================================= scrollbars */
       .lj-scrollbar { scrollbar-width: thin; scrollbar-color: rgba(125,40,52,.55) transparent; }
       .lj-scrollbar::-webkit-scrollbar { width: 7px; }
       .lj-scrollbar::-webkit-scrollbar-thumb { background: rgba(125,40,52,.55); border-radius: 999px; }
       .lj-scrollbar::-webkit-scrollbar-track { background: transparent; }
+      .lj-rail::-webkit-scrollbar, .lj-index-list::-webkit-scrollbar { width: 7px; }
+      .lj-rail::-webkit-scrollbar-thumb, .lj-index-list::-webkit-scrollbar-thumb {
+        background: rgba(125,40,52,.5); border-radius: 999px;
+      }
 
-      /* ---------- reduced motion ---------- */
+      /* =================================================== reduced motion == */
       @media (prefers-reduced-motion: reduce) {
         .lj-stage, .lj-paper-clip, .lj-rollbar { transition: none !important; }
         .lj-stage.phase-flying, .lj-stage.phase-returning { transform: none !important; }
         .lj-paper-clip { clip-path: inset(0 0 0 0 round 6px) !important; }
         .lj-rollbar { transform: translateY(0) !important; }
-        .lj-bulb, .lj-inner-bulb, .lj-spider-drop, .lj-petal { animation: none !important; }
+        .lj-bulb, .lj-inner-bulb, .lj-spider-a, .lj-spider-b, .lj-petal,
+        .lj-bokeh-dot, .lj-mote, .lj-flame, .lj-ghost, .lj-hangtag,
+        .lj-swinger, .lj-glass-glow, .lj-reader-rays { animation: none !important; }
       }
     `}</style>
   );
