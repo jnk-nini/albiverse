@@ -177,7 +177,7 @@ export default function Dashboard({
     setIsWarpingToClock(true);
 
     setTimeout(() => {
-      router.push("/clock");
+      router.push(`/clock?from=${currentSpread}`);
     }, 1100);
   };
 // Inside Dashboard.tsx
@@ -188,6 +188,7 @@ useEffect(() => {
   router.prefetch("/clock");
   router.prefetch("/letters");
   router.prefetch("/diary");
+  router.prefetch("/soundtrack");
 }, [router]);
 
 // 2. Updated Chapter 2 Navigation Handler
@@ -200,7 +201,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
   router.prefetch("/countdowns");
 
   setTimeout(() => {
-    router.push("/countdowns");
+    router.push(`/countdowns?from=${currentSpread}`);
   }, 1000);
 };
 
@@ -214,7 +215,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
 
     // Play full Spider-Verse warp animation, then push route
     setTimeout(() => {
-      router.push("/timeline");
+      router.push(`/timeline?from=${currentSpread}`);
     }, 1150);
   };
 
@@ -249,6 +250,21 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     }, 1250);
   };
 
+  // Chapter 9 Soundtrack Deck Warp State
+  const [isWarpingSoundtrack, setIsWarpingSoundtrack] = useState(false);
+
+  /* Same contract as Ch.05/Ch.06: the spread travels with the reader so the
+     torn ticket stub inside the chapter brings them back to this page. */
+  const handleOpenSoundtrack = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWarpingSoundtrack(true);
+    router.prefetch("/soundtrack");
+
+    setTimeout(() => {
+      router.push(`/soundtrack?from=${currentSpread}`);
+    }, 1250);
+  };
+
   const features = [
     {
     title: "Live Canon Clock", 
@@ -274,7 +290,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     { title: "Spider Diary", desc: "Typed field logs, pinned to the board", href: "/diary", tag: "CH. 06", icon: BookHeart, note: "Our private logbook", onClick: handleOpenDiary },
     { title: "Web Planner", desc: "Shared date schedules & reminders", href: "/planner", tag: "CH. 07", icon: CheckSquare, note: "Adventures on the docket" },
     { title: "Multiverse Bucket List", desc: "Adventures across dimensions to complete", href: "/bucket-list", tag: "CH. 08", icon: Sparkles, note: "Cross off our milestones" },
-    { title: "Soundtrack Deck", desc: "Spinning vinyl & our special playlist", href: "/soundtrack", tag: "CH. 09", icon: Disc, note: "Songs for our universe" },
+    { title: "Soundtrack Deck", desc: "Spinning vinyl & our special playlist", href: "/soundtrack", tag: "CH. 09", icon: Disc, note: "Songs for our universe", onClick: handleOpenSoundtrack },
     { title: "Secret Wishlist", desc: "Gift ideas & surprise drops (Vault)", href: "/wishlist", tag: "CH. 10", icon: Gift, note: "Surprise vault items" },
     { title: "About Him Dossier", desc: "Confidential intel, sizes & favorites", href: "/about-him", tag: "CH. 11", icon: Lock, note: "Classified Peter Parker Intel" },
   ];
@@ -431,8 +447,12 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             ) : (
+              /* `from` is the spread this page sits on, so the chapter's own
+                 BACK control can return the reader to it. Derived from the page
+                 number rather than `currentSpread` so the leaves rendered
+                 during a flip carry their own spread, not the one being left. */
               <Link
-                href={item.href}
+                href={`${item.href}?from=${Math.floor((pageNum - 1) / 2)}`}
                 className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition active:translate-y-px"
               >
                 <span>OPEN ENTRY</span>
@@ -1486,6 +1506,169 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
 
             <span className="font-handwriting text-2xl text-[#E0B1AE] mt-3 font-black drop-shadow-md">
               Pinning every day we bothered to write down...
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ================= CH. 09 SOUNDTRACK DECK WARP OVERLAY =================
+          The chapter is a corkboard of cassettes and a turntable, so its
+          loading screen is the record dropping onto the platter: the vinyl
+          rises into frame, the tonearm swings down onto it, the record starts
+          turning, and every tape and note on screen is pulled into the spindle.
+
+          All transform and opacity. The grooves are a static repeating
+          gradient on the disc, so the whole record spins as one composited
+          layer instead of being repainted every frame. */}
+      {isWarpingSoundtrack && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#160C08]/94 backdrop-blur-md overflow-hidden pointer-events-none">
+          <style>{`
+            @keyframes stwarp-rise {
+              0%   { transform: translateY(64vh) scale(0.6) rotate(-14deg); opacity: 0; }
+              44%  { transform: translateY(0) scale(1.07) rotate(3deg); opacity: 1; }
+              62%  { transform: translateY(0) scale(0.96) rotate(-1deg); }
+              80%  { transform: translateY(0) scale(1.02) rotate(0.5deg); }
+              100% { transform: translateY(0) scale(1) rotate(0deg); opacity: 1; }
+            }
+            @keyframes stwarp-spin { to { transform: rotate(360deg); } }
+            @keyframes stwarp-arm {
+              0%, 46% { transform: rotate(-30deg); }
+              74%     { transform: rotate(4deg); }
+              88%     { transform: rotate(-2deg); }
+              100%    { transform: rotate(0deg); }
+            }
+            @keyframes stwarp-suck {
+              0%   { transform: translate(var(--fly-x), var(--fly-y)) rotate(var(--fly-rot)) scale(1.15); opacity: 0; }
+              18%  { opacity: 1; }
+              100% { transform: translate(0, -12px) rotate(0deg) scale(0.14); opacity: 0; }
+            }
+            @keyframes stwarp-wave {
+              0%, 100% { transform: scaleY(0.35); }
+              50%      { transform: scaleY(1); }
+            }
+            .stwarp-deck  { animation: stwarp-rise 1.25s cubic-bezier(0.2, 0.9, 0.3, 1) forwards; }
+            .stwarp-disc  { animation: stwarp-spin 1.9s linear infinite; will-change: transform; }
+            .stwarp-arm   { animation: stwarp-arm 1.25s cubic-bezier(0.3, 0.9, 0.35, 1) forwards; transform-origin: 82% 16%; }
+            .stwarp-note  { animation: stwarp-suck 1.1s cubic-bezier(0.55, 0, 0.35, 1) forwards; }
+            .stwarp-bar   { animation: stwarp-wave 0.7s ease-in-out infinite; transform-origin: bottom center; }
+          `}</style>
+
+          {/* the corkboard, so the screen is already the place we are going */}
+          <div
+            className="absolute inset-0 opacity-[0.22]"
+            style={{
+              backgroundColor: "#8A5A2E",
+              backgroundImage:
+                "radial-gradient(rgba(60,32,12,.5) 1.1px, transparent 1.2px), radial-gradient(rgba(255,214,160,.3) .9px, transparent 1px)",
+              backgroundSize: "9px 9px, 13px 13px",
+            }}
+          />
+
+          {/* the deck: a paper plate with the record dropping onto it */}
+          <div className="stwarp-deck relative w-[min(360px,78vw)] -translate-y-6">
+            <div className="relative aspect-square rounded-[18px] border-4 border-[#FAF4EB] bg-[#F5EEE0] shadow-[10px_12px_0_rgba(8,5,4,.7)] p-5">
+              <div className="relative w-full h-full">
+                {/* the record */}
+                <div
+                  className="stwarp-disc absolute inset-0 rounded-full"
+                  style={{
+                    background: "radial-gradient(circle at 36% 30%, #8E1B24, #4A0910 58%, #2A050A)",
+                    boxShadow: "inset 0 0 40px rgba(0,0,0,.7)",
+                  }}
+                >
+                  <span
+                    className="absolute inset-[6%] rounded-full"
+                    style={{
+                      backgroundImage:
+                        "repeating-radial-gradient(circle, rgba(255,255,255,.08) 0 1px, transparent 1px 5px)",
+                    }}
+                  />
+                </div>
+
+                {/* the centre label */}
+                <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[42%] aspect-square rounded-full bg-[#E8DCBE] border-[3px] border-[#2B2119]/60 grid place-content-center text-center px-2">
+                  <span className="font-mono text-[8px] font-black uppercase tracking-[.18em] text-[#7A2530]">
+                    Mixtape
+                  </span>
+                  <span className="font-marker text-[#2B2119] text-sm leading-tight">
+                    OUR SOUNDTRACK
+                  </span>
+                  <span className="mx-auto mt-1 block w-2 h-2 rounded-full bg-[#1B1216]" />
+                </div>
+              </div>
+
+              {/* the tonearm, swinging down onto the record */}
+              <div className="stwarp-arm absolute -right-6 -top-4 w-[46%]">
+                <svg viewBox="0 0 240 300" className="block w-full h-auto">
+                  <circle cx="188" cy="52" r="38" fill="#B9BEC4" stroke="#4A4E55" strokeWidth="4" />
+                  <circle cx="188" cy="52" r="16" fill="#7C828A" stroke="#3B3E44" strokeWidth="3" />
+                  <g transform="rotate(24 188 70)">
+                    <rect x="182" y="70" width="12" height="150" rx="6" fill="#C7CBD1" stroke="#4A4E55" strokeWidth="3" />
+                    <rect x="168" y="212" width="40" height="30" rx="5" fill="#2A2C31" stroke="#14161A" strokeWidth="3" />
+                    <rect x="192" y="216" width="10" height="8" rx="2" fill="#C7343F" />
+                  </g>
+                </svg>
+              </div>
+            </div>
+
+            {/* a level meter across the bottom of the plate */}
+            <div className="mt-4 flex items-end justify-center gap-1.5 h-8">
+              {Array.from({ length: 13 }).map((_, i) => (
+                <span
+                  key={i}
+                  className="stwarp-bar w-2 rounded-sm bg-[#C7343F]"
+                  style={{ height: `${14 + (i % 5) * 6}px`, animationDelay: `${(i % 6) * 0.09}s` }}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* tapes, notes and hearts pulled into the spindle */}
+          {[
+            { text: "\u{1F4FC}", x: "-43vw", y: "-30vh", rot: "-22deg" },
+            { text: "\u{1F3A7}", x: "41vw", y: "-27vh", rot: "17deg" },
+            { text: "\u{1F3B5}", x: "-34vw", y: "29vh", rot: "31deg" },
+            { text: "\u{1F577}\uFE0F", x: "38vw", y: "25vh", rot: "-13deg" },
+            { text: "\u{1F3AB}", x: "0vw", y: "-42vh", rot: "9deg" },
+            { text: "\u{1F4BF}", x: "-22vw", y: "-16vh", rot: "-28deg" },
+            { text: "\u{1F3B6}", x: "26vw", y: "14vh", rot: "25deg" },
+            { text: "\u{1F4CE}", x: "-27vw", y: "20vh", rot: "15deg" },
+            { text: "\u{1F5A4}", x: "47vw", y: "2vh", rot: "-38deg" },
+            { text: "\u{1F4FB}", x: "-47vw", y: "4vh", rot: "19deg" },
+          ].map((item, idx) => (
+            <span
+              key={idx}
+              style={
+                {
+                  "--fly-x": item.x,
+                  "--fly-y": item.y,
+                  "--fly-rot": item.rot,
+                  animationDelay: `${idx * 0.05}s`,
+                } as React.CSSProperties
+              }
+              className="stwarp-note absolute text-4xl sm:text-5xl select-none"
+            >
+              {item.text}
+            </span>
+          ))}
+
+          {/* comic bubble, parked under the deck so it never covers it */}
+          <div className="absolute bottom-[6vh] left-1/2 -translate-x-1/2 flex flex-col items-center animate-comic-pop">
+            <div className="bg-[#450A10] border-4 border-[#FAF4EB] shadow-[10px_10px_0_#17131A] px-6 py-4 rounded-2xl -rotate-1 flex items-center gap-4">
+              <span className="text-4xl animate-bounce">&#128191;</span>
+              <div>
+                <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#E0B1AE] block">
+                  CHAPTER 09 &bull; SOUNDTRACK DECK
+                </span>
+                <h2 className="font-marker text-2xl sm:text-4xl text-[#FAF4EB] leading-tight">
+                  *CLACK!* DROPPING THE NEEDLE...
+                </h2>
+              </div>
+              <span className="text-4xl animate-pulse">&#127911;</span>
+            </div>
+
+            <span className="font-handwriting text-2xl text-[#E0B1AE] mt-3 font-black drop-shadow-md">
+              Every song we ever sent each other at 2am...
             </span>
           </div>
         </div>

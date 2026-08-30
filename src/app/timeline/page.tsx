@@ -1,8 +1,19 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import TimelineScreen from "@/components/TimelineScreen";
+import { CHAPTER_SPREAD, tocReturnHref } from "@/lib/nav/chapterReturn";
 
-export default async function TimelinePage() {
+/* `searchParams` is a promise in this Next version (see
+   node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/page.md).
+   It carries `from`: the table-of-contents spread the reader opened this
+   chapter from, so BACK returns them to that exact page of the book. */
+
+export default async function TimelinePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
+  const backHref = tocReturnHref((await searchParams).from, CHAPTER_SPREAD.timeline);
   const supabase = await createClient();
   const {
     data: { user },
@@ -53,6 +64,7 @@ export default async function TimelinePage() {
       userId={user.id}
       coupleId={profile.couple_id}
       initialMemories={initialMemories}
+      backHref={backHref}
     />
   );
 }

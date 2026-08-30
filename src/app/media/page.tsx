@@ -1,13 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import DigicamScreen from "@/components/DigicamScreen";
 import { createClient } from "@/lib/supabase/client";
+import { CHAPTER_SPREAD } from "@/lib/nav/chapterReturn";
+import { useTocReturn } from "@/lib/nav/useTocReturn";
 
-export default function MediaPage() {
+/* CH.04 - RETRO DIGICAM
+   `from` carries the table-of-contents spread the reader was looking at when
+   they opened this chapter, so BACK returns them to that exact spread instead
+   of a hardcoded guess at where the chapter lives. */
+
+const LOADING_SHELL =
+  "min-h-screen bg-[#181114] text-[#F2E6D2] grid place-items-center p-6 font-mono text-sm";
+
+function MediaPageInner() {
   const router = useRouter();
   const supabase = createClient();
+  const backHref = useTocReturn(CHAPTER_SPREAD.media);
   const [state, setState] = useState<{ userId: string; coupleId: string } | null>(null);
   const [message, setMessage] = useState("Loading your digicam...");
 
@@ -37,18 +48,22 @@ export default function MediaPage() {
   }, [router, supabase]);
 
   if (!state) {
-    return (
-      <main className="min-h-screen bg-[#181114] text-[#F2E6D2] grid place-items-center p-6 font-mono text-sm">
-        {message}
-      </main>
-    );
+    return <main className={LOADING_SHELL}>{message}</main>;
   }
 
   return (
     <DigicamScreen
       userId={state.userId}
       coupleId={state.coupleId}
-      onBack={() => router.push("/?opened=true&page=4&spread=1")}
+      onBack={() => router.push(backHref)}
     />
+  );
+}
+
+export default function MediaPage() {
+  return (
+    <Suspense fallback={<main className={LOADING_SHELL}>Loading your digicam...</main>}>
+      <MediaPageInner />
+    </Suspense>
   );
 }

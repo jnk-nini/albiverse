@@ -45,12 +45,15 @@ interface TimelineScreenProps {
   userId: string;
   coupleId: string;
   initialMemories?: PolaroidMemory[];
+  /* See ClockScreen: the spread the reader opened this chapter from. */
+  backHref?: string;
 }
 
 export default function TimelineScreen({
   userId,
   coupleId,
   initialMemories = [],
+  backHref = "/?opened=true&spread=1",
 }: TimelineScreenProps) {
   const [memories, setMemories] = useState<PolaroidMemory[]>(initialMemories);
   const [loading, setLoading] = useState(initialMemories.length === 0);
@@ -385,11 +388,11 @@ export default function TimelineScreen({
       {/* Top Header Navigation */}
       <header className="max-w-7xl mx-auto w-full z-30 flex items-center justify-between mb-6">
         <Link
-          href="/?opened=true&page=3&spread=1"
+          href={backHref}
           className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#F2E6D2] hover:bg-[#FAF7F2] text-[#261D24] text-xs sm:text-sm font-mono font-black border-3 border-[#261D24] shadow-[5px_5px_0_#171B22] -rotate-2 hover:rotate-0 transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none cursor-pointer"
         >
           <ArrowLeft className="w-5 h-5 text-[#7D2834]" strokeWidth={3} />
-          <span className="tracking-widest uppercase">Table of Contents (Page 3)</span>
+          <span className="tracking-widest uppercase">Table of Contents</span>
         </Link>
 
         <div className="flex items-center gap-3">

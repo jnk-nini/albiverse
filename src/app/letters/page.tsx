@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import LetterJarScreen from "@/components/LetterJarScreen";
 import { createClient } from "@/lib/supabase/client";
+import { CHAPTER_SPREAD, tocReturnHref } from "@/lib/nav/chapterReturn";
 
 /* CH.05 - LOVE LETTER JAR
    Same shape as the other chapter routes: resolve the signed-in user and their
@@ -13,8 +14,6 @@ import { createClient } from "@/lib/supabase/client";
    The one addition is `from`: the table of contents passes the spread the reader
    was looking at when they opened this chapter, so BACK returns them to that
    exact spread instead of the first page of the book. */
-
-const LETTERS_SPREAD = 2; // Ch.05 lives on the third spread, used when `from` is absent
 
 function LettersPageInner() {
   const router = useRouter();
@@ -30,9 +29,7 @@ function LettersPageInner() {
   } | null>(null);
   const [message, setMessage] = useState("Unsealing the letter jar...");
 
-  const fromParam = searchParams?.get("from");
-  const parsedFrom = fromParam === null || fromParam === undefined ? NaN : parseInt(fromParam, 10);
-  const backSpread = Number.isNaN(parsedFrom) ? LETTERS_SPREAD : Math.max(0, parsedFrom);
+  const backHref = tocReturnHref(searchParams?.get("from"), CHAPTER_SPREAD.letters);
 
   useEffect(() => {
     const loadAccess = async () => {
@@ -99,7 +96,7 @@ function LettersPageInner() {
       myName={state.myName}
       partnerId={state.partnerId}
       partnerName={state.partnerName}
-      onBack={() => router.push(`/?opened=true&spread=${backSpread}`)}
+      onBack={() => router.push(backHref)}
     />
   );
 }

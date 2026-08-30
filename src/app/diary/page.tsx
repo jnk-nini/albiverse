@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import DiaryScreen from "@/components/DiaryScreen";
 import { createClient } from "@/lib/supabase/client";
+import { CHAPTER_SPREAD, tocReturnHref } from "@/lib/nav/chapterReturn";
 
 /* CH.06 - SPIDER DIARY
    Same shape as the other chapter routes: resolve the signed-in user and their
@@ -14,8 +15,6 @@ import { createClient } from "@/lib/supabase/client";
    they opened this chapter, so BACK returns them to that exact spread instead of
    the front of the book. Chapter 5 does the same thing, and the two chapters
    share a spread, so leaving the jar and leaving the diary land in one place. */
-
-const DIARY_SPREAD = 2; // Ch.06 sits on the third spread, used when `from` is absent
 
 const LOADING_SHELL =
   "min-h-screen bg-[#1A1013] text-[#F1E2CB] grid place-items-center p-6 font-mono text-sm";
@@ -33,9 +32,7 @@ function DiaryPageInner() {
   } | null>(null);
   const [message, setMessage] = useState("Rolling a sheet into the machine...");
 
-  const fromParam = searchParams?.get("from");
-  const parsedFrom = fromParam === null || fromParam === undefined ? NaN : parseInt(fromParam, 10);
-  const backSpread = Number.isNaN(parsedFrom) ? DIARY_SPREAD : Math.max(0, parsedFrom);
+  const backHref = tocReturnHref(searchParams?.get("from"), CHAPTER_SPREAD.diary);
 
   useEffect(() => {
     const loadAccess = async () => {
@@ -98,7 +95,7 @@ function DiaryPageInner() {
       coupleId={state.coupleId}
       myName={state.myName}
       partnerName={state.partnerName}
-      onBack={() => router.push(`/?opened=true&spread=${backSpread}`)}
+      onBack={() => router.push(backHref)}
     />
   );
 }
