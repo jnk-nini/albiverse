@@ -281,6 +281,114 @@ body {
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.9), inset 0 2px 5px rgba(255, 255, 255, 0.35);
 }
 
+/* ================= TOC PAGE FURNITURE =================
+   The table-of-contents pages used to be flat cream with an emoji in the
+   corner. These give each page the anatomy of a real journal leaf: ruled
+   lines, a red margin rule, a punched binder edge, a ghosted chapter numeral
+   and a deckled foot. All CSS, so there is nothing to load and nothing to
+   404. */
+
+.toc-page {
+  position: relative;
+  background-color: #FAF6EE;
+  background-image:
+    /* faint ruling */
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0 27px,
+      rgba(120, 20, 32, 0.09) 27px 28px
+    ),
+    /* paper tooth */
+    radial-gradient(rgba(90, 60, 45, 0.06) 0.7px, transparent 0.7px);
+  background-size: 100% 28px, 7px 7px;
+  border: 1px solid rgba(38, 29, 36, 0.22);
+  border-radius: 3px;
+  box-shadow: inset 0 0 40px rgba(160, 120, 80, 0.14);
+}
+
+/* the red margin rule every school notebook has */
+.toc-page::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 34px;
+  width: 1px;
+  background: rgba(168, 40, 55, 0.38);
+  pointer-events: none;
+}
+
+/* torn deckle along the foot of the page */
+.toc-page::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 7px;
+  pointer-events: none;
+  background:
+    repeating-conic-gradient(from -45deg at 50% 0%, #FAF6EE 0deg 90deg, transparent 90deg 180deg)
+      0 0 / 12px 7px repeat-x;
+  filter: drop-shadow(0 -1px 0 rgba(38, 29, 36, 0.18));
+}
+
+/* the chapter number, set huge and ghosted as a page watermark */
+.toc-numeral {
+  position: absolute;
+  right: 12px;
+  bottom: 34px;
+  font-family: 'Permanent Marker', cursive;
+  font-size: clamp(80px, 15vw, 150px);
+  line-height: 0.8;
+  color: rgba(120, 20, 32, 0.07);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* inked circular medallion holding the chapter's icon */
+.toc-medallion {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  color: #781420;
+  border: 2px solid #781420;
+  background: #FAF4EB;
+  box-shadow: 0 0 0 3px #FAF4EB, 0 0 0 4px rgba(120, 20, 32, 0.35);
+  transform: rotate(4deg);
+}
+
+/* the pinned index card that carries the chapter note */
+.toc-note-card {
+  position: relative;
+  background: #FFFDF6;
+  border: 1px dashed rgba(120, 20, 32, 0.45);
+  box-shadow: 2px 3px 0 rgba(38, 29, 36, 0.14);
+}
+.toc-note-card::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  left: 18px;
+  width: 34px;
+  height: 12px;
+  background: rgba(212, 123, 145, 0.72);
+  border-left: 2px dashed rgba(255, 255, 255, 0.75);
+  border-right: 2px dashed rgba(255, 255, 255, 0.75);
+  transform: rotate(-4deg);
+}
+
+/* photo corner, for the pages that carry a picture slot */
+.toc-corner {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  pointer-events: none;
+}
+
 /* Table of Contents Chapter Cards */
 .dashboard-feature-card {
   display: block;
@@ -467,65 +575,232 @@ body {
   );
 }
 
-/* Fluid Front & Back Face Alignment */
-.page-face-front {
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-  transform: rotateY(0deg);
-}
+/* Front & back face of a turning leaf.
+   backface-visibility belongs HERE, on the two faces, and nowhere else.
+   Putting it on the rotating wrapper hides the entire leaf the moment it
+   passes 90deg, which is the "page vanishes halfway through the turn" bug.
+   The wrapper stays backface-visible and only carries preserve-3d so the two
+   faces can separate in depth.
 
+   overflow:hidden is safe here and ONLY here: these are the leaves of the 3D
+   tree, so clipping them cannot break the read-through the way clipping a
+   preserve-3d ancestor does. It is what lets the corner round as the sheet
+   curls. */
+.page-face-front,
 .page-face-back {
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
-  transform: rotateY(180deg);
+  overflow: hidden;
+  border-radius: 3px;
 }
 
-/* Ultra Smooth Forward Page Curl (Right leaf turns fully over to the Left) */
-@keyframes fluid-curl-forward {
-  0% {
-    transform: rotateY(0deg);
-    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.15));
-  }
-  30% {
-    filter: drop-shadow(-18px 16px 28px rgba(0,0,0,0.45));
-  }
-  60% {
-    filter: drop-shadow(-28px 22px 40px rgba(0,0,0,0.55));
-  }
-  100% {
-    transform: rotateY(-180deg);
-    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.15));
-  }
+.page-face-front { transform: rotateY(0deg); }
+.page-face-back  { transform: rotateY(180deg); }
+
+/* ---- paper lighting -------------------------------------------------------
+   The one thing that makes a turning page read as paper rather than as a
+   rotating rectangle is the light on it. Two overlays per face:
+
+     ::before  a soft specular band sweeping across the sheet as it turns,
+               the desk lamp sliding over the paper
+     ::after   the gutter shadow, deepest along the spine edge, which deepens
+               as the leaf goes edge-on and clears as it lands flat
+
+   Both are opacity/transform only. A filter here would turn the face into a
+   grouping element and force transform-style:flat on its ancestor, which
+   collapses the two 3D faces onto each other. */
+.page-face-front::after,
+.page-face-back::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    rgba(14, 9, 13, 0.72) 0%,
+    rgba(14, 9, 13, 0.34) 22%,
+    rgba(14, 9, 13, 0.10) 52%,
+    rgba(14, 9, 13, 0) 78%
+  );
 }
 
-/* Ultra Smooth Backward Page Curl (Left leaf turns fully over to the Right) */
-@keyframes fluid-curl-backward {
-  0% {
-    transform: rotateY(0deg);
-    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.15));
-  }
-  30% {
-    filter: drop-shadow(18px 16px 28px rgba(0,0,0,0.45));
-  }
-  60% {
-    filter: drop-shadow(28px 22px 40px rgba(0,0,0,0.55));
-  }
-  100% {
-    transform: rotateY(180deg);
-    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.15));
-  }
+.page-face-front::before,
+.page-face-back::before {
+  content: "";
+  position: absolute;
+  top: -20%;
+  bottom: -20%;
+  left: -55%;
+  width: 42%;
+  z-index: 7;
+  opacity: 0;
+  pointer-events: none;
+  transform: skewX(-12deg);
+  background: linear-gradient(
+    90deg,
+    rgba(255, 251, 240, 0) 0%,
+    rgba(255, 251, 240, 0.55) 50%,
+    rgba(255, 251, 240, 0) 100%
+  );
 }
 
-.animate-fluid-flip-forward {
-  animation: fluid-curl-forward 0.95s cubic-bezier(0.4, 0.05, 0.2, 1) forwards;
+/* The backward leaf swings the other way, so its shadowed edge is the other
+   edge. */
+.flip-leaf-backward .page-face-front::after,
+.flip-leaf-backward .page-face-back::after {
+  background: linear-gradient(
+    270deg,
+    rgba(14, 9, 13, 0.72) 0%,
+    rgba(14, 9, 13, 0.34) 22%,
+    rgba(14, 9, 13, 0.10) 52%,
+    rgba(14, 9, 13, 0) 78%
+  );
+}
+
+/* ---- the turn -------------------------------------------------------------
+   Pure rotateY about the spine plus a small lift off the stack. Deliberately
+   NO skewY and NO rotateX: shearing the whole leaf drags the text diagonally,
+   which is what read as wonky and trippy instead of as paper. The
+   foreshortening a real page has already comes free from the book's
+   perspective.
+
+   The shape of the motion is the peel: the first fifth barely rotates while
+   the sheet lifts off the stack (a thumb picking the corner up), the middle
+   swings through fast, then it decelerates and settles onto the far side. */
+@keyframes page-turn-forward {
+  0%   { transform: rotateY(0deg)    translateZ(0);    }
+  16%  { transform: rotateY(-11deg)  translateZ(16px); }
+  38%  { transform: rotateY(-58deg)  translateZ(28px); }
+  50%  { transform: rotateY(-90deg)  translateZ(30px); }
+  68%  { transform: rotateY(-129deg) translateZ(24px); }
+  88%  { transform: rotateY(-171deg) translateZ(9px);  }
+  100% { transform: rotateY(-180deg) translateZ(0);    }
+}
+
+@keyframes page-turn-backward {
+  0%   { transform: rotateY(0deg)    translateZ(0);    }
+  16%  { transform: rotateY(11deg)   translateZ(16px); }
+  38%  { transform: rotateY(58deg)   translateZ(28px); }
+  50%  { transform: rotateY(90deg)   translateZ(30px); }
+  68%  { transform: rotateY(129deg)  translateZ(24px); }
+  88%  { transform: rotateY(171deg)  translateZ(9px);  }
+  100% { transform: rotateY(180deg)  translateZ(0);    }
+}
+
+/* The curl. A sheet under its own weight rounds off along its free edge as it
+   comes up off the stack and flattens again as it lands, so the radius on the
+   outer edge swells through the middle of the turn. Elliptical radii, because
+   paper bows over its height rather than into a quarter circle. */
+@keyframes leaf-curl-right-edge {
+  0%   { border-radius: 3px; }
+  30%  { border-radius: 3px 26px 26px 3px / 3px 60px 60px 3px; }
+  50%  { border-radius: 3px 34px 34px 3px / 3px 78px 78px 3px; }
+  74%  { border-radius: 3px 22px 22px 3px / 3px 50px 50px 3px; }
+  100% { border-radius: 3px; }
+}
+
+@keyframes leaf-curl-left-edge {
+  0%   { border-radius: 3px; }
+  30%  { border-radius: 26px 3px 3px 26px / 60px 3px 3px 60px; }
+  50%  { border-radius: 34px 3px 3px 34px / 78px 3px 3px 78px; }
+  74%  { border-radius: 22px 3px 3px 22px / 50px 3px 3px 50px; }
+  100% { border-radius: 3px; }
+}
+
+/* Front face: lit and flat, then swallowed by the gutter shadow as it turns
+   away. Back face: starts in shadow and comes up into the light. */
+@keyframes leaf-shade-front {
+  0%   { opacity: 0; }
+  30%  { opacity: 0.34; }
+  62%  { opacity: 0.70; }
+  100% { opacity: 0.78; }
+}
+
+@keyframes leaf-shade-back {
+  0%   { opacity: 0.82; }
+  46%  { opacity: 0.55; }
+  100% { opacity: 0; }
+}
+
+/* The lamp crossing the sheet, only while that face is actually pointing at
+   the reader, hence the opacity window on each. */
+@keyframes leaf-sheen-front {
+  0%   { transform: translateX(0)    skewX(-12deg); opacity: 0; }
+  18%  { opacity: 0.85; }
+  46%  { transform: translateX(230%) skewX(-12deg); opacity: 0.5; }
+  55%  { opacity: 0; }
+  100% { transform: translateX(300%) skewX(-12deg); opacity: 0; }
+}
+
+@keyframes leaf-sheen-back {
+  0%   { transform: translateX(300%) skewX(-12deg); opacity: 0; }
+  48%  { opacity: 0; }
+  62%  { transform: translateX(190%) skewX(-12deg); opacity: 0.60; }
+  86%  { transform: translateX(20%)  skewX(-12deg); opacity: 0.35; }
+  100% { transform: translateX(0)    skewX(-12deg); opacity: 0; }
+}
+
+/* One duration and one easing shared by every layer of the turn, so the
+   shading, the curl and the rotation can never drift apart. */
+.flip-leaf {
+  transform-style: preserve-3d;
+  will-change: transform;
+  animation-duration: 0.82s;
+  animation-timing-function: cubic-bezier(0.52, 0.02, 0.3, 1);
+  animation-fill-mode: forwards;
+}
+
+.flip-leaf-forward {
   transform-origin: left center;
-  transform-style: preserve-3d;
+  animation-name: page-turn-forward;
 }
 
-.animate-fluid-flip-backward {
-  animation: fluid-curl-backward 0.95s cubic-bezier(0.4, 0.05, 0.2, 1) forwards;
+.flip-leaf-backward {
   transform-origin: right center;
-  transform-style: preserve-3d;
+  animation-name: page-turn-backward;
+}
+
+.flip-leaf .page-face-front,
+.flip-leaf .page-face-back,
+.flip-leaf .page-face-front::after,
+.flip-leaf .page-face-back::after,
+.flip-leaf .page-face-front::before,
+.flip-leaf .page-face-back::before {
+  animation-duration: 0.82s;
+  animation-timing-function: cubic-bezier(0.52, 0.02, 0.3, 1);
+  animation-fill-mode: forwards;
+}
+
+.flip-leaf .page-face-front::after  { animation-name: leaf-shade-front; }
+.flip-leaf .page-face-back::after   { animation-name: leaf-shade-back; }
+.flip-leaf .page-face-front::before { animation-name: leaf-sheen-front; }
+.flip-leaf .page-face-back::before  { animation-name: leaf-sheen-back; }
+
+.flip-leaf-forward .page-face-front,
+.flip-leaf-forward .page-face-back {
+  animation-name: leaf-curl-right-edge;
+}
+
+.flip-leaf-backward .page-face-front,
+.flip-leaf-backward .page-face-back {
+  animation-name: leaf-curl-left-edge;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flip-leaf,
+  .flip-leaf .page-face-front,
+  .flip-leaf .page-face-back,
+  .flip-leaf .page-face-front::after,
+  .flip-leaf .page-face-back::after {
+    animation-duration: 1ms !important;
+  }
+  .flip-leaf .page-face-front::before,
+  .flip-leaf .page-face-back::before {
+    animation: none !important;
+    opacity: 0 !important;
+  }
 }
 
 /* ================= TRUE BOOK OPENING & RAPID LEAF FLIPS ================= */
@@ -694,7 +969,11 @@ body {
   animation: toc-fold-close 0.65s cubic-bezier(0.35, 0.05, 0.2, 1) forwards;
 }
 
-/* ================= ZERO-LAG BURST & SEAMLESS CASCADE ================= */
+/* ================= ZERO-LAG BURST & SEAMLESS CASCADE =================
+   The original bloom, restored. No veil: the cover over the screen is the
+   flowers themselves and nothing else, so what falls away at the end is a
+   bouquet rather than a coloured sheet with petals printed on it.
+   Transform + opacity only, so all of it stays on the compositor. */
 
 @keyframes true-bloom-burst-pop {
   0% {
@@ -745,6 +1024,10 @@ body {
   transform: translateZ(0);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .animate-bloom-particle,
+  .bloom-top-flowers { animation-duration: 1ms !important; }
+}
 .rapid-page-flip-overlay {
   position: fixed;
   z-index: 49;
@@ -810,6 +1093,7 @@ body {
   }
 }
 
+/* The whole bloom layer sliding off the screen once the TOC is ready. */
 .animate-bloom-curtain-drop {
   animation: bloom-slide-down-drop 1.35s cubic-bezier(0.35, 0.05, 0.2, 1) forwards;
 }
@@ -829,6 +1113,163 @@ body {
 .animate-toc-reveal {
   animation: toc-smooth-reveal 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+/* ================= CHAPTER 3 POLAROID 3D FLIP ENGINE ================= */
+
+.perspective-1000 {
+  perspective: 1200px;
+}
+
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+.backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.rotate-y-180 {
+  transform: rotateY(180deg);
+}
+
+/* ================= CHAPTER 3 TIMELINE WARP TRANSITION ================= */
+
+@keyframes red-string-burst {
+  0% {
+    transform: scale(0.1) rotate(0deg);
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1.15) rotate(20deg);
+  }
+  70% {
+    transform: scale(1.8) rotate(45deg);
+    opacity: 0.95;
+  }
+  100% {
+    transform: scale(3.5) rotate(70deg);
+    opacity: 0;
+  }
+}
+
+.animate-red-string-burst {
+  animation: red-string-burst 1.1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes timeline-portal-spin {
+  0% {
+    transform: scale(0.2) rotate(0deg);
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+    transform: scale(1.2) rotate(180deg);
+  }
+  75% {
+    transform: scale(1.8) rotate(420deg);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(3.6) rotate(720deg);
+    opacity: 0;
+  }
+}
+
+.animate-timeline-portal-spin {
+  animation: timeline-portal-spin 1.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes particle-timeline-fly {
+  0% {
+    transform: translate(0, 0) scale(0.3) rotate(0deg);
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--fly-x), var(--fly-y)) scale(2.4) rotate(480deg);
+    opacity: 0;
+  }
+}
+
+.animate-timeline-particle {
+  animation: particle-timeline-fly 1.1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes float-gentle {
+  0%, 100% {
+    transform: translateY(0px) rotate(var(--base-rot, 0deg));
+  }
+  50% {
+    transform: translateY(-8px) rotate(calc(var(--base-rot, 0deg) + 1deg));
+  }
+}
+
+.animate-float-gentle {
+  animation: float-gentle 4s ease-in-out infinite;
+}
+
+/* ================= CHAPTER 3 RED STRING TIMELINE SPECIAL FX ================= */
+
+.timeline-horizontal-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: #7D2834 #261D24;
+}
+
+.timeline-horizontal-scroll::-webkit-scrollbar {
+  height: 8px;
+}
+
+.timeline-horizontal-scroll::-webkit-scrollbar-track {
+  background: #261D24;
+  border-radius: 9999px;
+}
+
+.timeline-horizontal-scroll::-webkit-scrollbar-thumb {
+  background: #7D2834;
+  border-radius: 9999px;
+  border: 1px solid #FAF4EB;
+}
+
+/* 3D Polaroid Perspective Flip */
+.perspective-1200 {
+  perspective: 1200px;
+}
+
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+.backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.rotate-y-180 {
+  transform: rotateY(180deg);
+}
+
+/* Red String Subtle Idle Breeze Animation */
+@keyframes yarn-sway {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(3px) rotate(0.4deg);
+  }
+}
+
+.animate-yarn-sway {
+  animation: yarn-sway 4.5s ease-in-out infinite;
+}
+
 /* ================= BACKGROUND & CRAWLING SPIDERS ================= */
 
 @keyframes skyline-flicker {
@@ -836,7 +1277,13 @@ body {
   48% { opacity: 0.92; }
   51% { opacity: 0.58; }
 }
-.animate-skyline-flicker { animation: skyline-flicker 3.2s steps(7, end) infinite; }
+/* The skyline sits under a full-viewport `mix-blend-screen` image. Without a
+   layer hint every opacity step re-blends the whole viewport on the main
+   thread; promoting it keeps the flicker on the compositor. */
+.animate-skyline-flicker {
+  animation: skyline-flicker 3.2s steps(7, end) infinite;
+  will-change: opacity;
+}
 
 @keyframes peter-swing {
   0%, 100% { transform: rotate(-5deg) translateY(0); }
@@ -846,36 +1293,63 @@ body {
   0%, 100% { transform: rotate(6deg) translateY(12px); }
   50% { transform: rotate(-9deg) translateY(-2px); }
 }
-.animate-peter-swing { animation: peter-swing 3.6s ease-in-out infinite; transform-origin: top center; }
-.animate-gwen-swing { animation: gwen-swing 4.2s ease-in-out infinite; transform-origin: top center; }
+/* Both swings carry hard-offset drop-shadow filters on the artwork inside them.
+   A filter on a subtree that moves every frame repaints every frame unless the
+   subtree owns a layer, which is what `will-change` buys here. */
+.animate-peter-swing {
+  animation: peter-swing 3.6s ease-in-out infinite;
+  transform-origin: top center;
+  will-change: transform;
+}
+.animate-gwen-swing {
+  animation: gwen-swing 4.2s ease-in-out infinite;
+  transform-origin: top center;
+  will-change: transform;
+}
 
 @keyframes web-drift {
   from { transform: translateX(-2%) scale(1); }
   to { transform: translateX(2%) scale(1.04); }
 }
-.animate-web-drift { animation: web-drift 7s ease-in-out infinite alternate; }
+/* Two 32rem stroked SVGs. Scaling an SVG re-rasterises it unless it is layered. */
+.animate-web-drift {
+  animation: web-drift 7s ease-in-out infinite alternate;
+  will-change: transform;
+}
 
-/* Screen Crawling Spiders */
+/* Screen Crawling Spiders
+
+   These three run forever on every screen that mounts them (dashboard, clock,
+   countdowns, timeline, digicam), so they are the app's single most expensive
+   piece of ambient motion. They used to animate `left` and `top`, which forces
+   a layout + full-document repaint on every frame of a 19-28s loop, on up to
+   four elements at once. The paths below are identical to the pixel: the start
+   offset moved onto the class as a static `left`/`top`, and the travel is now
+   a translate the compositor can run off the main thread.
+
+   The percentages inside each keyframe are the same interpolated positions the
+   old `left`/`top` values produced at those exact frames, so the flip still
+   happens at the same point in the crawl. */
 @keyframes crawl-screen-horizontal {
-  0% { left: -5%; transform: scaleX(1); }
-  49% { transform: scaleX(1); }
-  50% { left: 105%; transform: scaleX(-1); }
-  99% { transform: scaleX(-1); }
-  100% { left: -5%; transform: scaleX(1); }
+  0%   { transform: translate3d(0, 0, 0) scaleX(1); }
+  49%  { transform: translate3d(107.8vw, 0, 0) scaleX(1); }
+  50%  { transform: translate3d(110vw, 0, 0) scaleX(-1); }
+  99%  { transform: translate3d(2.2vw, 0, 0) scaleX(-1); }
+  100% { transform: translate3d(0, 0, 0) scaleX(1); }
 }
 
 @keyframes crawl-screen-diagonal {
-  0% { top: 10%; left: -5%; transform: rotate(15deg); }
-  50% { top: 85%; left: 105%; transform: rotate(15deg); }
-  51% { transform: rotate(195deg); }
-  100% { top: 10%; left: -5%; transform: rotate(195deg); }
+  0%   { transform: translate3d(0, 0, 0) rotate(15deg); }
+  50%  { transform: translate3d(110vw, 75vh, 0) rotate(15deg); }
+  51%  { transform: translate3d(107.8vw, 73.5vh, 0) rotate(195deg); }
+  100% { transform: translate3d(0, 0, 0) rotate(195deg); }
 }
 
 @keyframes crawl-screen-vertical {
-  0% { top: -5%; transform: rotate(90deg); }
-  50% { top: 105%; transform: rotate(90deg); }
-  51% { transform: rotate(-90deg); }
-  100% { top: -5%; transform: rotate(-90deg); }
+  0%   { transform: translate3d(0, 0, 0) rotate(90deg); }
+  50%  { transform: translate3d(0, 110vh, 0) rotate(90deg); }
+  51%  { transform: translate3d(0, 107.8vh, 0) rotate(-90deg); }
+  100% { transform: translate3d(0, 0, 0) rotate(-90deg); }
 }
 
 @keyframes hanging-spider-bounce {
@@ -883,10 +1357,35 @@ body {
   50% { transform: translateY(18px); }
 }
 
-.animate-crawl-h { animation: crawl-screen-horizontal 22s linear infinite; }
-.animate-crawl-d { animation: crawl-screen-diagonal 28s linear infinite; }
-.animate-crawl-v { animation: crawl-screen-vertical 19s linear infinite; }
-.animate-hanging-bounce { animation: hanging-spider-bounce 3.5s ease-in-out infinite; }
+/* `right`/`bottom` are pinned to auto so the crawler is an auto-width box sitting
+   at its start offset. Some call sites pair these classes with a Tailwind
+   `right-12` / `bottom-16`, which used to over-constrain the box and squash its
+   width to zero mid-crawl; the emoji rendered in the same place either way, and
+   an auto box is what the translate needs to travel cleanly. */
+.animate-crawl-h {
+  left: -5%;
+  right: auto;
+  animation: crawl-screen-horizontal 22s linear infinite;
+  will-change: transform;
+}
+.animate-crawl-d {
+  top: 10%;
+  left: -5%;
+  right: auto;
+  bottom: auto;
+  animation: crawl-screen-diagonal 28s linear infinite;
+  will-change: transform;
+}
+.animate-crawl-v {
+  top: -5%;
+  bottom: auto;
+  animation: crawl-screen-vertical 19s linear infinite;
+  will-change: transform;
+}
+.animate-hanging-bounce {
+  animation: hanging-spider-bounce 3.5s ease-in-out infinite;
+  will-change: transform;
+}
 
 /* Mini Spidey Swing Along Timer */
 @keyframes spidey-clock-swing {
@@ -899,16 +1398,19 @@ body {
   transform-origin: top center;
 }
 
-/* Spider-Bot Patrol */
+/* Spider-Bot Patrol. Same left-to-transform conversion as the crawlers above. */
 @keyframes spiderbot-patrol {
-  0% { left: 4%; transform: scaleX(1); }
-  48% { left: 90%; transform: scaleX(1); }
-  50% { left: 90%; transform: scaleX(-1); }
-  98% { left: 4%; transform: scaleX(-1); }
-  100% { left: 4%; transform: scaleX(1); }
+  0%   { transform: translate3d(0, 0, 0) scaleX(1); }
+  48%  { transform: translate3d(86vw, 0, 0) scaleX(1); }
+  50%  { transform: translate3d(86vw, 0, 0) scaleX(-1); }
+  98%  { transform: translate3d(0, 0, 0) scaleX(-1); }
+  100% { transform: translate3d(0, 0, 0) scaleX(1); }
 }
 .animate-spiderbot-patrol {
+  left: 4%;
+  right: auto;
   animation: spiderbot-patrol 14s linear infinite;
+  will-change: transform;
 }
 
 /* ================= CH. 02 COUNTDOWN WARP ANIMATIONS ================= */
@@ -1072,9 +1574,42 @@ body {
   backface-visibility: hidden;
 }
 
+/* ================= INTRO: BOOK CONTAINER SHIFT WHILE COVER SWINGS ================= */
+/* The closed-book is narrower than the open two-page spread. Nudging the whole
+   container right while the cover swings keeps the 3D rotateY sweep from
+   sailing off-screen, and lines the hinge up with where the spread's gutter
+   will land once opened. */
+
+/* The closed book is one page wide; the TOC it opens into is a two-page spread
+   centred on screen. Shifting the container right by about half a page width
+   parks the closed cover exactly where the spread's right-hand page will land,
+   so the cover swings open into the spread instead of jumping sideways. */
+@keyframes book-container-shift-right {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    /* 16.3vw puts the closed cover's centre on the open spread's right-page
+       centre (measured: right page centres at x=955 in a 1440 viewport, cover
+       centres at 720, so the gap to close is 235px = 16.3vw). */
+    transform: translateX(clamp(70px, 16.3vw, 250px));
+  }
+}
+
+.animate-book-shift-open {
+  animation: book-container-shift-right 1.1s cubic-bezier(0.25, 0.9, 0.35, 1) forwards;
+}
+
+.animate-book-shift-close {
+  animation: book-container-shift-right 1.1s cubic-bezier(0.25, 0.9, 0.35, 1) reverse forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    /* Without this the infinite ambient loops keep restarting at 0.01ms apiece,
+       which is more main-thread work under reduced motion, not less. */
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }

@@ -1,30 +1,35 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import SpideyBackground from "./SpideyBackground";
-import { 
-  Clock, 
-  Calendar, 
-  Compass, 
-  Camera, 
-  Mail, 
-  BookHeart, 
-  CheckSquare, 
-  Disc, 
-  Gift, 
-  Lock, 
-  Unlink, 
-  LogOut, 
-  ArrowRight, 
-  Bookmark, 
-  Feather, 
-  ChevronLeft, 
-  ChevronRight, 
-  BookOpen, 
-  UserCheck, 
-  Sparkles
+import { Typewriter } from "./DiaryArt";
+import AmbientSound from "./AmbientSound";
+import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
+import {
+  Clock,
+  Calendar,
+  Compass,
+  Camera,
+  Mail,
+  BookHeart,
+  CheckSquare,
+  Disc,
+  Gift,
+  Lock,
+  Unlink,
+  LogOut,
+  ArrowRight,
+  Bookmark,
+  Feather,
+  ChevronLeft,
+  ChevronRight,
+  BookOpen,
+  UserCheck,
+  Sparkles,
+  List,
+  X
 } from "lucide-react";
 
 interface DashboardProps {
@@ -58,6 +63,7 @@ export default function Dashboard({
   const [pageImageErrors, setPageImageErrors] = useState<Record<number, boolean>>({});
 
   const [bloomPhase, setBloomPhase] = useState<"bursting" | "sliding-down" | null>(null);
+  const openTimersRef = useRef<number[]>([]);
   const [unlinking, setUnlinking] = useState(false);
 
   // Big & Fun Transition State for Live Clock Warp
@@ -66,6 +72,7 @@ export default function Dashboard({
 
   const [currentSpread, setCurrentSpread] = useState(0);
   const [flippingState, setFlippingState] = useState<"forward" | "backward" | null>(null);
+  const [showFastNav, setShowFastNav] = useState(false);
 
   const touchStartX = useRef<number | null>(null);
   const touchStartY = useRef<number | null>(null);
@@ -78,51 +85,63 @@ export default function Dashboard({
   
 
   useEffect(() => {
-    const shouldOpen = searchParams?.get("view") === "toc" || sessionStorage.getItem("albiverse_book_opened") === "true";
+    const shouldOpen =
+      searchParams?.get("view") === "toc" ||
+      searchParams?.get("opened") === "true" ||
+      sessionStorage.getItem("albiverse_book_opened") === "true";
     if (shouldOpen) {
       setIsBookOpened(true);
+      sessionStorage.setItem("albiverse_book_opened", "true");
     }
+
+    const spreadParam = searchParams?.get("spread");
+    if (spreadParam !== null && spreadParam !== undefined) {
+      const parsed = parseInt(spreadParam, 10);
+      if (!Number.isNaN(parsed)) {
+        setCurrentSpread(Math.max(0, Math.min(totalSpreads - 1, parsed)));
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
+  /* Opening sequence, in order. Each step has one owner and one timer, so the
+     phases cannot overlap or fire twice the way they used to.
+
+       0ms    cover starts swinging open, container shifts right
+       520ms  rapid page-flip leaves over the book
+       600ms  BURSTING     the flowers explode outward and cover the screen
+       1500ms the screen is covered; swap the book to its opened state behind
+       1780ms SLIDING-DOWN the whole bouquet falls away, revealing the TOC
+       3100ms teardown                                                      */
   const handleOpenBook = () => {
+    if (isOpeningSequence || isClosingSequence) return;
     setIsOpeningSequence(true);
 
-    setTimeout(() => {
-      const coverBounds = coverRef.current?.getBoundingClientRect();
-      if (coverBounds) {
-        setPageFlipRect({
-          left: coverBounds.left,
-          top: coverBounds.top,
-          width: coverBounds.width,
-          height: coverBounds.height,
-        });
+    const timers: number[] = [];
+    const at = (ms: number, fn: () => void) => timers.push(window.setTimeout(fn, ms));
+
+    at(520, () => {
+      const b = coverRef.current?.getBoundingClientRect();
+      if (b) {
+        setPageFlipRect({ left: b.left, top: b.top, width: b.width, height: b.height });
       }
       setIsPageFlipSequence(true);
-    }, 550);
+    });
 
-    setTimeout(() => {
-      setBloomPhase("bursting");
-    }, 590);
+    at(600, () => setBloomPhase("bursting"));
 
-    setTimeout(() => {
+    at(1500, () => {
+      setIsPageFlipSequence(false);
       setIsBookOpened(true);
       sessionStorage.setItem("albiverse_book_opened", "true");
       setIsOpeningSequence(false);
-    }, 1600);
+    });
 
-    setTimeout(() => {
-      setIsPageFlipSequence(false);
-      setBloomPhase("sliding-down");
-    }, 1450);
+    at(1780, () => setBloomPhase("sliding-down"));
 
-    setTimeout(() => {
-      setIsPageFlipSequence(false);
-      setBloomPhase("sliding-down");
-    }, 1900);
+    at(3100, () => setBloomPhase(null));
 
-    setTimeout(() => {
-      setBloomPhase(null);
-    }, 3000);
+    openTimersRef.current = timers;
   };
 
   const handleCloseBook = () => {
@@ -144,13 +163,21 @@ export default function Dashboard({
     if (onUnlinked) onUnlinked();
   };
 
+  const [runSignOut, signingOut] = useGuardedAction(onSignOut, 600);
+
+  const [runJumpToSpread] = useGuardedAction((spreadIndex: number) => {
+    setFlippingState(null);
+    setCurrentSpread(spreadIndex);
+    setShowFastNav(false);
+  }, 300);
+
   // Intercept Chapter 1 (Live Canon Clock) navigation for the big fun warp transition
   const handleGoToClock = (e: React.MouseEvent) => {
     e.preventDefault();
     setIsWarpingToClock(true);
 
     setTimeout(() => {
-      router.push("/clock");
+      router.push(`/clock?from=${currentSpread}`);
     }, 1100);
   };
 // Inside Dashboard.tsx
@@ -159,6 +186,9 @@ export default function Dashboard({
 useEffect(() => {
   router.prefetch("/countdowns");
   router.prefetch("/clock");
+  router.prefetch("/letters");
+  router.prefetch("/diary");
+  router.prefetch("/soundtrack");
 }, [router]);
 
 // 2. Updated Chapter 2 Navigation Handler
@@ -171,9 +201,69 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
   router.prefetch("/countdowns");
 
   setTimeout(() => {
-    router.push("/countdowns");
+    router.push(`/countdowns?from=${currentSpread}`);
   }, 1000);
 };
+
+  // Chapter 3 Timeline Warp State
+  // (spread/opened deep-link parsing now lives in the unified useEffect above)
+  const [isWarpingTimeline, setIsWarpingTimeline] = useState(false);
+
+  const handleOpenTimeline = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWarpingTimeline(true);
+
+    // Play full Spider-Verse warp animation, then push route
+    setTimeout(() => {
+      router.push(`/timeline?from=${currentSpread}`);
+    }, 1150);
+  };
+
+  // Chapter 5 Love Letter Jar Warp State
+  const [isWarpingLetters, setIsWarpingLetters] = useState(false);
+
+  /* The spread the reader is on travels with them into the chapter, so BACK
+     from the jar drops them onto this exact page of the contents instead of
+     the front of the book. */
+  const handleOpenLetters = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWarpingLetters(true);
+    router.prefetch("/letters");
+
+    setTimeout(() => {
+      router.push(`/letters?from=${currentSpread}`);
+    }, 1250);
+  };
+
+  // Chapter 6 Spider Diary Warp State
+  const [isWarpingDiary, setIsWarpingDiary] = useState(false);
+
+  /* Ch.06 carries the reader's spread out with them the same way Ch.05 does, so
+     BACK from the diary lands on this page of the contents rather than page one. */
+  const handleOpenDiary = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWarpingDiary(true);
+    router.prefetch("/diary");
+
+    setTimeout(() => {
+      router.push(`/diary?from=${currentSpread}`);
+    }, 1250);
+  };
+
+  // Chapter 9 Soundtrack Deck Warp State
+  const [isWarpingSoundtrack, setIsWarpingSoundtrack] = useState(false);
+
+  /* Same contract as Ch.05/Ch.06: the spread travels with the reader so the
+     torn ticket stub inside the chapter brings them back to this page. */
+  const handleOpenSoundtrack = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWarpingSoundtrack(true);
+    router.prefetch("/soundtrack");
+
+    setTimeout(() => {
+      router.push(`/soundtrack?from=${currentSpread}`);
+    }, 1250);
+  };
 
   const features = [
     {
@@ -182,7 +272,6 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     href: "/clock", 
     tag: "CH. 01", 
     icon: Clock, 
-    sticker: "⏰ 🕸️", 
     note: "Every second across dimensions", 
     onClick: handleGoToClock 
   },
@@ -192,19 +281,18 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     href: "/countdowns", 
     tag: "CH. 02", 
     icon: Calendar, 
-    sticker: "🎂 ✈️", 
     note: "Mark our future timelines",
     onClick: handleGoToCountdowns // <--- Added handler
   },
-    { title: "Red String Timeline", desc: "Fate threads & milestone polaroids", href: "/timeline", tag: "CH. 03", icon: Compass, sticker: "🧵 📸", note: "Connected by destiny" },
-    { title: "Retro Digicam", desc: "Instant snapshots & viewfinder clips", href: "/media", tag: "CH. 04", icon: Camera, sticker: "📷 ✨", note: "Earth-65 & 616 gallery" },
-    { title: "Love Letter Jar", desc: "Folded scrolls & wax-sealed notes", href: "/letters", tag: "CH. 05", icon: Mail, sticker: "💌 📜", note: "Confidential unsealed letters" },
-    { title: "Spider Diary", desc: "Daily mood entries & shared doodles", href: "/diary", tag: "CH. 06", icon: BookHeart, sticker: "🕷️ 📖", note: "Our private logbook" },
-    { title: "Web Planner", desc: "Shared date schedules & reminders", href: "/planner", tag: "CH. 07", icon: CheckSquare, sticker: "📅 🎀", note: "Adventures on the docket" },
-    { title: "Multiverse Bucket List", desc: "Adventures across dimensions to complete", href: "/bucket-list", tag: "CH. 08", icon: Sparkles, sticker: "🌟 🗺️", note: "Cross off our milestones" },
-    { title: "Soundtrack Deck", desc: "Spinning vinyl & our special playlist", href: "/soundtrack", tag: "CH. 09", icon: Disc, sticker: "🎵 🌸", note: "Songs for our universe" },
-    { title: "Secret Wishlist", desc: "Gift ideas & surprise drops (Vault)", href: "/wishlist", tag: "CH. 10", icon: Gift, sticker: "🎁 🔒", note: "Surprise vault items" },
-    { title: "About Him Dossier", desc: "Confidential intel, sizes & favorites", href: "/about-him", tag: "CH. 11", icon: Lock, sticker: "📂 🕶️", note: "Classified Peter Parker Intel" },
+    { title: "Red String Timeline", desc: "Fate threads & milestone polaroids", href: "/timeline", tag: "CH. 03", icon: Compass, note: "Connected by destiny", onClick: handleOpenTimeline },
+    { title: "Retro Digicam", desc: "Instant snapshots & viewfinder clips", href: "/media", tag: "CH. 04", icon: Camera, note: "Earth-65 & 616 gallery" },
+    { title: "Love Letter Jar", desc: "Folded scrolls & wax-sealed notes", href: "/letters", tag: "CH. 05", icon: Mail, note: "Confidential unsealed letters", onClick: handleOpenLetters },
+    { title: "Spider Diary", desc: "Typed field logs, pinned to the board", href: "/diary", tag: "CH. 06", icon: BookHeart, note: "Our private logbook", onClick: handleOpenDiary },
+    { title: "Web Planner", desc: "Shared date schedules & reminders", href: "/planner", tag: "CH. 07", icon: CheckSquare, note: "Adventures on the docket" },
+    { title: "Multiverse Bucket List", desc: "Adventures across dimensions to complete", href: "/bucket-list", tag: "CH. 08", icon: Sparkles, note: "Cross off our milestones" },
+    { title: "Soundtrack Deck", desc: "Spinning vinyl & our special playlist", href: "/soundtrack", tag: "CH. 09", icon: Disc, note: "Songs for our universe", onClick: handleOpenSoundtrack },
+    { title: "Secret Wishlist", desc: "Gift ideas & surprise drops (Vault)", href: "/wishlist", tag: "CH. 10", icon: Gift, note: "Surprise vault items" },
+    { title: "About Him Dossier", desc: "Confidential intel, sizes & favorites", href: "/about-him", tag: "CH. 11", icon: Lock, note: "Classified Peter Parker Intel" },
   ];
 
   const totalSpreads = Math.ceil(features.length / 2);
@@ -215,7 +303,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
       setTimeout(() => {
         setCurrentSpread((prev) => prev + 1);
         setFlippingState(null);
-      }, 950);
+      }, 820);
     }
   };
 
@@ -225,7 +313,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
       setTimeout(() => {
         setCurrentSpread((prev) => prev - 1);
         setFlippingState(null);
-      }, 950);
+      }, 820);
     }
   };
 
@@ -260,67 +348,112 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
   const renderChapterContent = (item: typeof features[0] | undefined, pageNum: number) => {
     if (!item) {
       return (
-        <div className="flex flex-col items-center justify-center p-6 text-center h-full bg-[#FAF6EE] rounded-lg border border-[#261D24]/20">
-          <span className="text-4xl mb-2">🌸🕸️</span>
-          <h4 className="font-marker text-xl text-[#1A0D10]">End of Table of Contents</h4>
-          <p className="font-handwriting text-lg text-stone-600 mt-1">
-            Connected across every universe with {partnerName} ❤️
-          </p>
+        <div className="toc-page h-full flex flex-col items-center justify-center p-6 text-center">
+          <span className="toc-numeral" aria-hidden>fin</span>
+          <div className="relative z-10">
+            <div className="toc-medallion mx-auto mb-3">
+              <Feather className="w-5 h-5" strokeWidth={2} />
+            </div>
+            <h4 className="font-marker text-xl text-[#1A0D10]">End of the contents</h4>
+            <p className="font-handwriting text-lg text-stone-600 mt-1 leading-relaxed">
+              the rest is still being written with {partnerName}
+            </p>
+            <div className="w-16 h-px bg-[#781420]/40 mx-auto mt-4" />
+          </div>
         </div>
       );
     }
 
     const hasImageError = pageImageErrors[pageNum];
+    const Icon = item.icon;
+    const chapterNo = item.tag.replace(/[^0-9]/g, "");
 
     return (
-      <div className="h-full relative rounded-lg border border-[#261D24]/20 shadow-inner overflow-hidden flex flex-col justify-between p-4 sm:p-6 bg-[#FAF6EE]">
-        {/* Page PNG Image from /public/images/scrapbook/page-[pageNum].png */}
+      <div className="toc-page h-full relative overflow-hidden flex flex-col p-4 sm:p-5">
+        {/* Optional hand-made page art. Absent by default; the CSS page is the
+            finished look, so a missing file changes nothing. */}
         {!hasImageError && (
           <img
             src={`/images/scrapbook/page-${pageNum}.png`}
-            alt={`Page ${pageNum}`}
+            alt=""
+            aria-hidden
+            /* Returning the same object lets React bail out of the re-render.
+               Building a fresh one unconditionally re-rendered the whole
+               contents tree mid page-flip every time a page-art 404 landed. */
             onError={() =>
-              setPageImageErrors((prev) => ({ ...prev, [pageNum]: true }))
+              setPageImageErrors((prev) => (prev[pageNum] ? prev : { ...prev, [pageNum]: true }))
             }
-            className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none"
+            className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none opacity-90"
           />
         )}
 
-        {/* Dynamic Chapter Info & Buttons */}
-        <div className="relative z-10 flex flex-col justify-between h-full">
-          <div>
-            <div className="flex items-center justify-between border-b-2 border-dashed border-[#8A7550] pb-3 mb-4 bg-[#FAF6EE]/75 p-2 rounded backdrop-blur-xs">
-              <span className="feature-stamp">{item.tag}</span>
-              <span className="text-3xl">{item.sticker}</span>
-            </div>
+        {/* the chapter number, ghosted into the paper */}
+        <span className="toc-numeral" aria-hidden>{chapterNo}</span>
 
-            <div className="bg-[#FAF6EE]/85 p-3 rounded backdrop-blur-xs shadow-xs">
-              <h3 className="font-marker text-2xl sm:text-3xl text-[#1A0D10] mb-2">
-                {item.title}
-              </h3>
-              <p className="font-handwriting text-xl text-stone-700 leading-snug">
-                {item.desc}
-              </p>
-              <p className="font-mono text-[11px] text-[#781420] mt-3 italic">
-                Note: {item.note}
+        {/* a strip of tape holding the page down */}
+        <span
+          className="absolute -top-2 right-9 tape-pink-solid w-16 h-5 rotate-6 z-20 pointer-events-none"
+          aria-hidden
+        />
+
+        <div className="relative z-10 flex flex-col h-full pl-7">
+          {/* header: stamp, rule, medallion */}
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <span className="feature-stamp">{item.tag}</span>
+              <p className="font-mono text-[9px] font-black uppercase tracking-[0.22em] text-[#8A7550] mt-2">
+                Albiverse
               </p>
             </div>
+            <span className="toc-medallion shrink-0">
+              <Icon className="w-5 h-5" strokeWidth={2} />
+            </span>
           </div>
 
-          <div className="pt-4 mt-6 border-t border-[#261D24]/20 flex items-center justify-between bg-[#FAF6EE]/80 p-2 rounded backdrop-blur-xs">
-            <span className="font-mono text-[10px] text-stone-700 font-bold uppercase">PAGE {pageNum}</span>
+          <div className="h-px bg-[#8A7550]/45 my-3" />
+
+          {/* the entry itself */}
+          <h3 className="font-marker text-2xl sm:text-3xl text-[#1A0D10] leading-tight">
+            {item.title}
+          </h3>
+          <p className="font-handwriting text-xl text-stone-700 leading-snug mt-1">
+            {item.desc}
+          </p>
+
+          {/* pinned index card carrying the note */}
+          <div className="toc-note-card mt-4 px-3 pt-3 pb-2.5 -rotate-1">
+            <p className="font-mono text-[10px] font-black uppercase tracking-[0.16em] text-[#781420]/70 mb-1">
+              Note
+            </p>
+            <p className="font-handwriting text-lg text-[#3A2A22] leading-snug">
+              {item.note}
+            </p>
+          </div>
+
+          {/* footer */}
+          <div className="mt-auto pt-4 flex items-end justify-between gap-2">
+            <div className="flex flex-col">
+              <span className="font-mono text-[9px] text-stone-500 font-bold uppercase tracking-[0.18em]">
+                Page {pageNum}
+              </span>
+              <span className="w-8 h-px bg-[#781420]/35 mt-1" />
+            </div>
             {item.onClick ? (
               <button
                 onClick={item.onClick}
-                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black rounded border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition active:scale-95 cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition active:translate-y-px cursor-pointer"
               >
                 <span>OPEN ENTRY</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             ) : (
+              /* `from` is the spread this page sits on, so the chapter's own
+                 BACK control can return the reader to it. Derived from the page
+                 number rather than `currentSpread` so the leaves rendered
+                 during a flip carry their own spread, not the one being left. */
               <Link
-                href={item.href}
-                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black rounded border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition active:scale-95"
+                href={`${item.href}?from=${Math.floor((pageNum - 1) / 2)}`}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#781420] hover:bg-[#450A10] text-[#FDF6F0] font-mono text-xs font-black border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition active:translate-y-px"
               >
                 <span>OPEN ENTRY</span>
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -332,44 +465,111 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     );
   };
 
-  const burstParticles = [
-    { x: "0vw", y: "0vh", scale: 1.5, delay: "0s", rot: "12deg", icon: "🌸", file: "flower-1.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "-4vw", y: "-4vh", scale: 1.4, delay: "0.01s", rot: "-25deg", icon: "🌺", file: "flower-2.png", size: "w-56 h-56 sm:w-80 sm:h-80" },
-    { x: "5vw", y: "4vh", scale: 1.4, delay: "0.02s", rot: "35deg", icon: "🌹", file: "flower-3.png", size: "w-56 h-56 sm:w-80 sm:h-80" },
-    { x: "-15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "-40deg", icon: "🌼", file: "flower-4.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
-    { x: "15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "45deg", icon: "🌻", file: "flower-5.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
-    { x: "-18vw", y: "14vh", scale: 1.35, delay: "0.04s", rot: "20deg", icon: "🌷", file: "flower-6.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
-    { x: "18vw", y: "15vh", scale: 1.35, delay: "0.04s", rot: "-30deg", icon: "💐", file: "flower-7.png", size: "w-52 h-52 sm:w-72 sm:h-72" },
-    { x: "0vw", y: "-22vh", scale: 1.4, delay: "0.03s", rot: "10deg", icon: "🌸", file: "flower-1.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
-    { x: "0vw", y: "22vh", scale: 1.4, delay: "0.04s", rot: "-15deg", icon: "🌺", file: "flower-2.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
-    { x: "-24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "30deg", icon: "🌹", file: "flower-3.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
-    { x: "24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "-45deg", icon: "🌼", file: "flower-4.png", size: "w-56 h-56 sm:w-76 sm:h-76" },
-    { x: "-32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "55deg", icon: "🌻", file: "flower-5.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "0vw", y: "-36vh", scale: 1.45, delay: "0.05s", rot: "-20deg", icon: "🌷", file: "flower-6.png", size: "w-64 h-64 sm:w-92 sm:h-92" },
-    { x: "32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "-60deg", icon: "💐", file: "flower-7.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "-38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "15deg", icon: "🌸", file: "flower-1.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "-35deg", icon: "🌺", file: "flower-2.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "-32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "-40deg", icon: "🌹", file: "flower-3.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "0vw", y: "36vh", scale: 1.45, delay: "0.06s", rot: "45deg", icon: "🌼", file: "flower-4.png", size: "w-64 h-64 sm:w-92 sm:h-92" },
-    { x: "32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "25deg", icon: "🌻", file: "flower-5.png", size: "w-60 h-60 sm:w-88 sm:h-88" },
-    { x: "-48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "-15deg", icon: "🌷", file: "flower-6.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
-    { x: "48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "35deg", icon: "💐", file: "flower-7.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
-    { x: "-48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "50deg", icon: "🌸", file: "flower-1.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
-    { x: "48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "-45deg", icon: "🌺", file: "flower-2.png", size: "w-72 h-72 sm:w-[420px] sm:h-[420px]" },
-    { x: "-54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "20deg", icon: "🌹", file: "flower-3.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "-25deg", icon: "🌼", file: "flower-4.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "-54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "-30deg", icon: "🌻", file: "flower-5.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "40deg", icon: "🌷", file: "flower-6.png", size: "w-68 h-68 sm:w-96 sm:h-96" },
-    { x: "-35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "-10deg", icon: "💐", file: "flower-7.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
-    { x: "-12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "25deg", icon: "🌸", file: "flower-1.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
-    { x: "12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "-35deg", icon: "🌺", file: "flower-2.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
-    { x: "35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "45deg", icon: "🌹", file: "flower-3.png", size: "w-72 h-72 sm:w-[400px] sm:h-[400px]" },
-  ];
+  /* The original bouquet burst. Every entry is one flower cutout flying from
+     the middle of the screen out to its own spot; there is no veil behind
+     them, so the thing that covers the screen IS the flowers.
+
+     BASE is the original hand-placed spread. FILL is a staggered lattice laid
+     under it that closes the gaps, because these are cutouts: two flowers
+     whose boxes overlap can still leave a hole between their petals, and a
+     hole is a place you can read the page through before the reveal.
+
+     Sizes are `max(rem, vw)` rather than fixed pixels. Fixed pixels covered a
+     laptop and left dark holes all over a 1920-wide screen, since the same
+     flower is a smaller share of a bigger viewport. Checked at 1920x1080,
+     1440x900 and 390x844. */
+  const burstParticles = useMemo(() => {
+    const MID = "max(11rem, 19vw)";
+    const BIG = "max(13rem, 22vw)";
+
+    const BASE = [
+      { x: "0vw", y: "0vh", scale: 1.5, delay: "0s", rot: "12deg", icon: "\u{1F338}", file: "flower-1.webp", size: MID },
+      { x: "-4vw", y: "-4vh", scale: 1.4, delay: "0.01s", rot: "-25deg", icon: "\u{1F33A}", file: "flower-2.webp", size: MID },
+      { x: "5vw", y: "4vh", scale: 1.4, delay: "0.02s", rot: "35deg", icon: "\u{1F339}", file: "flower-3.webp", size: MID },
+      { x: "-15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "-40deg", icon: "\u{1F33C}", file: "flower-4.webp", size: MID },
+      { x: "15vw", y: "-15vh", scale: 1.35, delay: "0.03s", rot: "45deg", icon: "\u{1F33B}", file: "flower-5.webp", size: MID },
+      { x: "-18vw", y: "14vh", scale: 1.35, delay: "0.04s", rot: "20deg", icon: "\u{1F337}", file: "flower-6.webp", size: MID },
+      { x: "18vw", y: "15vh", scale: 1.35, delay: "0.04s", rot: "-30deg", icon: "\u{1F490}", file: "flower-7.webp", size: MID },
+      { x: "0vw", y: "-22vh", scale: 1.4, delay: "0.03s", rot: "10deg", icon: "\u{1F338}", file: "flower-1.webp", size: MID },
+      { x: "0vw", y: "22vh", scale: 1.4, delay: "0.04s", rot: "-15deg", icon: "\u{1F33A}", file: "flower-2.webp", size: MID },
+      { x: "-24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "30deg", icon: "\u{1F339}", file: "flower-3.webp", size: MID },
+      { x: "24vw", y: "0vh", scale: 1.4, delay: "0.04s", rot: "-45deg", icon: "\u{1F33C}", file: "flower-4.webp", size: MID },
+      { x: "-32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "55deg", icon: "\u{1F33B}", file: "flower-5.webp", size: MID },
+      { x: "0vw", y: "-36vh", scale: 1.45, delay: "0.05s", rot: "-20deg", icon: "\u{1F337}", file: "flower-6.webp", size: BIG },
+      { x: "32vw", y: "-28vh", scale: 1.45, delay: "0.05s", rot: "-60deg", icon: "\u{1F490}", file: "flower-7.webp", size: MID },
+      { x: "-38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "15deg", icon: "\u{1F338}", file: "flower-1.webp", size: BIG },
+      { x: "38vw", y: "0vh", scale: 1.5, delay: "0.06s", rot: "-35deg", icon: "\u{1F33A}", file: "flower-2.webp", size: BIG },
+      { x: "-32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "-40deg", icon: "\u{1F339}", file: "flower-3.webp", size: MID },
+      { x: "0vw", y: "36vh", scale: 1.45, delay: "0.06s", rot: "45deg", icon: "\u{1F33C}", file: "flower-4.webp", size: BIG },
+      { x: "32vw", y: "28vh", scale: 1.45, delay: "0.06s", rot: "25deg", icon: "\u{1F33B}", file: "flower-5.webp", size: MID },
+      { x: "-48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "-15deg", icon: "\u{1F337}", file: "flower-6.webp", size: BIG },
+      { x: "48vw", y: "-44vh", scale: 1.6, delay: "0.07s", rot: "35deg", icon: "\u{1F490}", file: "flower-7.webp", size: BIG },
+      { x: "-48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "50deg", icon: "\u{1F338}", file: "flower-1.webp", size: BIG },
+      { x: "48vw", y: "44vh", scale: 1.6, delay: "0.08s", rot: "-45deg", icon: "\u{1F33A}", file: "flower-2.webp", size: BIG },
+      { x: "-54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "20deg", icon: "\u{1F339}", file: "flower-3.webp", size: BIG },
+      { x: "54vw", y: "-15vh", scale: 1.55, delay: "0.07s", rot: "-25deg", icon: "\u{1F33C}", file: "flower-4.webp", size: BIG },
+      { x: "-54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "-30deg", icon: "\u{1F33B}", file: "flower-5.webp", size: BIG },
+      { x: "54vw", y: "15vh", scale: 1.55, delay: "0.08s", rot: "40deg", icon: "\u{1F337}", file: "flower-6.webp", size: BIG },
+      { x: "-35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "-10deg", icon: "\u{1F490}", file: "flower-7.webp", size: BIG },
+      { x: "-12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "25deg", icon: "\u{1F338}", file: "flower-1.webp", size: BIG },
+      { x: "12vw", y: "56vh", scale: 1.6, delay: "0.09s", rot: "-35deg", icon: "\u{1F33A}", file: "flower-2.webp", size: BIG },
+      { x: "35vw", y: "54vh", scale: 1.6, delay: "0.08s", rot: "45deg", icon: "\u{1F339}", file: "flower-3.webp", size: BIG },
+    ];
+
+    const ICONS = ["\u{1F338}", "\u{1F33A}", "\u{1F339}", "\u{1F33C}", "\u{1F33B}", "\u{1F337}", "\u{1F490}"];
+    const COLS = [-56, -40, -24, -8, 8, 24, 40, 56];
+    const ROWS = [-48, -24, 0, 24, 48];
+    const FILL = COLS.flatMap((cx, ci) =>
+      ROWS.map((ry, ri) => {
+        const n = ci * ROWS.length + ri;
+        // half-step stagger per column, so the lattice never reads as a grid
+        const y = ry + (ci % 2 ? 7 : -7);
+        return {
+          x: `${cx}vw`,
+          y: `${y}vh`,
+          scale: 1.62,
+          delay: `${(0.02 + (n % 5) * 0.014).toFixed(3)}s`,
+          rot: `${((n * 53) % 100) - 50}deg`,
+          icon: ICONS[n % 7],
+          file: `flower-${(n % 7) + 1}.webp`,
+          size: n % 3 === 0 ? BIG : MID,
+        };
+      })
+    );
+
+    return [...FILL, ...BASE];
+  }, []);
+
+  /* Cancel any in-flight opening timers if the dashboard goes away mid-sequence. */
+  useEffect(() => () => openTimersRef.current.forEach(clearTimeout), []);
+
+  /* Decode every bloom image up front. Without this the browser is fetching
+     and decoding the art *during* the burst, which is what made the bloom
+     stall halfway through. */
+  useEffect(() => {
+    const files = Array.from({ length: 7 }, (_, n) => `/images/bloom/flower-${n + 1}.webp`);
+    Promise.all(
+      files.map(
+        (src) =>
+          new Promise<void>((resolve) => {
+            const img = new Image();
+            img.src = src;
+            const done = () => resolve();
+            if (img.decode) img.decode().then(done, done);
+            else {
+              img.onload = done;
+              img.onerror = done;
+            }
+          })
+      )
+    );
+  }, []);
 
   return (
     <main className="min-h-screen p-3 sm:p-6 lg:p-8 flex flex-col justify-between relative overflow-hidden select-none bg-[#181114]">
       
       <SpideyBackground />
+      <AmbientSound coupleId={couple?.id} />
 
       <div className="fixed top-8 animate-crawl-h text-xl z-10 pointer-events-none">🕷️</div>
       <div className="fixed animate-crawl-d text-2xl z-10 pointer-events-none">🕷️</div>
@@ -377,16 +577,27 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
 
       {/* Top Header */}
       <header className="max-w-6xl mx-auto w-full z-30 flex items-center justify-between">
-        <div>
+        <div className="flex items-center gap-2.5">
           {isBookOpened && (
-            <button
-              onClick={handleCloseBook}
-              disabled={isClosingSequence}
-              className="inline-flex items-center gap-2 px-3.5 py-2 bg-[#F2E6D2] hover:bg-[#FAF7F2] text-[#261D24] text-xs font-mono font-black border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] -rotate-1 transition cursor-pointer"
-            >
-              <Bookmark className="w-3.5 h-3.5 text-[#781420]" />
-              <span>Close Journal</span>
-            </button>
+            <>
+              <button
+                onClick={handleCloseBook}
+                disabled={isClosingSequence}
+                className="inline-flex items-center gap-2 px-3.5 py-2 bg-[#F2E6D2] hover:bg-[#FAF7F2] text-[#261D24] text-xs font-mono font-black border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] -rotate-1 transition cursor-pointer"
+              >
+                <Bookmark className="w-3.5 h-3.5 text-[#781420]" />
+                <span>Close Journal</span>
+              </button>
+              {!isClosingSequence && (
+                <button
+                  onClick={() => setShowFastNav((v) => !v)}
+                  className="inline-flex items-center gap-2 px-3.5 py-2 bg-[#2E0509] hover:bg-[#450A10] text-[#ECA8B8] text-xs font-mono font-black border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] rotate-1 transition cursor-pointer"
+                >
+                  <List className="w-3.5 h-3.5" />
+                  <span>Index</span>
+                </button>
+              )}
+            </>
           )}
         </div>
 
@@ -400,11 +611,12 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
             <span>{unlinking ? "Unlinking..." : "Unlink"}</span>
           </button>
           <button
-            onClick={onSignOut}
-            className="text-xs font-mono font-black text-[#261D24] bg-[#F2E6D2] hover:bg-[#FAF7F2] px-3 py-1.5 border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] flex items-center gap-1.5 transition cursor-pointer"
+            onClick={() => runSignOut()}
+            disabled={signingOut}
+            className="text-xs font-mono font-black text-[#261D24] bg-[#F2E6D2] hover:bg-[#FAF7F2] px-3 py-1.5 border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] flex items-center gap-1.5 transition cursor-pointer disabled:opacity-60 disabled:pointer-events-none"
           >
             <LogOut className="w-3.5 h-3.5 text-[#781420]" />
-            <span>Sign Out</span>
+            <span>{signingOut ? "Signing Out..." : "Sign Out"}</span>
           </button>
         </div>
       </header>
@@ -412,10 +624,12 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
       {/* ================= INTRO: FRONT SCRAPBOOK COVER ================= */}
       {(!isBookOpened || isClosingSequence) && (
         <div className="flex-1 flex items-center justify-center max-w-4xl mx-auto w-full py-8 z-20 journal-book-perspective">
-          <div 
+          <div
             ref={coverRef}
             onClick={!isOpeningSequence && !isClosingSequence ? handleOpenBook : undefined}
-            className="relative cursor-pointer transition-transform duration-300 hover:scale-[1.01]"
+            className={`relative cursor-pointer transition-transform duration-300 hover:scale-[1.01] ${
+              isOpeningSequence ? "animate-book-shift-open" : isClosingSequence ? "animate-book-shift-close" : ""
+            }`}
           >
             <div className="absolute -top-4 left-16 tape-pink-solid w-36 h-7 -rotate-2 z-50 pointer-events-none" />
             <div className="absolute -top-4 right-16 tape-red-solid w-36 h-7 rotate-2 z-50 pointer-events-none" />
@@ -454,7 +668,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
                 {!hasCoverImageError ? (
                   <div className="ml-5 sm:ml-7 flex-1 border-3 border-[#261D24] rounded-lg shadow-inner relative overflow-hidden flex flex-col justify-between bg-[#1B0D12]">
                     <img 
-                      src="/images/scrapbook/journal-cover.png" 
+                      src="/images/scrapbook/Journal-cover.webp" 
                       alt="Scrapbook Cover"
                       loading="eager"
                       fetchPriority="high"
@@ -552,38 +766,39 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
         </div>
       )}
 
-      {/* ================= FLORAL CASCADE WITH 7 CUTOUTS ================= */}
+      {/* ================= FLORAL CASCADE WITH 7 CUTOUTS =================
+          No veil, no wash: the flower cutouts themselves are what covers the
+          screen, and the whole layer slides off together to reveal the TOC. */}
       {bloomPhase && (
-        <div 
+        <div
           className={`fixed inset-0 z-50 pointer-events-none overflow-visible ${
             bloomPhase === "sliding-down" ? "animate-bloom-curtain-drop" : ""
           }`}
         >
           <div className="bloom-top-flowers" aria-hidden="true">
             {[
-              { file: "flower-1.png", fallback: "🌸" },
-              { file: "flower-2.png", fallback: "🌺" },
-              { file: "flower-3.png", fallback: "🌹" },
-              { file: "flower-4.png", fallback: "🌼" },
-              { file: "flower-5.png", fallback: "🌻" },
-              { file: "flower-6.png", fallback: "🌷" },
-              { file: "flower-7.png", fallback: "💐" },
-              { file: "flower-1.png", fallback: "🌸" },
+              { file: "flower-1.webp", fallback: "\u{1F338}" },
+              { file: "flower-2.webp", fallback: "\u{1F33A}" },
+              { file: "flower-3.webp", fallback: "\u{1F339}" },
+              { file: "flower-4.webp", fallback: "\u{1F33C}" },
+              { file: "flower-5.webp", fallback: "\u{1F33B}" },
+              { file: "flower-6.webp", fallback: "\u{1F337}" },
+              { file: "flower-7.webp", fallback: "\u{1F490}" },
+              { file: "flower-1.webp", fallback: "\u{1F338}" },
             ].map((flower, index) => (
               <div key={index} className="relative w-20 h-20 sm:w-28 sm:h-28 flex items-center justify-center">
                 <img
                   src={`/images/bloom/${flower.file}`}
                   alt=""
+                  draggable={false}
                   onError={(e) => {
                     e.currentTarget.style.display = "none";
                     const fallbackSpan = e.currentTarget.nextElementSibling as HTMLElement;
                     if (fallbackSpan) fallbackSpan.style.display = "inline-block";
                   }}
-                  className="w-full h-full object-contain drop-shadow-[0_4px_12px_rgba(0,0,0,0.5)]"
+                  className="w-full h-full object-contain"
                 />
-                <span className="hidden text-6xl drop-shadow-[0_0_18px_#ECA8B8]">
-                  {flower.fallback}
-                </span>
+                <span className="hidden text-6xl">{flower.fallback}</span>
               </div>
             ))}
           </div>
@@ -593,36 +808,40 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
               <div
                 key={idx}
                 style={{
-                  ['--dest-x' as any]: flower.x,
-                  ['--dest-y' as any]: flower.y,
-                  ['--dest-scale' as any]: flower.scale,
-                  ['--dest-rot' as any]: flower.rot,
+                  ["--dest-x" as any]: flower.x,
+                  ["--dest-y" as any]: flower.y,
+                  ["--dest-scale" as any]: flower.scale,
+                  ["--dest-rot" as any]: flower.rot,
+                  width: flower.size,
+                  height: flower.size,
                   animationDelay: flower.delay,
                 }}
-                className={`absolute ${flower.size} flex items-center justify-center animate-bloom-particle pointer-events-none`}
+                className="absolute flex items-center justify-center animate-bloom-particle pointer-events-none"
               >
+                {/* No per-flower drop-shadow. It is a filter, and a filter on
+                    fifty-odd animated nodes repaints every frame, which is
+                    what used to make the bloom stutter halfway through. */}
                 <img
                   src={`/images/bloom/${flower.file}`}
                   alt=""
+                  draggable={false}
                   onError={(e) => {
                     e.currentTarget.style.display = "none";
                     const fallbackSpan = e.currentTarget.nextElementSibling as HTMLElement;
                     if (fallbackSpan) fallbackSpan.style.display = "inline-block";
                   }}
-                  className="w-full h-full object-contain drop-shadow-[0_12px_28px_rgba(0,0,0,0.65)] select-none"
+                  className="w-full h-full object-contain select-none"
                 />
-                <span className="hidden text-9xl drop-shadow-[0_0_24px_#ECA8B8]">
-                  {flower.icon}
-                </span>
+                <span className="hidden text-9xl">{flower.icon}</span>
               </div>
             ))}
           </div>
 
-          {["A", "L", "B", "I", "V", "E", "R", "S", "E", "❤️", "🕷️"].map((char, idx) => (
+          {["A", "L", "B", "I", "V", "E", "R", "S", "E", "\u2764\uFE0F", "\u{1F577}\uFE0F"].map((char, idx) => (
             <div
               key={idx}
               style={{
-                left: `${18 + (idx * 6.5)}%`,
+                left: `${18 + idx * 6.5}%`,
                 animationDelay: `${idx * 0.05}s`,
               }}
               className="absolute bottom-10 font-marker text-3xl sm:text-5xl text-[#FDF6F0] drop-shadow-[0_0_20px_#ECA8B8] animate-letter-float"
@@ -702,8 +921,16 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
             </div>
           </div>
 
-          {/* Master 3D Spread Container */}
-          <div className="paper-open-notebook-spread min-h-[460px] sm:min-h-[520px] p-4 sm:p-8 relative grid grid-cols-1 md:grid-cols-2 gap-6 overflow-hidden">
+          {/* Master 3D Spread Container
+              NOTE: deliberately no `overflow-hidden` here — clipping an ancestor
+              inside a `transform-style: preserve-3d` context breaks the mid-flip
+              "read-through" to the base layer (the leaf goes edge-on and the
+              browser can't fall back to the page behind it), which is what was
+              causing the blank-page flash / stiff stop-motion look. The base
+              pages underneath (z-0) already swap to the destination content the
+              instant a flip starts, so removing the clip lets that show through
+              continuously as the leaf turns. */}
+          <div className="paper-open-notebook-spread min-h-[460px] sm:min-h-[520px] p-4 sm:p-8 relative grid grid-cols-1 md:grid-cols-2 gap-6">
             
             <div className="hidden md:block absolute inset-y-0 left-1/2 -translate-x-1/2 w-12 book-gutter-crease pointer-events-none z-30" />
 
@@ -721,24 +948,33 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
                 : renderChapterContent(curRight, currentSpread * 2 + 2)}
             </div>
 
-            {/* Dynamic Leaves */}
+            {/* Dynamic Leaves.
+                The geometry here has to match the base pages EXACTLY or the
+                leaf jumps sideways the instant a flip starts and again when it
+                lands, which is most of what made the old turn look wonky.
+                The spread is `p-4 sm:p-8` with `gap-6`, so a page runs from the
+                outer padding edge to half the gap (12px) short of the spine.
+                The leaf therefore hinges ON the spine (left-1/2 / right-1/2)
+                and its faces sit 12px in from it — which puts the face exactly
+                over the base page it covers, and exactly over the opposite
+                page once it has turned 180deg. */}
             {flippingState === "forward" && (
-              <div className="hidden md:block absolute inset-y-0 right-0 w-1/2 p-4 sm:p-8 animate-fluid-flip-forward z-40">
-                <div className="absolute inset-4 sm:inset-8 page-face-front">
+              <div className="hidden md:block absolute top-4 bottom-4 sm:top-8 sm:bottom-8 left-1/2 right-4 sm:right-8 flip-leaf flip-leaf-forward z-40">
+                <div className="absolute inset-y-0 left-3 right-0 page-face-front">
                   {renderChapterContent(curRight, currentSpread * 2 + 2)}
                 </div>
-                <div className="absolute inset-4 sm:inset-8 page-face-back">
+                <div className="absolute inset-y-0 left-3 right-0 page-face-back">
                   {renderChapterContent(nextLeft, (currentSpread + 1) * 2 + 1)}
                 </div>
               </div>
             )}
 
             {flippingState === "backward" && (
-              <div className="hidden md:block absolute inset-y-0 left-0 w-1/2 p-4 sm:p-8 animate-fluid-flip-backward z-40">
-                <div className="absolute inset-4 sm:inset-8 page-face-front">
+              <div className="hidden md:block absolute top-4 bottom-4 sm:top-8 sm:bottom-8 left-4 sm:left-8 right-1/2 flip-leaf flip-leaf-backward z-40">
+                <div className="absolute inset-y-0 left-0 right-3 page-face-front">
                   {renderChapterContent(curLeft, currentSpread * 2 + 1)}
                 </div>
-                <div className="absolute inset-4 sm:inset-8 page-face-back">
+                <div className="absolute inset-y-0 left-0 right-3 page-face-back">
                   {renderChapterContent(prevRight, (currentSpread - 1) * 2 + 2)}
                 </div>
               </div>
@@ -763,6 +999,47 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
             ))}
           </div>
 
+        </div>
+      )}
+
+      {/* ================= UNIVERSAL FAST-TRAVEL INDEX ================= */}
+      {showFastNav && isBookOpened && !isClosingSequence && (
+        <div
+          className="fixed inset-0 z-[90] bg-black/70 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setShowFastNav(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="paper-sheet-solid max-w-lg w-full max-h-[75vh] overflow-y-auto p-5 sm:p-7"
+          >
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="font-marker text-2xl sm:text-3xl text-[#1A0D10]">Jump to a Chapter</h3>
+              <button onClick={() => setShowFastNav(false)} className="text-[#7D2834] cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-2.5">
+              {features.map((item, index) => {
+                const Icon = item.icon;
+                const spreadIndex = Math.floor(index / 2);
+                return (
+                  <button
+                    key={item.tag}
+                    onClick={() => runJumpToSpread(spreadIndex)}
+                    className={`flex items-center gap-2.5 text-left border-2 border-[#261D24] px-3 py-2.5 shadow-[3px_3px_0_rgba(38,29,36,.4)] transition cursor-pointer ${
+                      spreadIndex === currentSpread ? "bg-[#F2E6D2]" : "bg-[#E8D9C1] hover:bg-[#F2E6D2]"
+                    }`}
+                  >
+                    <Icon className="w-4 h-4 text-[#7D2834] shrink-0" />
+                    <span className="flex-1 min-w-0">
+                      <span className="block font-mono text-[9px] font-black text-[#7D2834]">{item.tag}</span>
+                      <span className="block font-marker text-sm text-[#1A0D10] truncate">{item.title}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
@@ -880,6 +1157,518 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
 
             <span className="font-handwriting text-2xl text-[#ECA8B8] mt-3 font-black drop-shadow-md">
               Locking in dates across Earth-65 & Earth-616...
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ================= CHAPTER 3 RED STRING TIMELINE WARP OVERLAY ================= */}
+            {isWarpingTimeline && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md overflow-hidden animate-in fade-in duration-300">
+                
+                {/* 1. Giant Winding Red Web String Radial Burst */}
+                <div className="absolute w-[600px] h-[600px] sm:w-[900px] sm:h-[900px] rounded-full border-6 border-dashed border-[#7D2834] opacity-80 animate-red-string-burst flex items-center justify-center pointer-events-none">
+                  <span className="text-9xl opacity-90 select-none">🧵</span>
+                </div>
+
+                {/* 2. Rotating Multiverse Timeline Portal */}
+                <div className="absolute w-72 h-72 sm:w-96 sm:h-96 rounded-full border-8 border-dotted border-[#E0B1AE] opacity-60 animate-timeline-portal-spin flex items-center justify-center pointer-events-none">
+                  <div className="w-48 h-48 rounded-full border-4 border-dashed border-[#C5A467]" />
+                </div>
+
+                {/* 3. Flying Spider-Verse Timeline Particles & Polaroids */}
+                {[
+                  { text: "📸", x: "-38vw", y: "-28vh" },
+                  { text: "🧵", x: "36vw", y: "-26vh" },
+                  { text: "💌", x: "-32vw", y: "30vh" },
+                  { text: "🕷️", x: "38vw", y: "24vh" },
+                  { text: "616", x: "0vw", y: "-40vh" },
+                  { text: "65", x: "-22vw", y: "-15vh" },
+                  { text: "✨", x: "25vw", y: "15vh" },
+                  { text: "❤️", x: "-20vw", y: "24vh" },
+                ].map((item, idx) => (
+                  <span
+                    key={idx}
+                    style={{
+                      "--fly-x": item.x,
+                      "--fly-y": item.y,
+                    } as React.CSSProperties}
+                    className="absolute font-marker text-3xl sm:text-5xl text-[#FAF4EB] drop-shadow-[0_0_15px_#7D2834] animate-timeline-particle select-none pointer-events-none"
+                  >
+                    {item.text}
+                  </span>
+                ))}
+
+                {/* 4. Comic Punch Pop Bubble in Center */}
+                <div className="relative z-10 flex flex-col items-center justify-center animate-comic-pop">
+                  <div className="bg-[#7D2834] border-4 border-[#FAF4EB] shadow-[10px_10px_0_#17131A] px-7 py-4 rounded-2xl rotate-2 flex items-center gap-4">
+                    <span className="text-4xl animate-bounce">🧵</span>
+                    <div>
+                      <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#E0B1AE] block">
+                        CHAPTER 03 • RED STRING OF FATE
+                      </span>
+                      <h2 className="font-marker text-3xl sm:text-4xl text-[#FAF4EB] leading-tight">
+                        *THWIP!* 🕸️ CONNECTING TIMELINES...
+                      </h2>
+                    </div>
+                    <span className="text-4xl animate-spin">📸</span>
+                  </div>
+
+                  <span className="font-handwriting text-2xl text-[#E0B1AE] mt-3 font-black drop-shadow-md">
+                    Weaving polaroids across dimensions...
+                  </span>
+                </div>
+
+              </div>
+            )}
+
+
+
+      {/* ================= CH. 05 LOVE LETTER JAR WARP OVERLAY =================
+          The other chapters throw their particles outward. This one pulls them
+          IN: every scroll on screen is sucked into the jar's mouth, the cork
+          pops, the fairy lights come up, and the jar fills with warm light.
+          Its CSS lives here rather than in globals.css because nothing else in
+          the app uses it. */}
+      {isWarpingLetters && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#0E0709]/92 backdrop-blur-md overflow-hidden pointer-events-none">
+          <style>{`
+            @keyframes jarwarp-rise {
+              0%   { transform: translateY(70vh) scale(0.55) rotate(-9deg); opacity: 0; }
+              45%  { transform: translateY(0) scale(1.06) rotate(2deg); opacity: 1; }
+              62%  { transform: translateY(0) scale(0.95) rotate(-1.5deg); }
+              78%  { transform: translateY(0) scale(1.03) rotate(0.8deg); }
+              100% { transform: translateY(0) scale(1) rotate(0deg); opacity: 1; }
+            }
+            @keyframes jarwarp-cork {
+              0%   { transform: translateY(0) rotate(0deg); }
+              38%  { transform: translateY(0) rotate(0deg); }
+              58%  { transform: translateY(-120px) rotate(-38deg); }
+              100% { transform: translateY(-260px) rotate(-150deg); opacity: 0; }
+            }
+            @keyframes jarwarp-fill {
+              0%, 40% { opacity: 0; transform: scaleY(0.1); }
+              70%     { opacity: 0.85; transform: scaleY(0.72); }
+              100%    { opacity: 1; transform: scaleY(1); }
+            }
+            @keyframes jarwarp-suck {
+              0%   { transform: translate(var(--fly-x), var(--fly-y)) rotate(var(--fly-rot)) scale(1.15); opacity: 0; }
+              18%  { opacity: 1; }
+              100% { transform: translate(0, -20px) rotate(0deg) scale(0.16); opacity: 0; }
+            }
+            @keyframes jarwarp-twinkle {
+              0%, 100% { opacity: 0.35; }
+              50%      { opacity: 1; }
+            }
+            @keyframes jarwarp-sway {
+              0%, 100% { transform: rotate(-1.6deg); }
+              50%      { transform: rotate(1.6deg); }
+            }
+            .jarwarp-jar   { animation: jarwarp-rise 1.25s cubic-bezier(0.2, 0.9, 0.3, 1) forwards; }
+            .jarwarp-cork  { animation: jarwarp-cork 1.25s cubic-bezier(0.3, 0.8, 0.4, 1) forwards; }
+            .jarwarp-fill  { animation: jarwarp-fill 1.25s ease-out forwards; transform-origin: bottom center; }
+            .jarwarp-note  { animation: jarwarp-suck 1.1s cubic-bezier(0.55, 0, 0.35, 1) forwards; }
+            .jarwarp-bulb  { animation: jarwarp-twinkle 1.4s ease-in-out infinite; }
+            .jarwarp-string{ animation: jarwarp-sway 3s ease-in-out infinite; transform-origin: top center; }
+          `}</style>
+
+          {/* 1. Fairy lights strung across the top of the frame */}
+          <div className="jarwarp-string absolute top-0 left-0 right-0 h-40">
+            <svg viewBox="0 0 1200 160" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
+              <path d="M0 12 Q 300 128 600 74 T 1200 18" fill="none" stroke="#5A4638" strokeWidth="3" />
+            </svg>
+            {Array.from({ length: 15 }).map((_, i) => {
+              const t = i / 14;
+              // sampled off the same quadratic droop the wire is drawn with
+              const x = t * 100;
+              const y = 12 + Math.sin(t * Math.PI) * 62 + (t > 0.5 ? -18 * (t - 0.5) * 2 : 0);
+              return (
+                <span
+                  key={i}
+                  className="jarwarp-bulb absolute w-2.5 h-2.5 rounded-full"
+                  style={{
+                    left: `${x}%`,
+                    top: `${y}px`,
+                    background: i % 3 === 0 ? "#FFD9A0" : i % 3 === 1 ? "#FFC1CE" : "#FFEBC4",
+                    boxShadow: `0 0 12px 4px ${i % 3 === 1 ? "rgba(255,177,198,.55)" : "rgba(255,201,130,.55)"}`,
+                    animationDelay: `${(i % 5) * 0.18}s`,
+                  }}
+                />
+              );
+            })}
+          </div>
+
+          {/* 2. The jar itself, rising into frame and filling with warm light */}
+          <div className="jarwarp-jar relative w-[188px] h-[248px] sm:w-[228px] sm:h-[300px] -translate-y-10">
+            {/* cork, popping off the top */}
+            <div className="jarwarp-cork absolute left-1/2 -translate-x-1/2 -top-8 w-[74px] h-[34px] sm:w-[92px] sm:h-[40px] rounded-[10px] border-[3px] border-[#3A2A1C] bg-[linear-gradient(180deg,#D9AF75,#A87C46)]" />
+
+            {/* glass body */}
+            <div className="absolute inset-0 rounded-b-[34px] rounded-t-[16px] border-[3px] border-[#9FB3B4]/70 bg-[linear-gradient(115deg,rgba(226,236,233,.20),rgba(226,236,233,.06)_40%,rgba(226,236,233,.24))] overflow-hidden">
+              {/* the light filling up from the bottom */}
+              <div className="jarwarp-fill absolute inset-x-0 bottom-0 h-full bg-[radial-gradient(ellipse_at_50%_100%,rgba(255,200,130,.85),rgba(255,150,120,.35)_45%,transparent_75%)]" />
+              {/* a few scrolls already settled at the bottom */}
+              {[
+                { l: "12%", b: "8%", w: "58%", r: "-14deg" },
+                { l: "34%", b: "18%", w: "52%", r: "22deg" },
+                { l: "8%",  b: "28%", w: "48%", r: "6deg" },
+                { l: "40%", b: "38%", w: "46%", r: "-26deg" },
+              ].map((s, i) => (
+                <span
+                  key={i}
+                  className="absolute h-3 rounded-full border border-[#8A6E4E]/70 bg-[linear-gradient(180deg,#F6EBD6,#D9C29C)]"
+                  style={{ left: s.l, bottom: s.b, width: s.w, transform: `rotate(${s.r})` }}
+                />
+              ))}
+              {/* glass highlight */}
+              <span className="absolute left-3 top-4 bottom-8 w-2 rounded-full bg-white/25" />
+            </div>
+
+            {/* twine bow and kraft heart tag, straight off the reference jar */}
+            <span className="absolute left-1/2 -translate-x-1/2 top-1.5 w-[86%] h-1.5 rounded-full bg-[#B99B6E]" />
+            <span className="absolute left-1/2 -translate-x-1/2 top-6 w-8 h-8 rotate-12 border-2 border-[#8A6E4E] bg-[#C9A778] rounded-[6px] grid place-items-center text-[13px]">
+              🤎
+            </span>
+          </div>
+
+          {/* 3. Scrolls, tags and hearts rushing into the jar's mouth */}
+          {[
+            { text: "📜", x: "-42vw", y: "-30vh", rot: "-24deg" },
+            { text: "💌", x: "40vw", y: "-26vh", rot: "18deg" },
+            { text: "📜", x: "-34vw", y: "30vh", rot: "34deg" },
+            { text: "🕸️", x: "38vw", y: "26vh", rot: "-12deg" },
+            { text: "🏷️", x: "0vw", y: "-42vh", rot: "10deg" },
+            { text: "🤍", x: "-22vw", y: "-16vh", rot: "-30deg" },
+            { text: "🕷️", x: "26vw", y: "14vh", rot: "26deg" },
+            { text: "🌾", x: "-26vw", y: "20vh", rot: "16deg" },
+            { text: "📜", x: "46vw", y: "2vh", rot: "-40deg" },
+            { text: "💗", x: "-46vw", y: "4vh", rot: "20deg" },
+          ].map((item, idx) => (
+            <span
+              key={idx}
+              style={{
+                "--fly-x": item.x,
+                "--fly-y": item.y,
+                "--fly-rot": item.rot,
+                animationDelay: `${idx * 0.055}s`,
+              } as React.CSSProperties}
+              className="jarwarp-note absolute text-4xl sm:text-5xl select-none"
+            >
+              {item.text}
+            </span>
+          ))}
+
+          {/* 4. Comic bubble, parked under the jar so it never covers it */}
+          <div className="absolute bottom-[13vh] left-1/2 -translate-x-1/2 flex flex-col items-center animate-comic-pop">
+            <div className="bg-[#450A10] border-4 border-[#FAF4EB] shadow-[10px_10px_0_#17131A] px-6 py-4 rounded-2xl -rotate-1 flex items-center gap-4">
+              <span className="text-4xl animate-bounce">🫙</span>
+              <div>
+                <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#E0B1AE] block">
+                  CHAPTER 05 • LOVE LETTER JAR
+                </span>
+                <h2 className="font-marker text-2xl sm:text-4xl text-[#FAF4EB] leading-tight">
+                  *POP!* 📜 UNCORKING THE JAR...
+                </h2>
+              </div>
+              <span className="text-4xl animate-pulse">🕯️</span>
+            </div>
+
+            <span className="font-handwriting text-2xl text-[#E0B1AE] mt-3 font-black drop-shadow-md">
+              Gathering every note we ever rolled up...
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ================= CH. 06 SPIDER DIARY WARP OVERLAY =================
+          The chapter is a typewriter and a corkboard, so its loading screen is
+          the machine coming up onto the desk, a sheet feeding out of the platen,
+          and the headline striking itself out one character at a time while the
+          clippings fly in to be filed.
+
+          All of it is transform, opacity and clip-path. The typing is a stepped
+          clip-path rather than an animated width, which would relayout the line
+          on every character. */}
+      {isWarpingDiary && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#100A0C]/94 backdrop-blur-md overflow-hidden pointer-events-none">
+          <style>{`
+            @keyframes dywarp-rise {
+              0%   { transform: translateY(78vh) scale(0.7); opacity: 0; }
+              46%  { transform: translateY(0) scale(1.05); opacity: 1; }
+              64%  { transform: translateY(0) scale(0.97); }
+              82%  { transform: translateY(0) scale(1.02); }
+              100% { transform: translateY(0) scale(1); opacity: 1; }
+            }
+            @keyframes dywarp-feed {
+              0%, 22% { transform: scaleY(0.04) translateY(38%); opacity: 0; }
+              40%     { opacity: 1; }
+              100%    { transform: scaleY(1) translateY(0); opacity: 1; }
+            }
+            @keyframes dywarp-type {
+              0%, 42% { clip-path: inset(0 100% 0 0); }
+              100%    { clip-path: inset(0 0 0 0); }
+            }
+            @keyframes dywarp-bars {
+              0%, 100% { transform: translateY(0); }
+              50%      { transform: translateY(-6px); }
+            }
+            @keyframes dywarp-file {
+              0%   { transform: translate(var(--fly-x), var(--fly-y)) rotate(var(--fly-rot)) scale(1.2); opacity: 0; }
+              20%  { opacity: 1; }
+              100% { transform: translate(0, 6vh) rotate(0deg) scale(0.2); opacity: 0; }
+            }
+            @keyframes dywarp-bell {
+              0%, 62% { transform: rotate(0deg); }
+              72%     { transform: rotate(-26deg); }
+              84%     { transform: rotate(18deg); }
+              100%    { transform: rotate(0deg); }
+            }
+            .dywarp-machine { animation: dywarp-rise 1.25s cubic-bezier(0.2, 0.9, 0.3, 1) forwards; }
+            .dywarp-sheet   { animation: dywarp-feed 1.25s cubic-bezier(0.2, 0.9, 0.3, 1) forwards; transform-origin: bottom center; }
+            .dywarp-typed   { animation: dywarp-type 1.15s steps(13, end) forwards; }
+            .dywarp-machine .dy-tw-bars { transform-box: fill-box; transform-origin: bottom center; animation: dywarp-bars 150ms ease-in-out infinite; }
+            .dywarp-clip    { animation: dywarp-file 1.15s cubic-bezier(0.55, 0, 0.35, 1) forwards; }
+            .dywarp-bell    { display: inline-block; animation: dywarp-bell 1.25s ease-out forwards; transform-origin: center; }
+          `}</style>
+
+          {/* grid paper behind everything, so the screen reads as the board */}
+          <div
+            className="absolute inset-0 opacity-[0.13]"
+            style={{
+              backgroundImage:
+                "repeating-linear-gradient(0deg,#ECA8B8 0 1px,transparent 1px 32px),repeating-linear-gradient(90deg,#ECA8B8 0 1px,transparent 1px 32px)",
+            }}
+          />
+
+          {/* the machine, with the sheet rolling up out of its platen */}
+          <div className="dywarp-machine relative w-[min(560px,88vw)] translate-y-6">
+            <div className="dywarp-sheet relative mx-auto w-[74%] border border-[#C9BEAA] border-b-0 bg-[#FCF8F1] px-5 pt-5 pb-10 shadow-[0_18px_38px_rgba(0,0,0,.55)]">
+              <span className="block border-t-2 border-dashed border-[#B9AC96]" />
+              <p className="mt-3 font-mono text-[9px] font-black uppercase tracking-[0.22em] text-[#8A7A62]">
+                Field log
+              </p>
+              <p className="dywarp-typed mt-1 whitespace-nowrap font-mono text-lg sm:text-2xl font-black uppercase tracking-tight text-[#1C1317]">
+                TODAY&apos;S LOG_
+              </p>
+              <span className="mt-3 block h-[3px] w-2/3 bg-[#1C1317]" />
+              <span className="mt-2 block h-[6px] w-full bg-[#1C1317]/15" />
+              <span className="mt-1.5 block h-[6px] w-5/6 bg-[#1C1317]/15" />
+            </div>
+
+            <div className="relative -mt-8">
+              <Typewriter className="block w-full h-auto" />
+            </div>
+          </div>
+
+          {/* clippings, pins and caption boxes rushing in to be filed */}
+          {[
+            { text: "\u{1F5DE}\uFE0F", x: "-44vw", y: "-30vh", rot: "-22deg" },
+            { text: "\u{1F4CC}", x: "42vw", y: "-26vh", rot: "16deg" },
+            { text: "\u{1F4F0}", x: "-34vw", y: "28vh", rot: "30deg" },
+            { text: "\u{1F577}\uFE0F", x: "38vw", y: "24vh", rot: "-14deg" },
+            { text: "\u{1F4DD}", x: "0vw", y: "-42vh", rot: "9deg" },
+            { text: "\u{1F4CD}", x: "-22vw", y: "-15vh", rot: "-28deg" },
+            { text: "\u{1F5FA}\uFE0F", x: "26vw", y: "13vh", rot: "24deg" },
+            { text: "\u{1F4CE}", x: "-27vw", y: "19vh", rot: "14deg" },
+            { text: "\u{1F4F8}", x: "47vw", y: "2vh", rot: "-38deg" },
+            { text: "\u{1F58B}\uFE0F", x: "-47vw", y: "3vh", rot: "18deg" },
+          ].map((item, idx) => (
+            <span
+              key={idx}
+              style={
+                {
+                  "--fly-x": item.x,
+                  "--fly-y": item.y,
+                  "--fly-rot": item.rot,
+                  animationDelay: `${idx * 0.05}s`,
+                } as React.CSSProperties
+              }
+              className="dywarp-clip absolute text-4xl sm:text-5xl select-none"
+            >
+              {item.text}
+            </span>
+          ))}
+
+          {/* comic bubble, parked under the machine so it never covers it */}
+          <div className="absolute bottom-[7vh] left-1/2 -translate-x-1/2 flex flex-col items-center animate-comic-pop">
+            <div className="bg-[#450A10] border-4 border-[#FAF4EB] shadow-[10px_10px_0_#17131A] px-6 py-4 rounded-2xl -rotate-1 flex items-center gap-4">
+              <span className="dywarp-bell text-4xl">&#128276;</span>
+              <div>
+                <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#E0B1AE] block">
+                  CHAPTER 06 &bull; SPIDER DIARY
+                </span>
+                <h2 className="font-marker text-2xl sm:text-4xl text-[#FAF4EB] leading-tight">
+                  *CLACK!* FEEDING THE SHEET...
+                </h2>
+              </div>
+              <span className="text-4xl animate-pulse">&#128393;</span>
+            </div>
+
+            <span className="font-handwriting text-2xl text-[#E0B1AE] mt-3 font-black drop-shadow-md">
+              Pinning every day we bothered to write down...
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ================= CH. 09 SOUNDTRACK DECK WARP OVERLAY =================
+          The chapter is a corkboard of cassettes and a turntable, so its
+          loading screen is the record dropping onto the platter: the vinyl
+          rises into frame, the tonearm swings down onto it, the record starts
+          turning, and every tape and note on screen is pulled into the spindle.
+
+          All transform and opacity. The grooves are a static repeating
+          gradient on the disc, so the whole record spins as one composited
+          layer instead of being repainted every frame. */}
+      {isWarpingSoundtrack && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#160C08]/94 backdrop-blur-md overflow-hidden pointer-events-none">
+          <style>{`
+            @keyframes stwarp-rise {
+              0%   { transform: translateY(64vh) scale(0.6) rotate(-14deg); opacity: 0; }
+              44%  { transform: translateY(0) scale(1.07) rotate(3deg); opacity: 1; }
+              62%  { transform: translateY(0) scale(0.96) rotate(-1deg); }
+              80%  { transform: translateY(0) scale(1.02) rotate(0.5deg); }
+              100% { transform: translateY(0) scale(1) rotate(0deg); opacity: 1; }
+            }
+            @keyframes stwarp-spin { to { transform: rotate(360deg); } }
+            @keyframes stwarp-arm {
+              0%, 46% { transform: rotate(-30deg); }
+              74%     { transform: rotate(4deg); }
+              88%     { transform: rotate(-2deg); }
+              100%    { transform: rotate(0deg); }
+            }
+            @keyframes stwarp-suck {
+              0%   { transform: translate(var(--fly-x), var(--fly-y)) rotate(var(--fly-rot)) scale(1.15); opacity: 0; }
+              18%  { opacity: 1; }
+              100% { transform: translate(0, -12px) rotate(0deg) scale(0.14); opacity: 0; }
+            }
+            @keyframes stwarp-wave {
+              0%, 100% { transform: scaleY(0.35); }
+              50%      { transform: scaleY(1); }
+            }
+            .stwarp-deck  { animation: stwarp-rise 1.25s cubic-bezier(0.2, 0.9, 0.3, 1) forwards; }
+            .stwarp-disc  { animation: stwarp-spin 1.9s linear infinite; will-change: transform; }
+            .stwarp-arm   { animation: stwarp-arm 1.25s cubic-bezier(0.3, 0.9, 0.35, 1) forwards; transform-origin: 82% 16%; }
+            .stwarp-note  { animation: stwarp-suck 1.1s cubic-bezier(0.55, 0, 0.35, 1) forwards; }
+            .stwarp-bar   { animation: stwarp-wave 0.7s ease-in-out infinite; transform-origin: bottom center; }
+          `}</style>
+
+          {/* the corkboard, so the screen is already the place we are going */}
+          <div
+            className="absolute inset-0 opacity-[0.22]"
+            style={{
+              backgroundColor: "#8A5A2E",
+              backgroundImage:
+                "radial-gradient(rgba(60,32,12,.5) 1.1px, transparent 1.2px), radial-gradient(rgba(255,214,160,.3) .9px, transparent 1px)",
+              backgroundSize: "9px 9px, 13px 13px",
+            }}
+          />
+
+          {/* the deck: a paper plate with the record dropping onto it */}
+          <div className="stwarp-deck relative w-[min(360px,78vw)] -translate-y-6">
+            <div className="relative aspect-square rounded-[18px] border-4 border-[#FAF4EB] bg-[#F5EEE0] shadow-[10px_12px_0_rgba(8,5,4,.7)] p-5">
+              <div className="relative w-full h-full">
+                {/* the record */}
+                <div
+                  className="stwarp-disc absolute inset-0 rounded-full"
+                  style={{
+                    background: "radial-gradient(circle at 36% 30%, #8E1B24, #4A0910 58%, #2A050A)",
+                    boxShadow: "inset 0 0 40px rgba(0,0,0,.7)",
+                  }}
+                >
+                  <span
+                    className="absolute inset-[6%] rounded-full"
+                    style={{
+                      backgroundImage:
+                        "repeating-radial-gradient(circle, rgba(255,255,255,.08) 0 1px, transparent 1px 5px)",
+                    }}
+                  />
+                </div>
+
+                {/* the centre label */}
+                <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[42%] aspect-square rounded-full bg-[#E8DCBE] border-[3px] border-[#2B2119]/60 grid place-content-center text-center px-2">
+                  <span className="font-mono text-[8px] font-black uppercase tracking-[.18em] text-[#7A2530]">
+                    Mixtape
+                  </span>
+                  <span className="font-marker text-[#2B2119] text-sm leading-tight">
+                    OUR SOUNDTRACK
+                  </span>
+                  <span className="mx-auto mt-1 block w-2 h-2 rounded-full bg-[#1B1216]" />
+                </div>
+              </div>
+
+              {/* the tonearm, swinging down onto the record */}
+              <div className="stwarp-arm absolute -right-6 -top-4 w-[46%]">
+                <svg viewBox="0 0 240 300" className="block w-full h-auto">
+                  <circle cx="188" cy="52" r="38" fill="#B9BEC4" stroke="#4A4E55" strokeWidth="4" />
+                  <circle cx="188" cy="52" r="16" fill="#7C828A" stroke="#3B3E44" strokeWidth="3" />
+                  <g transform="rotate(24 188 70)">
+                    <rect x="182" y="70" width="12" height="150" rx="6" fill="#C7CBD1" stroke="#4A4E55" strokeWidth="3" />
+                    <rect x="168" y="212" width="40" height="30" rx="5" fill="#2A2C31" stroke="#14161A" strokeWidth="3" />
+                    <rect x="192" y="216" width="10" height="8" rx="2" fill="#C7343F" />
+                  </g>
+                </svg>
+              </div>
+            </div>
+
+            {/* a level meter across the bottom of the plate */}
+            <div className="mt-4 flex items-end justify-center gap-1.5 h-8">
+              {Array.from({ length: 13 }).map((_, i) => (
+                <span
+                  key={i}
+                  className="stwarp-bar w-2 rounded-sm bg-[#C7343F]"
+                  style={{ height: `${14 + (i % 5) * 6}px`, animationDelay: `${(i % 6) * 0.09}s` }}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* tapes, notes and hearts pulled into the spindle */}
+          {[
+            { text: "\u{1F4FC}", x: "-43vw", y: "-30vh", rot: "-22deg" },
+            { text: "\u{1F3A7}", x: "41vw", y: "-27vh", rot: "17deg" },
+            { text: "\u{1F3B5}", x: "-34vw", y: "29vh", rot: "31deg" },
+            { text: "\u{1F577}\uFE0F", x: "38vw", y: "25vh", rot: "-13deg" },
+            { text: "\u{1F3AB}", x: "0vw", y: "-42vh", rot: "9deg" },
+            { text: "\u{1F4BF}", x: "-22vw", y: "-16vh", rot: "-28deg" },
+            { text: "\u{1F3B6}", x: "26vw", y: "14vh", rot: "25deg" },
+            { text: "\u{1F4CE}", x: "-27vw", y: "20vh", rot: "15deg" },
+            { text: "\u{1F5A4}", x: "47vw", y: "2vh", rot: "-38deg" },
+            { text: "\u{1F4FB}", x: "-47vw", y: "4vh", rot: "19deg" },
+          ].map((item, idx) => (
+            <span
+              key={idx}
+              style={
+                {
+                  "--fly-x": item.x,
+                  "--fly-y": item.y,
+                  "--fly-rot": item.rot,
+                  animationDelay: `${idx * 0.05}s`,
+                } as React.CSSProperties
+              }
+              className="stwarp-note absolute text-4xl sm:text-5xl select-none"
+            >
+              {item.text}
+            </span>
+          ))}
+
+          {/* comic bubble, parked under the deck so it never covers it */}
+          <div className="absolute bottom-[6vh] left-1/2 -translate-x-1/2 flex flex-col items-center animate-comic-pop">
+            <div className="bg-[#450A10] border-4 border-[#FAF4EB] shadow-[10px_10px_0_#17131A] px-6 py-4 rounded-2xl -rotate-1 flex items-center gap-4">
+              <span className="text-4xl animate-bounce">&#128191;</span>
+              <div>
+                <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#E0B1AE] block">
+                  CHAPTER 09 &bull; SOUNDTRACK DECK
+                </span>
+                <h2 className="font-marker text-2xl sm:text-4xl text-[#FAF4EB] leading-tight">
+                  *CLACK!* DROPPING THE NEEDLE...
+                </h2>
+              </div>
+              <span className="text-4xl animate-pulse">&#127911;</span>
+            </div>
+
+            <span className="font-handwriting text-2xl text-[#E0B1AE] mt-3 font-black drop-shadow-md">
+              Every song we ever sent each other at 2am...
             </span>
           </div>
         </div>

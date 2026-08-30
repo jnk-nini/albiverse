@@ -19,6 +19,9 @@ interface ClockScreenProps {
   userId: string;
   coupleId: string;
   initialAnniversary?: string | null;
+  /* Where BACK goes. The route resolves it from the `?from=` spread the table
+     of contents handed over, so leaving lands on the page you opened from. */
+  backHref?: string;
 }
 
 interface TimeBreakdown {
@@ -30,7 +33,12 @@ interface TimeBreakdown {
   seconds: number;
 }
 
-export default function ClockScreen({ userId, coupleId, initialAnniversary }: ClockScreenProps) {
+export default function ClockScreen({
+  userId,
+  coupleId,
+  initialAnniversary,
+  backHref = "/?opened=true&spread=0",
+}: ClockScreenProps) {
   const [anniversaryDate, setAnniversaryDate] = useState<string>(
     initialAnniversary ? initialAnniversary.substring(0, 10) : "2024-01-01"
   );
@@ -206,7 +214,7 @@ export default function ClockScreen({ userId, coupleId, initialAnniversary }: Cl
       {/* Top Paper Bookmark Navigation */}
       <header className="max-w-5xl mx-auto w-full z-30 flex items-center justify-between">
         <Link
-          href="/"
+          href={backHref}
           className="inline-flex items-center gap-2 px-4 py-2 bg-[#F2E6D2] hover:bg-[#FAF7F2] text-[#261D24] text-xs font-mono font-black border-3 border-[#261D24] shadow-[4px_4px_0_#171B22] -rotate-2 hover:rotate-0 transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none cursor-pointer"
         >
           <ArrowLeft className="w-4 h-4 text-[#7D2834]" strokeWidth={3} />

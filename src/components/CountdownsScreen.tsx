@@ -33,12 +33,15 @@ export interface CountdownsScreenProps {
   userId: string;
   coupleId: string;
   initialEvents?: CalendarEvent[];
+  /* See ClockScreen: the spread the reader opened this chapter from. */
+  backHref?: string;
 }
 
 export default function CountdownsScreen({
   userId,
   coupleId,
   initialEvents = [],
+  backHref = "/?opened=true&spread=0",
 }: CountdownsScreenProps) {
   const [events, setEvents] = useState<CalendarEvent[]>(initialEvents);
   const [error, setError] = useState<string | null>(null);
@@ -417,7 +420,7 @@ export default function CountdownsScreen({
       {/* Top Navigation */}
       <header className="max-w-7xl mx-auto w-full z-30 flex items-center justify-between mb-6">
         <Link
-          href="/?opened=true"
+          href={backHref}
           className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#F2E6D2] hover:bg-[#FAF7F2] text-[#261D24] text-xs sm:text-sm font-mono font-black border-3 border-[#261D24] shadow-[5px_5px_0_#171B22] -rotate-2 hover:rotate-0 transition active:translate-x-[2px] active:translate-y-[2px] active:shadow-none cursor-pointer"
         >
           <ArrowLeft className="w-5 h-5 text-[#7D2834]" strokeWidth={3} />

@@ -1,20 +1,31 @@
 "use client";
 
+import { Suspense } from "react";
 import Link from "next/link";
 import { ArrowLeft, Construction } from "lucide-react";
+import { useTocReturn } from "@/lib/nav/useTocReturn";
 
 interface FeatureStubProps {
   title: string;
   eyebrow: string;
   description: string;
   table: string;
+  /* The spread this chapter sits on in the table of contents, used only when
+     the reader arrived without a `?from=` (a bookmark, a typed URL). */
+  spread?: number;
 }
 
-export default function FeatureStub({ title, eyebrow, description, table }: FeatureStubProps) {
+function StubShell({
+  title,
+  eyebrow,
+  description,
+  table,
+  backHref,
+}: Omit<FeatureStubProps, "spread"> & { backHref: string }) {
   return (
     <main className="min-h-screen bg-[#28313B] p-5 sm:p-10 text-[#261D24]">
       <div className="max-w-6xl mx-auto">
-        <Link href="/?view=contents" className="inline-flex items-center gap-2 text-[#E0B1AE] font-mono text-xs mb-8">
+        <Link href={backHref} className="inline-flex items-center gap-2 text-[#E0B1AE] font-mono text-xs mb-8">
           <ArrowLeft className="w-4 h-4" /> BACK TO SCRAPBOOK
         </Link>
         <section className="paper-sheet-solid min-h-[75vh] p-8 sm:p-14">
@@ -31,5 +42,23 @@ export default function FeatureStub({ title, eyebrow, description, table }: Feat
         </section>
       </div>
     </main>
+  );
+}
+
+function FeatureStubInner({ spread = 0, ...rest }: FeatureStubProps) {
+  /* The old link pointed at `/?view=contents`, which the dashboard does not
+     recognise, so leaving a stub closed the book. It now returns to the spread
+     the reader opened the chapter from, like every other chapter. */
+  const backHref = useTocReturn(spread);
+  return <StubShell {...rest} backHref={backHref} />;
+}
+
+export default function FeatureStub(props: FeatureStubProps) {
+  return (
+    <Suspense
+      fallback={<StubShell {...props} backHref={`/?opened=true&spread=${props.spread ?? 0}`} />}
+    >
+      <FeatureStubInner {...props} />
+    </Suspense>
   );
 }
