@@ -36,14 +36,20 @@ import {
   Copy,
   Disc3,
   Loader2,
+  Clock,
+  ListMusic,
   MoreHorizontal,
   Music,
   Pause,
   Play,
   Plus,
+  Repeat,
+  Repeat1,
   Search,
+  Shuffle,
   SkipBack,
   SkipForward,
+  Sparkles,
   Trash2,
   Upload,
   Volume2,
@@ -143,6 +149,14 @@ function formatClock(seconds: number | null | undefined): string {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** "1h 24m" / "24m" - for the board's tape-log stats, not the transport clock. */
+function formatRuntime(totalSeconds: number): string {
+  if (!totalSeconds) return "0m";
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.round((totalSeconds % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
 /** Pull a video id out of anything a person might paste. */
@@ -318,6 +332,15 @@ export default function SoundtrackScreen({
   const [pendingYoutubeId, setPendingYoutubeId] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [duration, setDuration] = useState(0);
+  /* "off" wraps only when skipping manually and stops at the end of the tape
+     when a track finishes on its own; "all" also wraps on natural end; "one"
+     replays the same track forever. Shuffle only changes what "next" means. */
+  const [repeatMode, setRepeatMode] = useState<"off" | "all" | "one">("off");
+  const [shuffleOn, setShuffleOn] = useState(false);
+  /* Set when a board widget (the "fresh off the tape" card) wants a specific
+     track playing the moment its tape finishes dropping into the boombox,
+     rather than just opening on the tracklist like a normal pick-up does. */
+  const [pendingPlayTrackId, setPendingPlayTrackId] = useState<string | null>(null);
 
   /* -------------------------------------------------------------- panels */
   const [showSearch, setShowSearch] = useState(false);
@@ -374,6 +397,17 @@ export default function SoundtrackScreen({
     const map = new Map<string, number>();
     for (const t of tracks) map.set(t.mixtape_id, (map.get(t.mixtape_id) ?? 0) + 1);
     return map;
+  }, [tracks]);
+
+  /* Tape-log stats for the corkboard note - derived from data already in
+     memory, no extra query. */
+  const totalRuntimeSeconds = useMemo(
+    () => tracks.reduce((sum, t) => sum + (t.duration_seconds ?? 0), 0),
+    [tracks]
+  );
+  const latestTrack = useMemo(() => {
+    if (tracks.length === 0) return null;
+    return tracks.reduce((newest, t) => (t.created_at > newest.created_at ? t : newest));
   }, [tracks]);
 
   const nameFor = useCallback(
@@ -473,6 +507,15 @@ export default function SoundtrackScreen({
     }, 1750);
     return () => window.clearTimeout(id);
   }, [stage, clack]);
+
+  /** Jump straight past the board and stack: drop a tape into the boombox
+      and start playing one particular track off it. */
+  const openTrackDirect = useCallback((track: Track) => {
+    setActiveTapeId(track.mixtape_id);
+    setDroppingTapeId(track.mixtape_id);
+    setPendingPlayTrackId(track.id);
+    setStage("dropping");
+  }, []);
 
   /* ----------------------------------------------------- the fresh tape */
 
@@ -692,6 +735,16 @@ export default function SoundtrackScreen({
     [fetchBlob, volume, writeProgress, ytReady]
   );
 
+  /* The other half of pendingPlayTrackId: once the boombox drop lands on the
+     player, start the specific track the board widget asked for instead of
+     leaving the turntable idle. */
+  useEffect(() => {
+    if (stage !== "player" || !pendingPlayTrackId) return;
+    const track = tracks.find((t) => t.id === pendingPlayTrackId);
+    setPendingPlayTrackId(null);
+    if (track) void playTrack(track);
+  }, [stage, pendingPlayTrackId, tracks, playTrack]);
+
   const togglePlay = useCallback(() => {
     if (!currentTrack) {
       const first = tapeTracks[0];
@@ -730,15 +783,66 @@ export default function SoundtrackScreen({
     }
   }, [currentTrack, isPlaying, playTrack, tapeTracks, ytReady]);
 
+  /* Shuffle only changes what "a different track" means; it never touches
+     track order in the tracklist itself. */
+  const pickShuffledIndex = useCallback(
+    (excludeIndex: number) => {
+      if (tapeTracks.length <= 1) return excludeIndex < 0 ? 0 : excludeIndex;
+      let idx = Math.floor(Math.random() * tapeTracks.length);
+      while (idx === excludeIndex) idx = Math.floor(Math.random() * tapeTracks.length);
+      return idx;
+    },
+    [tapeTracks]
+  );
+
   const skipTo = useCallback(
     (delta: number) => {
       if (tapeTracks.length === 0) return;
       const from = currentIndex >= 0 ? currentIndex : -1;
+      if (shuffleOn) {
+        void playTrack(tapeTracks[pickShuffledIndex(from)]);
+        return;
+      }
       const next = (from + delta + tapeTracks.length) % tapeTracks.length;
       void playTrack(tapeTracks[next]);
     },
-    [currentIndex, playTrack, tapeTracks]
+    [currentIndex, pickShuffledIndex, playTrack, shuffleOn, tapeTracks]
   );
+
+  /* What happens when a track finishes on its own, as opposed to being
+     skipped by hand - manual Prev/Next always moves; a natural end respects
+     repeat/shuffle and can legitimately stop at the end of the tape. */
+  const handleTrackEnded = useCallback(() => {
+    if (tapeTracks.length === 0) return;
+    const from = currentIndex >= 0 ? currentIndex : 0;
+    if (repeatMode === "one") {
+      void playTrack(tapeTracks[from]);
+      return;
+    }
+    if (shuffleOn) {
+      if (tapeTracks.length === 1 && repeatMode !== "all") {
+        setIsPlaying(false);
+        return;
+      }
+      void playTrack(tapeTracks[pickShuffledIndex(from)]);
+      return;
+    }
+    const isLast = from === tapeTracks.length - 1;
+    if (isLast && repeatMode !== "all") {
+      setIsPlaying(false);
+      return;
+    }
+    void playTrack(tapeTracks[(from + 1) % tapeTracks.length]);
+  }, [currentIndex, pickShuffledIndex, playTrack, repeatMode, shuffleOn, tapeTracks]);
+
+  /* Read inside the YouTube player's onStateChange, which is wired up once
+     when the player is created (see ytRef.current guard below) and would
+     otherwise keep calling a stale closure forever, same reasoning as
+     volumeRef just above. */
+  const trackEndedRef = useRef(() => {});
+  useEffect(() => {
+    trackEndedRef.current = handleTrackEnded;
+  }, [handleTrackEnded]);
 
   /* ------------------------------------------------- the YouTube player */
 
@@ -772,7 +876,7 @@ export default function SoundtrackScreen({
               setYtReady(true);
             },
             onStateChange: (event: { data: number }) => {
-              if (event.data === YT.PlayerState.ENDED) skipTo(1);
+              if (event.data === YT.PlayerState.ENDED) trackEndedRef.current();
               setIsBuffering(event.data === YT.PlayerState.BUFFERING);
               if (event.data === YT.PlayerState.PLAYING) setIsPlaying(true);
               if (event.data === YT.PlayerState.PAUSED) setIsPlaying(false);
@@ -791,7 +895,7 @@ export default function SoundtrackScreen({
     return () => {
       cancelled = true;
     };
-  }, [stage, tapeTracks, skipTo]);
+  }, [stage, tapeTracks]);
 
   /* A YouTube track can be picked before the iframe API has finished loading
      (or before a stray call throws pre-onReady, see playTrack). This effect
@@ -1315,41 +1419,91 @@ export default function SoundtrackScreen({
           </div>
 
           <div className="st-board-field">
-            {/* the stack of existing tapes */}
-            {boardTapes.length > 0 && (
-              <div className="st-stack">
-                {boardTapes.map((tape, i) => (
-                  <button
-                    key={tape.id}
-                    type="button"
-                    className="st-stack-item st-object"
-                    style={
-                      {
-                        "--i": i,
-                        "--rot": `${tape.tape_rotation}deg`,
-                      } as CSSProperties
-                    }
-                    onClick={() => {
-                      setActiveTapeId(tape.id);
-                      setDroppingTapeId(tape.id);
-                      setStage("dropping");
-                    }}
-                  >
-                    <Cassette
-                      title={tape.title}
-                      owner={nameFor(tape.created_by)}
-                      labelColor={tape.label_color}
-                      shellStyle={tape.shell_style}
-                    />
-                    <span className="st-object-caption">
-                      {trackCounts.get(tape.id) ?? 0} track
-                      {(trackCounts.get(tape.id) ?? 0) === 1 ? "" : "s"}
+            <div className="st-leftcol">
+              {/* the stack of existing tapes */}
+              {boardTapes.length > 0 && (
+                <div className="st-stack">
+                  {boardTapes.map((tape, i) => (
+                    <button
+                      key={tape.id}
+                      type="button"
+                      className="st-stack-item st-object"
+                      style={
+                        {
+                          "--i": i,
+                          "--rot": `${tape.tape_rotation}deg`,
+                        } as CSSProperties
+                      }
+                      onClick={() => {
+                        setActiveTapeId(tape.id);
+                        setDroppingTapeId(tape.id);
+                        setStage("dropping");
+                      }}
+                    >
+                      <Cassette
+                        title={tape.title}
+                        owner={nameFor(tape.created_by)}
+                        labelColor={tape.label_color}
+                        shellStyle={tape.shell_style}
+                      />
+                      <span className="st-object-caption">
+                        {trackCounts.get(tape.id) ?? 0} track
+                        {(trackCounts.get(tape.id) ?? 0) === 1 ? "" : "s"}
+                      </span>
+                    </button>
+                  ))}
+                  <span className="st-stack-caption">Existing tapes</span>
+                </div>
+              )}
+
+              {/* corkboard notes: filled in from data already on hand, no
+                  extra query - a running tally, and a quick-jump to whatever
+                  track landed on the board most recently. */}
+              {boardTapes.length > 0 && (
+                <div className="st-board-notes">
+                  <div className="st-tape-log">
+                    <span className="st-bugle-tape" aria-hidden />
+                    <span className="st-liner-kicker">
+                      <ListMusic className="w-3 h-3" strokeWidth={3} />
+                      Tape log
                     </span>
-                  </button>
-                ))}
-                <span className="st-stack-caption">Existing tapes</span>
-              </div>
-            )}
+                    <span className="st-tape-log-row">
+                      <strong>{boardTapes.length}</strong> tape{boardTapes.length === 1 ? "" : "s"}
+                    </span>
+                    <span className="st-tape-log-row">
+                      <strong>{tracks.length}</strong> track{tracks.length === 1 ? "" : "s"} filed
+                    </span>
+                    <span className="st-tape-log-row">
+                      <Clock className="w-3.5 h-3.5" strokeWidth={2.5} />
+                      {formatRuntime(totalRuntimeSeconds)} of tape banked
+                    </span>
+                  </div>
+
+                  {latestTrack && (
+                    <button
+                      type="button"
+                      className="st-fresh-track"
+                      onClick={() => openTrackDirect(latestTrack)}
+                    >
+                      <span className="st-bugle-tape" aria-hidden />
+                      <span className="st-liner-kicker">
+                        <Sparkles className="w-3 h-3" strokeWidth={3} />
+                        Fresh off the tape
+                      </span>
+                      <span className="st-fresh-track-title">{latestTrack.title}</span>
+                      <span className="st-fresh-track-sub">
+                        {latestTrack.artist ? `${latestTrack.artist} — ` : ""}
+                        {tapes.find((t) => t.id === latestTrack.mixtape_id)?.title ?? "a tape"}
+                      </span>
+                      <span className="st-bugle-cta">
+                        <Play className="w-3.5 h-3.5" strokeWidth={3} />
+                        play it
+                      </span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
 
             {/* the blank tape */}
             <button
@@ -1391,12 +1545,9 @@ export default function SoundtrackScreen({
               <span className="st-object-caption">Share</span>
             </button>
 
-            {/* the way out, twice, exactly like the reference board */}
+            {/* the way out */}
             <button type="button" className="st-exit st-exit-top st-object" onClick={onBack}>
               <TicketStub primary="Exit" secondary="back to contents" />
-            </button>
-            <button type="button" className="st-exit st-exit-bottom st-object" onClick={onBack}>
-              <TicketStub primary="Exit" secondary="table of contents" />
             </button>
           </div>
 
@@ -1696,6 +1847,16 @@ export default function SoundtrackScreen({
               <div className="st-controls">
                 <button
                   type="button"
+                  className={`st-neo st-neo-xs ${shuffleOn ? "st-neo-active" : ""}`}
+                  onClick={() => setShuffleOn((v) => !v)}
+                  aria-label="Shuffle"
+                  aria-pressed={shuffleOn}
+                >
+                  <Shuffle className="w-4 h-4" strokeWidth={2.5} />
+                </button>
+
+                <button
+                  type="button"
                   className="st-neo st-neo-sm"
                   onClick={() => skipTo(-1)}
                   aria-label="Previous track"
@@ -1725,6 +1886,21 @@ export default function SoundtrackScreen({
                   aria-label="Next track"
                 >
                   <SkipForward className="w-5 h-5" strokeWidth={2.5} />
+                </button>
+
+                <button
+                  type="button"
+                  className={`st-neo st-neo-xs ${repeatMode !== "off" ? "st-neo-active" : ""}`}
+                  onClick={() =>
+                    setRepeatMode((m) => (m === "off" ? "all" : m === "all" ? "one" : "off"))
+                  }
+                  aria-label={`Repeat: ${repeatMode === "off" ? "off" : repeatMode === "all" ? "all tracks" : "one track"}`}
+                >
+                  {repeatMode === "one" ? (
+                    <Repeat1 className="w-4 h-4" strokeWidth={2.5} />
+                  ) : (
+                    <Repeat className="w-4 h-4" strokeWidth={2.5} />
+                  )}
                 </button>
 
                 <label className="st-volume">
@@ -1782,7 +1958,7 @@ export default function SoundtrackScreen({
                   currentTrack?.source === "local" && currentTrack.media_type === "video" ? "st-local-on" : ""
                 }`}
                 playsInline
-                onEnded={() => skipTo(1)}
+                onEnded={handleTrackEnded}
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
               />
@@ -1819,7 +1995,7 @@ export default function SoundtrackScreen({
             </button>
           </section>
 
-          <audio ref={audioRef} onEnded={() => skipTo(1)} onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)} />
+          <audio ref={audioRef} onEnded={handleTrackEnded} onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)} />
         </div>
       )}
 
@@ -2071,7 +2247,7 @@ export default function SoundtrackScreen({
    terminates the template literal and produces a wall of errors far from the
    real line. */
 
-const SOUNDTRACK_CSS = `
+export const SOUNDTRACK_CSS = `
 .st-root {
   position: relative;
   min-height: 100svh;
@@ -2180,29 +2356,36 @@ const SOUNDTRACK_CSS = `
   display: grid;
   gap: 26px;
   grid-template-columns: 1fr;
-  grid-template-areas: 'stack' 'create' 'envelope' 'share';
+  grid-template-areas: 'leftcol' 'create' 'envelope' 'share';
   justify-items: center;
   padding: 18px 4px 48px;
 }
 @media (min-width: 900px) {
   .st-board-field {
-    /* The right-hand padding is the gutter the two ticket stubs live in, so an
-       absolutely positioned exit can never land on top of another object. */
+    /* The right-hand padding is the gutter the exit ticket stub lives in, so
+       an absolutely positioned exit can never land on top of another object. */
     grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, .95fr);
     grid-template-areas:
-      'stack create   share'
-      'stack envelope share';
+      'leftcol create   share'
+      'leftcol envelope share';
     grid-template-rows: auto auto;
     align-items: start;
     padding: 34px 176px 60px 4px;
   }
 }
-.st-stack { grid-area: stack; }
+.st-leftcol {
+  grid-area: leftcol;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+  width: min(330px, 86vw);
+}
 .st-create { grid-area: create; }
 .st-envelope-btn { grid-area: envelope; }
 .st-share-btn { grid-area: share; }
 
-.st-stack { position: relative; width: min(330px, 86vw); padding-bottom: 30px; }
+.st-stack { position: relative; width: 100%; padding-bottom: 30px; }
 .st-stack-item {
   display: block;
   width: 100%;
@@ -2250,10 +2433,8 @@ const SOUNDTRACK_CSS = `
 
 .st-exit { position: absolute; }
 .st-exit-top { top: 0; right: 4px; }
-.st-exit-bottom { bottom: 8px; right: 10px; }
 @media (max-width: 899px) {
   .st-exit-top { position: static; margin: 0 auto; display: block; }
-  .st-exit-bottom { display: none; }
 }
 .st-exit-deck { position: static; margin: 18px auto 0; display: block; }
 
@@ -2263,6 +2444,52 @@ const SOUNDTRACK_CSS = `
   font-size: 22px;
   color: #FFE7C6;
   padding-bottom: 30px;
+}
+
+/* corkboard notes under the tape stack - reuses the newsprint-card recipe
+   (.st-bugle/.st-liner, defined further down) via shared child classes, so
+   these two just need their own card shell and rotation. */
+.st-board-notes { display: flex; flex-direction: column; gap: 18px; width: 100%; }
+.st-tape-log, .st-fresh-track {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 16px 14px 14px;
+  text-align: left;
+  color: #241C14;
+  background-color: #F7F1E6;
+  background-image: radial-gradient(rgba(60, 40, 26, .10) .7px, transparent .8px);
+  background-size: 5px 5px;
+  border: 3px solid #FFFFFF;
+  box-shadow: 6px 8px 0 rgba(12, 7, 5, .55);
+  transform: rotate(-1deg);
+}
+.st-fresh-track {
+  transform: rotate(1.2deg);
+  cursor: pointer;
+  transition: transform .2s cubic-bezier(.34, 1.4, .64, 1);
+}
+.st-fresh-track:hover { transform: rotate(0deg) translateY(-3px); }
+.st-tape-log-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Space Grotesk', monospace;
+  font-size: 13px;
+  color: #4A3A2A;
+}
+.st-tape-log-row strong { font-size: 16px; color: #241C14; }
+.st-fresh-track-title {
+  font-family: 'Permanent Marker', cursive;
+  font-size: 18px;
+  line-height: 1.15;
+  margin-top: 4px;
+}
+.st-fresh-track-sub {
+  font-family: 'Caveat', cursive;
+  font-size: 17px;
+  color: #4A3A2A;
 }
 
 /* ------------------------------------------------------------- the cassette */
@@ -3056,6 +3283,13 @@ const SOUNDTRACK_CSS = `
 }
 .st-neo-primary:hover svg { animation: st-icon-pulse 1s ease-in-out infinite; }
 .st-neo-live { color: #A6121D; box-shadow: 4px 5px 0 rgba(12, 7, 5, .45), 0 0 16px 3px rgba(199, 52, 63, .45); }
+.st-neo-xs { width: 40px; height: 40px; }
+.st-neo-active {
+  color: #FBF6EC;
+  background: linear-gradient(145deg, #C7343F, #8E1D26);
+  box-shadow: 3px 4px 0 rgba(12, 7, 5, .45), 0 0 12px 2px rgba(199, 52, 63, .5),
+    inset 2px 2px 4px rgba(255, 255, 255, .35), inset -3px -3px 6px rgba(60, 10, 14, .4);
+}
 
 .st-volume {
   display: inline-flex;
@@ -3257,6 +3491,9 @@ const SOUNDTRACK_CSS = `
 
 .st-liner { transform: rotate(1.2deg); background-color: #F7F1E6; }
 .st-liner-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-family: 'Space Grotesk', monospace;
   font-size: 9px;
   font-weight: 900;
