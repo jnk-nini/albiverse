@@ -5,6 +5,8 @@ import {
   ArrowLeft,
   Bug,
   Check,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Feather,
   Flower2,
@@ -326,6 +328,15 @@ function draftFromLetter(l: Letter): Draft {
   };
 }
 
+const KEY_HINTS = [
+  { key: "N", what: "write a letter" },
+  { key: "R", what: "pick one for me" },
+  { key: "/", what: "search the jar" },
+  { key: "L", what: "candle on or off" },
+  { key: "[ ]", what: "dig through the pile" },
+  { key: "esc", what: "close what is open" },
+];
+
 /* ------------------------------------------------- jar packing geometry --- */
 
 /* Warm bulbs threaded down through the pile, following the wire drawn in the
@@ -342,70 +353,130 @@ const JAR_BULBS = [
   { x: 20, y: 86, delay: 1.5 },
 ];
 
-/* Kept in step with `.lj-jar-wrap { aspect-ratio }` and the ScrollGlyph viewBox. */
+/* Kept in step with `.lj-jar-wrap { aspect-ratio }` and `.lj-glass { inset }`.
+   Slots are positioned inside `.lj-field`, which fills the glass rather than the
+   whole jar, so width-to-height conversions use the glass's aspect and not the
+   jar's. Getting this wrong stretches the rolled ends into ovals. */
 const JAR_ASPECT = 0.74;
+const GLASS_TOP = 0.106;
+const FIELD_ASPECT = JAR_ASPECT / (1 - GLASS_TOP);
+/* the ScrollGlyph viewBox, drawn with preserveAspectRatio="none" */
 const SCROLL_RATIO = 220 / 64;
 
+/* All in percentages of the glass. */
+/* The pile rests clear of the jar's own label, which is pinned across the
+   bottom of the glass. Resting it on the true floor put the oldest letters
+   behind the label. */
+const PILE_FLOOR = 85;   // where the bottom of the pile rests
+const PILE_HEAD = 4;     // breathing room below the neck
+const PILE_WALL = 2;     // how close a roll may come to the glass
+const ROLL_MIN = 12;     // a roll narrower than this stops reading as a letter
+const ROLL_MAX = 46;
+const MAX_COLS = 6;
+
 interface Slot {
-  x: number;      // percent, centre
-  y: number;      // percent, centre
-  len: number;    // percent of jar width
-  thick: number;  // percent of jar height
+  x: number;      // percent of the glass width, centre
+  y: number;      // percent of the glass height, centre
+  len: number;    // percent of the glass width
+  thick: number;  // percent of the glass height
   rot: number;
   z: number;
+  half: number;   // half the rotated height, so the pile can be scrolled to it
 }
 
-/* Fills the jar from the floor up, oldest at the bottom, and squeezes the rows
-   closer together as the pile grows so the letters always stay inside the
-   glass instead of stacking out through the lid. */
-function computeSlots(ids: string[]): Record<string, Slot> {
+interface Pack {
+  slots: Record<string, Slot>;
+  /* How far the pile sticks up past the top of the glass, in glass-height
+     percent. The field is translated down by up to this much to dig through
+     it, which is what keeps the jar unbounded: rows are never squeezed
+     together to make a large pile fit, they just go off the top and the
+     reader scrolls to them. */
+  overflow: number;
+}
+
+const EMPTY_PACK: Pack = { slots: {}, overflow: 0 };
+
+/* Packs the letters into the jar from the floor up, oldest at the bottom.
+   Every roll is fully inside the glass, no roll is ever covered by one sitting
+   lower than it, and the pile is allowed to grow taller than the jar. */
+function computeSlots(ids: string[]): Pack {
   const n = ids.length;
-  const out: Record<string, Slot> = {};
-  if (n === 0) return out;
+  if (n === 0) return EMPTY_PACK;
 
-  const cols = n <= 3 ? 2 : n <= 8 ? 3 : n <= 16 ? 4 : 5;
+  const cols = Math.min(MAX_COLS, Math.max(1, Math.round(Math.sqrt(n * 1.2))));
   const rows = Math.ceil(n / cols);
+  const usable = 100 - PILE_WALL * 2;
+  const cellW = usable / cols;
 
-  const FLOOR = 93;
-  const CEIL = 7;
-  const cellW = 86 / cols;
-  // Rows overlap rather than sitting in a grid, and the whole stack hugs the
-  // floor, so the pile reads as letters dropped on top of each other and
-  // settled by gravity instead of a shelf of them floating mid-jar.
-  const rowStep = Math.min(13.5, (FLOOR - CEIL) / rows);
-
-  ids.forEach((id, i) => {
+  /* pass 1: how big each roll is, and how tall each row ends up */
+  const built = ids.map((id, i) => {
     const row = Math.floor(i / cols);
-    const col = i % cols;
-    const baseX = 7 + (col + 0.5) * cellW;
-    const baseY = FLOOR - (row + 0.5) * rowStep;
+    const rowFrac = rows === 1 ? 1 : row / (rows - 1);
+    const len = Math.min(ROLL_MAX, Math.max(ROLL_MIN, cellW * randRange(id, 3, 0.98, 1.28)));
+    const thick = (len * FIELD_ASPECT) / SCROLL_RATIO;
+    /* Rolls at the bottom have been pressed flat by the ones on top; the loose
+       ones near the surface can sit at more of an angle. */
+    const rot = randRange(id, 4, -34, 34) * (0.35 + 0.65 * rowFrac);
 
-    const len = cellW * randRange(id, 3, 1.18, 1.52);
-    // keep the roll inside the glass: an unrotated one hanging half out of the
-    // jar reads as a rendering bug, not as a letter pressed against the side
-    const margin = Math.min(24, len / 2);
+    const rad = (rot * Math.PI) / 180;
+    const sin = Math.abs(Math.sin(rad));
+    const cos = Math.abs(Math.cos(rad));
+    /* the rotated bounding box, which is what actually has to clear the glass */
+    const halfW = (len / 2) * cos + (thick / (2 * FIELD_ASPECT)) * sin;
+    const halfH = ((len * FIELD_ASPECT) / 2) * sin + (thick / 2) * cos;
+    return { id, i, row, len, thick, rot, halfW, halfH };
+  });
 
-    out[id] = {
-      x: Math.max(
-        margin,
-        Math.min(100 - margin, baseX + randRange(id, 1, -cellW * 0.3, cellW * 0.3))
-      ),
-      y: baseY + randRange(id, 2, -rowStep * 0.26, rowStep * 0.26),
-      len,
-      /* The scroll is drawn on a 220x64 viewBox with preserveAspectRatio="none",
-         so its box has to keep that ratio or the rolled ends stretch into
-         ovals. The jar's own aspect is pinned in CSS, which lets the
-         conversion from a width percentage to a height percentage be a
-         constant rather than something measured at runtime. */
-      thick: len * JAR_ASPECT / SCROLL_RATIO,
-      /* The rolls at the bottom of the pile have been pressed flat by the
-         ones on top; the loose ones near the surface can lie at any angle. */
-      rot: randRange(id, 4, -46, 46) * (0.45 + 0.55 * (row / Math.max(1, rows - 1))),
-      z: 10 + (rows - row) * 2 + (i % 3),
+  const rowHalf: number[] = [];
+  built.forEach((b) => {
+    rowHalf[b.row] = Math.max(rowHalf[b.row] ?? 0, b.halfH);
+  });
+
+  /* pass 2: stack the rows, each one resting on the one below with a little
+     overlap so it reads as a settled pile rather than a set of shelves */
+  const rowY: number[] = [];
+  for (let r = 0; r < rows; r++) {
+    rowY[r] =
+      r === 0
+        ? PILE_FLOOR - rowHalf[0]
+        : rowY[r - 1] - (rowHalf[r - 1] + rowHalf[r]) * 0.78;
+  }
+
+  const slots: Record<string, Slot> = {};
+  built.forEach((b) => {
+    /* A short final row is centred. Left-aligning it stranded the last letter
+       on its own against the glass, which is what made a fourth letter look
+       like a rendering fault rather than part of the pile. */
+    const inRow = Math.min(cols, n - b.row * cols);
+    const offset = ((cols - inRow) * cellW) / 2;
+    const col = b.i % cols;
+    /* Alternate rows sit half a roll across from each other. Without this the
+       columns line up and the pile reads as brickwork instead of letters that
+       fell where they fell. */
+    const stagger = b.row % 2 === 1 ? cellW * 0.3 : 0;
+    const baseX = PILE_WALL + offset + stagger + (col + 0.5) * cellW;
+
+    const jitterX = randRange(b.id, 1, -cellW * 0.24, cellW * 0.24);
+    const jitterY = randRange(b.id, 2, -rowHalf[b.row] * 0.3, rowHalf[b.row] * 0.3);
+
+    const lo = PILE_WALL + b.halfW;
+    const hi = 100 - PILE_WALL - b.halfW;
+
+    slots[b.id] = {
+      x: hi <= lo ? 50 : Math.max(lo, Math.min(hi, baseX + jitterX)),
+      y: rowY[b.row] + jitterY,
+      len: b.len,
+      thick: b.thick,
+      rot: b.rot,
+      /* Strictly increasing, so a letter can never be hidden behind one that
+         sits lower in the pile, and the newest always lands on top. */
+      z: 10 + b.i,
+      half: b.halfH,
     };
   });
 
-  return out;
+  const top = Math.min(...built.map((b) => (slots[b.id]?.y ?? 0) - b.halfH));
+  return { slots, overflow: Math.max(0, PILE_HEAD - top) };
 }
 
 
@@ -441,6 +512,13 @@ export default function LetterJarScreen({
   /* Only a letter that was still sealed gets the petal shower, so re-reading an
      old one stays quiet. */
   const [brokeSeal, setBrokeSeal] = useState(false);
+  /* The shortcut handler is mounted before these actions are declared, so it
+     reaches them through refs kept current below rather than re-subscribing on
+     every render. */
+  const startNewLetterRef = useRef<() => void>(() => {});
+  const pickRandomRef = useRef<() => void>(() => {});
+  const toggleLightsRef = useRef<() => void>(() => {});
+
   const [lightsOn, setLightsOn] = useState(true);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
@@ -703,7 +781,73 @@ export default function LetterJarScreen({
     });
   }, [letters, filter, search, userId, myMarks, now]);
 
-  const slots = useMemo(() => computeSlots(visible.map((l) => l.id)), [visible]);
+  const pack = useMemo(() => computeSlots(visible.map((l) => l.id)), [visible]);
+  const slots = pack.slots;
+
+  /* ------------------------------------------- digging through the pile --- */
+  /* How far the pile has been pushed down, in glass-height percent. 0 shows the
+     bottom of the pile (the oldest letters); pack.overflow shows the very top.
+     Anything past what the glass can hold is reachable this way, so the jar
+     takes as many letters as they care to write. */
+  const [dig, setDig] = useState(0);
+  const digRef = useRef(0);
+  const glassRef = useRef<HTMLDivElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const draggedRef = useRef(false);
+
+  const setDigClamped = useCallback(
+    (next: number) => {
+      const v = Math.max(0, Math.min(pack.overflow, next));
+      digRef.current = v;
+      setDig(v);
+    },
+    [pack.overflow]
+  );
+
+  /* A shorter pile after a filter change must not leave the view stranded
+     somewhere above the letters. */
+  useEffect(() => {
+    if (digRef.current > pack.overflow) setDigClamped(pack.overflow);
+  }, [pack.overflow, setDigClamped]);
+
+  /* Wheel has to be bound by hand: React's onWheel is passive, so it cannot
+     stop the page from scrolling away underneath the jar. */
+  useEffect(() => {
+    const el = glassRef.current;
+    if (!el || pack.overflow <= 0.5) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      setDigClamped(digRef.current + Math.sign(e.deltaY) * -6);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [pack.overflow, setDigClamped]);
+
+  /* Scrolls a letter into the glass, so tabbing through the pile or jumping to
+     one from the index can never land on something out of sight. */
+  const revealSlot = useCallback(
+    (slot: Slot | undefined) => {
+      if (!slot || pack.overflow <= 0.5) return;
+      const top = slot.y - slot.half + digRef.current;
+      const bottom = slot.y + slot.half + digRef.current;
+      if (top < PILE_HEAD) setDigClamped(digRef.current + (PILE_HEAD - top));
+      else if (bottom > PILE_FLOOR) setDigClamped(digRef.current - (bottom - PILE_FLOOR));
+    },
+    [pack.overflow, setDigClamped]
+  );
+
+  /* Where the sealed letters are sitting, as a fraction down the whole pile, so
+     the depth rail can show that there is something unread further up. */
+  const digMarks = useMemo(() => {
+    if (pack.overflow <= 0.5) return [];
+    return visible
+      .filter((l) => !myMarks[l.id]?.opened_at && slots[l.id])
+      .map((l) => {
+        const s = slots[l.id];
+        const d = Math.max(0, Math.min(pack.overflow, PILE_HEAD - (s.y - s.half)));
+        return { id: l.id, at: 100 - (d / pack.overflow) * 100 };
+      });
+  }, [visible, myMarks, slots, pack.overflow]);
 
   const stats = useMemo(() => {
     const sealed = letters.filter((l) => !myMarks[l.id]?.opened_at).length;
@@ -718,6 +862,31 @@ export default function LetterJarScreen({
     () => letters.filter((l) => myMarks[l.id]?.is_favorite),
     [letters, myMarks]
   );
+
+  /* The most recent letter the other one wrote that has not been opened yet.
+     It gets a flag on it, so the one thing you would actually be sad to miss
+     is never just another roll in the pile. Letters load oldest first. */
+  const newestUnreadId = useMemo(() => {
+    for (let i = letters.length - 1; i >= 0; i--) {
+      const l = letters[i];
+      if (l.sender_id === userId) continue;
+      if (myMarks[l.id]?.opened_at) continue;
+      if (isLocked(l)) continue;
+      return l.id;
+    }
+    return null;
+  }, [letters, myMarks, userId, isLocked]);
+
+  /* On the first paint of a full jar, dig straight to that letter. Otherwise a
+     tall pile opens on its oldest letters and the new one sits out of sight
+     above the glass. */
+  const didReveal = useRef(false);
+  useEffect(() => {
+    if (didReveal.current || loading || pack.overflow <= 0.5) return;
+    if (!newestUnreadId || !slots[newestUnreadId]) return;
+    didReveal.current = true;
+    revealSlot(slots[newestUnreadId]);
+  }, [loading, pack.overflow, newestUnreadId, slots, revealSlot]);
 
   const active = activeId ? letters.find((l) => l.id === activeId) ?? null : null;
 
@@ -861,6 +1030,49 @@ export default function LetterJarScreen({
     return () => window.removeEventListener("keydown", onKey);
   }, [activeId, closeLetter, composerOpen, confirmDelete]);
 
+  /* Single-key shortcuts for the things worth reaching for without the mouse.
+     They stay out of the way of any field being typed into, and of the reader
+     and composer while either is up. */
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (composerOpen || activeId || confirmDelete) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+
+      switch (e.key) {
+        case "n":
+          e.preventDefault();
+          startNewLetterRef.current();
+          break;
+        case "r":
+          e.preventDefault();
+          pickRandomRef.current();
+          break;
+        case "l":
+          e.preventDefault();
+          toggleLightsRef.current();
+          break;
+        case "/":
+          e.preventDefault();
+          searchRef.current?.focus();
+          break;
+        case "[":
+          e.preventDefault();
+          setDigClamped(digRef.current - 14);
+          break;
+        case "]":
+          e.preventDefault();
+          setDigClamped(digRef.current + 14);
+          break;
+        default:
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeId, composerOpen, confirmDelete, setDigClamped]);
+
   /* ----------------------------------------------------------- actions ---- */
 
   const [runPickRandom] = useGuardedAction(() => {
@@ -934,6 +1146,13 @@ export default function LetterJarScreen({
   };
 
   const startNewLetter = () => openComposer(emptyDraft());
+
+  /* keeps the shortcut handler pointed at the current closures */
+  useEffect(() => {
+    startNewLetterRef.current = startNewLetter;
+    pickRandomRef.current = () => runPickRandom();
+    toggleLightsRef.current = toggleLights;
+  });
 
   const startEdit = (l: Letter) => {
     if (l.sender_id !== userId) {
@@ -1047,9 +1266,9 @@ export default function LetterJarScreen({
     []
   );
 
-  /* Three loose rolls resting on the board. They are decoration, so they take
-     their look from whatever is actually in the jar when there is anything. */
-  const loose = useMemo(() => visible.slice(0, 3), [visible]);
+  /* The three most recent rolls, tipped out onto the desk beside the jar. The
+     letters load oldest first, so the newest are at the end. */
+  const loose = useMemo(() => visible.slice(-3), [visible]);
 
   return (
     <main
@@ -1065,8 +1284,34 @@ export default function LetterJarScreen({
         <div className="lj-bg-wall" />
         <div className="lj-bg-paper" />
         <div className="lj-bg-window" />
+        <span className="lj-bg-rain" />
         <div className="lj-bg-beam" />
+
+        {/* the room's own furniture, so the wall is not a flat colour field */}
+        <span className="lj-bg-rail" />
+        <span className="lj-bg-skirt" />
         <div className="lj-bg-shelf" />
+        <span className="lj-bg-shelf-jar" />
+        <span className="lj-bg-shelf-book" />
+        <span className="lj-bg-shelf-book second" />
+
+        {/* two crooked frames, hung off the picture rail */}
+        <span className="lj-bg-frame lj-bg-frame-a">
+          <span className="lj-bg-frame-mat" />
+          <span className="lj-bg-frame-wire" />
+        </span>
+        <span className="lj-bg-frame lj-bg-frame-b">
+          <span className="lj-bg-frame-mat" />
+          <span className="lj-bg-frame-wire" />
+        </span>
+
+        {/* the lamp that is doing all the lighting in here */}
+        <span className="lj-bg-lamp">
+          <span className="lj-bg-lamp-flex" />
+          <span className="lj-bg-lamp-shade" />
+          <span className="lj-bg-lamp-bulb" />
+        </span>
+        <span className="lj-bg-lampcone" />
 
         {/* Gwen and Peter swinging far back in the dark. Optional art: if the
             file is missing the scene simply loses two silhouettes. */}
@@ -1175,13 +1420,21 @@ export default function LetterJarScreen({
       <div className="lj-columns">
         {/* ------------------------------ left: the writing desk collage --- */}
         <aside className="lj-rail lj-rail-l">
-          <button onClick={startNewLetter} className="lj-write-card group" type="button">
-            <span className="lj-write-thwip">THWIP!</span>
-            <span className="lj-write-flap" />
-            <span className="lj-write-seal">
+          <button onClick={startNewLetter} className="lj-write-card" type="button">
+            {/* Everything that has to be clipped to the envelope's rounded
+                corners lives in here. The badge and the seal sit outside it so
+                they are not sliced off by the overflow. */}
+            <span className="lj-write-paper" aria-hidden>
+              <span className="lj-write-flap" />
+              <span className="lj-write-rules" />
+            </span>
+
+            <span className="lj-write-thwip" aria-hidden>THWIP!</span>
+            <span className="lj-write-seal" aria-hidden>
               <Feather className="w-4 h-4" />
             </span>
-            <span className="block relative z-10">
+
+            <span className="lj-write-text">
               <span className="block font-marker text-2xl leading-none">Write a letter</span>
               <span className="block font-mono text-[9px] tracking-[.18em] opacity-85 mt-1.5">
                 ROLL IT UP AND DROP IT IN
@@ -1203,14 +1456,26 @@ export default function LetterJarScreen({
           <div className="lj-card lj-card-find">
             <span className="lj-tape-strip lj-tape-strip-a" aria-hidden />
             <span className="lj-card-title">FIND A LETTER</span>
-            <div className="relative mt-2">
-              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[#7D2834]" />
+            <div className="lj-search mt-2">
+              <Search className="lj-search-icon w-3.5 h-3.5" />
               <input
+                ref={searchRef}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="title, tag or words..."
-                className="lj-input pl-8"
+                className="lj-input"
+                aria-label="Search the letters"
               />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => setSearch("")}
+                  className="lj-search-clear"
+                  aria-label="Clear the search"
+                >
+                  <X className="w-3 h-3" strokeWidth={3} />
+                </button>
+              )}
             </div>
 
             <span className="lj-card-title mt-4 block">THE PILE</span>
@@ -1246,6 +1511,19 @@ export default function LetterJarScreen({
               {stats.locked > 0 && <CountChip label="locked" value={stats.locked} tone="ink" />}
             </div>
           </div>
+
+          {/* a scrap of paper pinned up with the shortcuts on it */}
+          <div className="lj-keys">
+            <span className="lj-card-title">WITHOUT THE MOUSE</span>
+            <ul className="lj-keys-list">
+              {KEY_HINTS.map((k) => (
+                <li key={k.key}>
+                  <kbd className="lj-kbd">{k.key}</kbd>
+                  <span>{k.what}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </aside>
 
         {/* ------------------------------------- centre: the jar, the hero --- */}
@@ -1280,12 +1558,54 @@ export default function LetterJarScreen({
                 tone="#DED3B4"
                 stem="#7E8A62"
               />
-              <CandleJar className="lj-candle" />
-              <WaxEnvelope className="lj-envelope" wax="#7D2834" />
-              <TiedBundle className="lj-bundle" />
+              {/* Everything standing on the desk does something. Leaving them as
+                  scenery made the room read as a painted backdrop, and it wasted
+                  the most reachable targets on the screen. */}
+              <Prop
+                className="lj-prop lj-prop-candle"
+                label={lightsOn ? "Blow the candle out" : "Light the candle"}
+                onClick={toggleLights}
+              >
+                <CandleJar className="lj-candle" />
+              </Prop>
 
+              <Prop
+                className="lj-prop lj-prop-envelope"
+                label="Start a new letter"
+                onClick={startNewLetter}
+              >
+                <WaxEnvelope className="lj-envelope" wax="#7D2834" />
+              </Prop>
+
+              <Prop
+                className="lj-prop lj-prop-bundle"
+                label={`The keepsakes${stats.keepsakes ? ` (${stats.keepsakes})` : ""}`}
+                onClick={() => setFilter(filter === "keepsakes" ? "all" : "keepsakes")}
+              >
+                <TiedBundle className="lj-bundle" />
+                {stats.keepsakes > 0 && (
+                  <span className="lj-prop-count font-mono">{stats.keepsakes}</span>
+                )}
+              </Prop>
+
+              {/* The three newest letters, spilled out beside the jar. These are
+                  real letters, so they open like any roll in the glass. */}
               {loose.map((l, i) => (
-                <span key={l.id} className={`lj-loose lj-loose-${i + 1}`} aria-hidden>
+                <button
+                  key={l.id}
+                  type="button"
+                  className={`lj-loose lj-loose-${i + 1} ${
+                    !myMarks[l.id]?.opened_at ? "is-sealed" : ""
+                  }`}
+                  onClick={(e) => openLetter(l, e.currentTarget)}
+                  onMouseEnter={() => setHovered(l.id)}
+                  onMouseLeave={() => setHovered((h) => (h === l.id ? null : h))}
+                  onFocus={() => setHovered(l.id)}
+                  onBlur={() => setHovered((h) => (h === l.id ? null : h))}
+                  aria-label={`${
+                    !myMarks[l.id]?.opened_at ? "Sealed letter" : "Letter"
+                  }: ${l.title}, from ${nameOf(l.sender_id)}`}
+                >
                   <ScrollGlyph
                     paperId={l.theme_style}
                     ribbon={l.ribbon_color}
@@ -1296,21 +1616,27 @@ export default function LetterJarScreen({
                     sealed={!myMarks[l.id]?.opened_at}
                     className="w-full h-full"
                   />
-                </span>
+                </button>
               ))}
 
               {/* ------------------------------------------- the jar --- */}
               <div className={`lj-jar-wrap ${jarFx ? `fx-${jarFx}` : ""}`}>
                 <span className="lj-jar-cast" aria-hidden />
 
-                <CorkLid className="lj-lid" />
+                <Prop
+                  className="lj-prop lj-prop-lid"
+                  label="Shake the jar"
+                  onClick={() => runPickRandom()}
+                >
+                  <CorkLid className="lj-lid-art" />
+                </Prop>
                 <div className="lj-neck" aria-hidden>
                   <span className="lj-neck-thread" />
                   <span className="lj-neck-thread second" />
                   <span className="lj-neck-lip" />
                 </div>
 
-                <div className="lj-glass">
+                <div className="lj-glass" ref={glassRef}>
                   <span className="lj-glass-back" aria-hidden />
                   <span className="lj-glass-glow" aria-hidden />
 
@@ -1339,7 +1665,44 @@ export default function LetterJarScreen({
                       />
                     ))}
 
-                  <div className="lj-field">
+                  <div
+                    className={`lj-field ${dragging ? "is-dragging" : ""}`}
+                    style={{ ["--pile" as string]: `${dig}%` }}
+                    onPointerDown={(e) => {
+                      if (pack.overflow <= 0.5) return;
+                      const startY = e.clientY;
+                      const startDig = digRef.current;
+                      const h = glassRef.current?.getBoundingClientRect().height ?? 1;
+                      const el = e.currentTarget;
+                      let moved = false;
+                      const move = (ev: PointerEvent) => {
+                        const d = ev.clientY - startY;
+                        if (!moved && Math.abs(d) > 4) {
+                          moved = true;
+                          setDragging(true);
+                          el.setPointerCapture(ev.pointerId);
+                        }
+                        if (moved) setDigClamped(startDig + (d / h) * 100);
+                      };
+                      const up = () => {
+                        window.removeEventListener("pointermove", move);
+                        window.removeEventListener("pointerup", up);
+                        setDragging(false);
+                        /* A drag must not also count as opening whatever was
+                           under the finger when it started. The click lands
+                           right after pointerup, so the guard is dropped on the
+                           next frame rather than immediately. */
+                        if (moved) {
+                          draggedRef.current = true;
+                          window.setTimeout(() => {
+                            draggedRef.current = false;
+                          }, 0);
+                        }
+                      };
+                      window.addEventListener("pointermove", move);
+                      window.addEventListener("pointerup", up);
+                    }}
+                  >
                     {visible.map((l) => {
                       const slot = slots[l.id];
                       if (!slot) return null;
@@ -1353,21 +1716,30 @@ export default function LetterJarScreen({
                             scrollRefs.current[l.id] = el;
                           }}
                           type="button"
-                          onClick={(e) => openLetter(l, e.currentTarget)}
+                          onClick={(e) => {
+                            if (draggedRef.current) return;
+                            openLetter(l, e.currentTarget);
+                          }}
                           onMouseEnter={() => setHovered(l.id)}
                           onMouseLeave={() => setHovered((h) => (h === l.id ? null : h))}
-                          onFocus={() => setHovered(l.id)}
+                          onFocus={() => {
+                            setHovered(l.id);
+                            revealSlot(slot);
+                          }}
                           onBlur={() => setHovered((h) => (h === l.id ? null : h))}
                           aria-label={`${sealed ? "Sealed letter" : "Letter"}: ${l.title}, from ${nameOf(l.sender_id)}`}
                           className={`lj-scroll ${sealed ? "is-sealed" : ""} ${locked ? "is-locked" : ""} ${
                             isActive ? "is-out" : ""
-                          } ${myMarks[l.id]?.is_favorite ? "is-keepsake" : ""}`}
+                          } ${myMarks[l.id]?.is_favorite ? "is-keepsake" : ""} ${
+                            l.id === newestUnreadId ? "is-newest" : ""
+                          }`}
                           style={{
                             left: `${slot.x}%`,
                             top: `${slot.y}%`,
                             width: `${slot.len}%`,
                             height: `${slot.thick}%`,
-                            zIndex: hovered === l.id ? 60 : slot.z,
+                            zIndex:
+                              hovered === l.id ? 60 : l.id === newestUnreadId ? 55 : slot.z,
                             ["--rot" as string]: `${slot.rot}deg`,
                           }}
                         >
@@ -1384,6 +1756,11 @@ export default function LetterJarScreen({
                           {locked && (
                             <span className="lj-scroll-lock">
                               <Lock className="w-2.5 h-2.5" strokeWidth={3} />
+                            </span>
+                          )}
+                          {l.id === newestUnreadId && !locked && (
+                            <span className="lj-scroll-new font-mono" aria-hidden>
+                              NEW
                             </span>
                           )}
                         </button>
@@ -1403,12 +1780,66 @@ export default function LetterJarScreen({
                     </div>
                   )}
 
+                  {/* Hints that the pile carries on past the glass. Without
+                      these a full jar looks like the whole collection. */}
+                  {pack.overflow > 0.5 && dig < pack.overflow - 0.5 && (
+                    <span className="lj-more top" aria-hidden />
+                  )}
+                  {pack.overflow > 0.5 && dig > 0.5 && (
+                    <span className="lj-more bottom" aria-hidden />
+                  )}
+
                   {/* the glass itself, laid over whatever is inside it */}
                   <span className="lj-glass-sheen" aria-hidden />
                   <span className="lj-glass-sheen second" aria-hidden />
                   <span className="lj-glass-curve" aria-hidden />
                   <span className="lj-glass-floor" aria-hidden />
                 </div>
+
+                {/* ------------------------------------ digging control --- */}
+                {pack.overflow > 0.5 && (
+                  <div className="lj-dig" role="group" aria-label="Dig through the pile">
+                    <button
+                      type="button"
+                      className="lj-dig-btn"
+                      onClick={() => setDigClamped(digRef.current + 14)}
+                      disabled={dig >= pack.overflow - 0.5}
+                      aria-label="Look higher up the pile"
+                      title="Higher up the pile"
+                    >
+                      <ChevronUp className="w-3.5 h-3.5" strokeWidth={3} />
+                    </button>
+
+                    <div className="lj-dig-rail">
+                      <span
+                        className="lj-dig-thumb"
+                        style={{ top: `${100 - (dig / pack.overflow) * 100}%` }}
+                        aria-hidden
+                      />
+                      {digMarks.map((m) => (
+                        <span
+                          key={m.id}
+                          className="lj-dig-mark"
+                          style={{ top: `${m.at}%` }}
+                          aria-hidden
+                        />
+                      ))}
+                    </div>
+
+                    <button
+                      type="button"
+                      className="lj-dig-btn"
+                      onClick={() => setDigClamped(digRef.current - 14)}
+                      disabled={dig <= 0.5}
+                      aria-label="Look lower down the pile"
+                      title="Lower down the pile"
+                    >
+                      <ChevronDown className="w-3.5 h-3.5" strokeWidth={3} />
+                    </button>
+
+                    <span className="lj-dig-hint font-mono">DIG</span>
+                  </div>
+                )}
 
                 <TwineBow className="lj-twine" />
                 <HeartTag className="lj-hangtag" />
@@ -1731,6 +2162,30 @@ export default function LetterJarScreen({
 
 /* A count as a little enamel chip rather than another line in a list, so the
    panel reads as a set of objects instead of a stack of rows. */
+/* Turns one of the drawn objects on the desk into a real control: a button with
+   no chrome of its own, a hand-lettered tag on hover, and a press that pushes
+   the object into the desk rather than moving a box around it. */
+function Prop({
+  className,
+  label,
+  onClick,
+  children,
+}: {
+  className: string;
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button type="button" className={className} onClick={onClick} aria-label={label}>
+      {children}
+      <span className="lj-prop-tag font-mono" aria-hidden>
+        {label}
+      </span>
+    </button>
+  );
+}
+
 function CountChip({ label, value, tone }: { label: string; value: number; tone: string }) {
   return (
     <span className={`lj-chip lj-chip-${tone}`}>
@@ -2745,6 +3200,131 @@ function ScopedStyles() {
         transform: rotate(-1.2deg) translate3d(calc(var(--mx) * 10px), calc(var(--my) * 5px), 0);
       }
 
+      /* ------------------------------------------------ the rest of the room */
+      /* Rain running down the window. One repeating gradient shifted on the Y
+         axis, so the whole effect is a single compositor-side transform. */
+      .lj-bg-rain {
+        position: absolute; left: 4%; top: -6%; width: 30%; height: 62%;
+        opacity: .5;
+        background: repeating-linear-gradient(
+          188deg,
+          transparent 0 12px,
+          rgba(214,232,240,.16) 12px 13px,
+          transparent 13px 34px
+        );
+        transform: skewY(6deg) translate3d(calc(var(--mx) * -14px), 0, 0);
+        animation: lj-rain 2.6s linear infinite;
+      }
+      @keyframes lj-rain {
+        to { transform: skewY(6deg) translate3d(calc(var(--mx) * -14px), 34px, 0); }
+      }
+      .lights-off .lj-bg-rain { opacity: .26; }
+
+      /* a picture rail and a skirting board, which is most of what stops a wall
+         reading as a flat colour field */
+      .lj-bg-rail {
+        position: absolute; left: 0; right: 0; top: 13%; height: 7px;
+        background: linear-gradient(#4A3122, #26170F 60%, #150C09);
+        box-shadow: 0 5px 14px rgba(0,0,0,.55);
+        opacity: .85;
+      }
+      .lj-bg-skirt {
+        position: absolute; left: 0; right: 0; bottom: 0; height: 74px;
+        background:
+          linear-gradient(#2B1A1E 0 6px, transparent 6px),
+          linear-gradient(180deg, #241519, #150D10 70%, #0C0709);
+        box-shadow: 0 -12px 30px rgba(0,0,0,.5);
+      }
+
+      /* whatever is standing on the shelf */
+      .lj-bg-shelf-jar {
+        position: absolute; right: 9%; top: calc(16% - 42px);
+        width: 30px; height: 44px; border-radius: 4px 4px 8px 8px;
+        background: linear-gradient(112deg, rgba(206,226,222,.16), rgba(160,186,182,.05) 46%, rgba(206,226,222,.18));
+        box-shadow: inset 0 -10px 14px rgba(0,0,0,.3);
+        border: 1px solid rgba(178,198,197,.2);
+        transform: rotate(-1.2deg) translate3d(calc(var(--mx) * 10px), calc(var(--my) * 5px), 0);
+      }
+      .lj-bg-shelf-book {
+        position: absolute; right: 20%; top: calc(16% - 54px);
+        width: 13px; height: 56px; border-radius: 2px;
+        background: linear-gradient(#5A2029, #35121A);
+        transform: rotate(-1.2deg) translate3d(calc(var(--mx) * 10px), calc(var(--my) * 5px), 0);
+      }
+      .lj-bg-shelf-book.second {
+        right: calc(20% + 16px); height: 48px; top: calc(16% - 46px);
+        background: linear-gradient(#4A3A22, #281D10);
+      }
+
+      /* two frames, hung crooked off the rail */
+      .lj-bg-frame {
+        position: absolute; border: 5px solid #3A2A1C; border-radius: 2px;
+        background: #150E11;
+        box-shadow: 0 14px 26px rgba(0,0,0,.6), inset 0 0 0 2px rgba(0,0,0,.5);
+      }
+      .lj-bg-frame-mat {
+        position: absolute; inset: 5px;
+        background:
+          repeating-linear-gradient(52deg, rgba(255,255,255,.03) 0 3px, transparent 3px 7px),
+          linear-gradient(150deg, #3E2B31, #1E1418 70%);
+      }
+      .lj-bg-frame-wire {
+        position: absolute; left: 50%; bottom: 100%; translate: -50% 0;
+        width: 1px; height: 34px;
+        background: linear-gradient(rgba(120,96,70,.7), rgba(120,96,70,.25));
+      }
+      .lj-bg-frame-a {
+        left: 41%; top: calc(13% + 34px); width: 96px; height: 122px;
+        rotate: -2.4deg;
+        transform: translate3d(calc(var(--mx) * -6px), calc(var(--my) * -4px), 0);
+      }
+      .lj-bg-frame-b {
+        left: 53%; top: calc(13% + 52px); width: 74px; height: 62px;
+        rotate: 3deg;
+        transform: translate3d(calc(var(--mx) * -8px), calc(var(--my) * -5px), 0);
+      }
+
+      /* the lamp doing the lighting, and the pool it throws */
+      .lj-bg-lamp {
+        position: absolute; right: 22%; top: 0; width: 86px; height: 190px;
+        transform: translate3d(calc(var(--mx) * 12px), 0, 0);
+      }
+      .lj-bg-lamp-flex {
+        position: absolute; left: 50%; top: 0; translate: -50% 0;
+        width: 3px; height: 118px;
+        background: linear-gradient(rgba(90,72,54,.5), #3A2A1C);
+      }
+      .lj-bg-lamp-shade {
+        position: absolute; left: 50%; top: 112px; translate: -50% 0;
+        width: 86px; height: 48px;
+        background: linear-gradient(168deg, #5E3A22, #33200F 70%);
+        border-radius: 6px 6px 46% 46% / 6px 6px 22% 22%;
+        clip-path: polygon(34% 0, 66% 0, 100% 100%, 0 100%);
+        box-shadow: 0 10px 26px rgba(0,0,0,.6);
+      }
+      .lj-bg-lamp-bulb {
+        position: absolute; left: 50%; top: 154px; translate: -50% 0;
+        width: 22px; height: 22px; border-radius: 999px;
+        background: radial-gradient(circle at 40% 34%, #FFF2CE, #FFC078 62%, rgba(200,130,60,.4));
+        box-shadow: 0 0 26px 10px rgba(255,196,128,.45);
+        transition: opacity .45s ease;
+      }
+      .lj-bg-lampcone {
+        position: absolute; right: 6%; top: 150px; width: 52%; height: 74%;
+        background: linear-gradient(184deg, rgba(255,206,150,.14), rgba(255,186,120,.04) 42%, transparent 70%);
+        clip-path: polygon(46% 0, 54% 0, 100% 100%, 0 100%);
+        transform: translate3d(calc(var(--mx) * 10px), 0, 0);
+        transition: opacity .45s ease;
+      }
+      .lights-off .lj-bg-lamp-bulb { opacity: .22; box-shadow: none; }
+      .lights-off .lj-bg-lampcone { opacity: .12; }
+
+      @media (max-width: 1023px) {
+        .lj-bg-frame, .lj-bg-lamp, .lj-bg-lampcone,
+        .lj-bg-shelf-jar, .lj-bg-shelf-book { display: none; }
+      }
+      @media (prefers-reduced-motion: reduce) { .lj-bg-rain { animation: none; } }
+
       .lj-swinger {
         position: absolute; width: 190px; opacity: .12;
         filter: brightness(0.35) contrast(1.3);
@@ -2908,9 +3488,9 @@ function ScopedStyles() {
          it. The low, wide ones stay; the standing bunches step out. */
       @media (max-width: 1023px) {
         .lj-bunch { display: none; }
-        .lj-envelope { width: 128px; left: -2%; }
-        .lj-bundle { width: 118px; right: -3%; }
-        .lj-candle { width: 66px; right: 6%; }
+        .lj-prop-envelope { width: 128px; left: -2%; }
+        .lj-prop-bundle { width: 118px; right: -3%; }
+        .lj-prop-candle { width: 66px; right: 6%; }
         .lj-loose-1, .lj-loose-2, .lj-loose-3 { display: none; }
       }
 
@@ -2978,7 +3558,51 @@ function ScopedStyles() {
       .lj-bunch-l { left: -1%; transform: translate3d(calc(var(--mx) * 6px), 0, 0); }
       .lj-bunch-r { right: -2%; width: 224px; height: 300px; transform: scaleX(-1) translate3d(calc(var(--mx) * -5px), 0, 0); }
 
-      .lj-candle { position: absolute; right: 13%; bottom: 8%; width: 92px; height: auto; z-index: 6; }
+      /* ------------------------------------------ the desk, as controls --- */
+      /* The props are buttons with no chrome. All of the pressed feedback is on
+         the drawn object, so the desk still reads as a photographed still life
+         rather than a toolbar. */
+      .lj-prop {
+        position: absolute; padding: 0; border: 0; background: none;
+        cursor: pointer; line-height: 0;
+        transition: transform .18s cubic-bezier(.34,1.56,.64,1);
+      }
+      .lj-prop > svg { display: block; width: 100%; height: auto; }
+      .lj-prop:hover { transform: translateY(-3px); }
+      .lj-prop:active { transform: translateY(1px) scale(.985); }
+      .lj-prop:focus-visible {
+        outline: 2px dashed #EAD9A9; outline-offset: 5px; border-radius: 4px;
+        transform: translateY(-3px);
+      }
+
+      .lj-prop-tag {
+        position: absolute; left: 50%; bottom: calc(100% + 10px);
+        translate: -50% 0; z-index: 40; pointer-events: none;
+        white-space: nowrap; line-height: 1.2;
+        font-size: 8px; font-weight: 900; letter-spacing: .16em; text-transform: uppercase;
+        color: #3A2716; background: linear-gradient(#F3E7CE, #E3D2AC);
+        padding: 3px 7px; border: 1.5px solid #1C1317;
+        box-shadow: 2px 2px 0 rgba(9,6,8,.7);
+        rotate: -2deg;
+        opacity: 0; transform: translateY(4px);
+        transition: opacity .15s ease, transform .15s ease;
+      }
+      .lj-prop:hover .lj-prop-tag,
+      .lj-prop:focus-visible .lj-prop-tag { opacity: 1; transform: none; }
+
+      .lj-prop-count {
+        position: absolute; right: -6px; top: -8px; z-index: 30;
+        display: grid; place-items: center; min-width: 18px; height: 18px;
+        padding: 0 4px; border-radius: 999px;
+        font-size: 9px; font-weight: 900; line-height: 1;
+        color: #2C1A06; background: radial-gradient(circle at 34% 30%, #F0CE86, #C79333 74%);
+        border: 1.5px solid #2A1B20;
+      }
+
+      .lj-prop-candle { right: 13%; bottom: 8%; width: 92px; z-index: 6; }
+      .lj-prop-envelope { left: 5%; bottom: 4.5%; width: 186px; z-index: 6; rotate: -7deg; }
+      .lj-prop-bundle { right: 3%; bottom: 3.5%; width: 172px; z-index: 5; rotate: 5deg; }
+
       .lj-flame { transform-origin: 55px 62px; animation: lj-flicker 2.6s ease-in-out infinite; }
       @keyframes lj-flicker {
         0%, 100% { transform: scale(1, 1) translateX(0); opacity: .95; }
@@ -2988,10 +3612,19 @@ function ScopedStyles() {
       }
       .lights-off .lj-flame { opacity: .55; }
 
-      .lj-envelope { position: absolute; left: 5%; bottom: 4.5%; width: 186px; height: auto; z-index: 6; rotate: -7deg; }
-      .lj-bundle { position: absolute; right: 3%; bottom: 3.5%; width: 172px; height: auto; z-index: 5; rotate: 5deg; }
-
-      .lj-loose { position: absolute; z-index: 7; display: block; }
+      /* The three newest letters, tipped out onto the desk. They open like any
+         roll in the jar, so they get the same lift and the same sealed glow. */
+      .lj-loose {
+        position: absolute; z-index: 7; display: block;
+        padding: 0; border: 0; background: none; cursor: pointer;
+        transition: transform .2s cubic-bezier(.34,1.56,.64,1);
+      }
+      .lj-loose > svg { display: block; width: 100%; height: 100%; }
+      .lj-loose:hover, .lj-loose:focus-visible {
+        transform: translateY(-5px) scale(1.06); outline: none; z-index: 30;
+      }
+      .lj-loose:active { transform: translateY(0) scale(1.01); }
+      .lj-loose.is-sealed > svg { filter: drop-shadow(0 0 7px rgba(255,201,130,.42)); }
       .lj-loose-1 { left: 24%; bottom: 5.5%; width: 122px; height: 36px; rotate: -9deg; }
       .lj-loose-2 { left: 33%; bottom: 3.5%; width: 104px; height: 30px; rotate: 6deg; }
       .lj-loose-3 { right: 26%; bottom: 6%; width: 96px; height: 28px; rotate: -14deg; }
@@ -3018,12 +3651,13 @@ function ScopedStyles() {
         background: radial-gradient(ellipse at 50% 50%, rgba(0,0,0,.7), transparent 68%);
       }
 
-      .lj-lid {
+      .lj-prop-lid {
         position: absolute; left: 50%; translate: -50% 0; top: -3.6%;
         width: 78%; height: 10.5%;
-        filter: drop-shadow(0 6px 10px rgba(0,0,0,.55));
         z-index: 6;
       }
+      .lj-prop-lid > svg { height: 100%; filter: drop-shadow(0 6px 10px rgba(0,0,0,.55)); }
+      .lj-prop-lid .lj-prop-tag { bottom: calc(100% + 4px); }
       .lj-neck {
         position: absolute; left: 50%; translate: -50% 0; top: 2.4%;
         width: 70%; height: 10.4%;
@@ -3097,7 +3731,18 @@ function ScopedStyles() {
         animation: lj-twinkle 3.2s ease-in-out infinite;
       }
 
-      .lj-field { position: absolute; inset: 0; z-index: 10; }
+      /* The pile is never squeezed to fit. When there are more letters than the
+         glass can show at once it simply grows out through the top, and the
+         field slides down so the reader can dig up to them. The --pile variable
+         is a percentage of the field's own height, which is also what the slot
+         positions are measured in, so the two stay in step. */
+      .lj-field {
+        position: absolute; inset: 0; z-index: 10;
+        transform: translate3d(0, var(--pile, 0%), 0);
+        transition: transform .42s cubic-bezier(.22,.61,.36,1);
+      }
+      .lj-field.is-dragging { transition: none; }
+      @media (prefers-reduced-motion: reduce) { .lj-field { transition: none; } }
 
       /* ------------------------------------------------ one rolled letter -- */
       .lj-scroll {
@@ -3115,12 +3760,93 @@ function ScopedStyles() {
       .lj-scroll.is-out { opacity: 0; pointer-events: none; }
       .lj-scroll.is-sealed .lj-scroll-svg { filter: drop-shadow(0 0 7px rgba(255,201,130,.42)); }
       .lj-scroll.is-keepsake .lj-scroll-svg { filter: drop-shadow(0 0 8px rgba(226,182,96,.55)); }
+      /* The newest thing they wrote that you have not read. Everything else in
+         the jar is a pile; this one is an event. */
+      .lj-scroll.is-newest .lj-scroll-svg {
+        filter: drop-shadow(0 0 10px rgba(255,201,130,.85));
+        animation: lj-newest 2.4s ease-in-out infinite;
+      }
+      @keyframes lj-newest {
+        0%, 100% { opacity: 1; transform: none; }
+        50% { opacity: .92; transform: translateY(-2px); }
+      }
+      .lj-scroll-new {
+        position: absolute; left: 50%; bottom: calc(100% + 6px); translate: -50% 0;
+        z-index: 6; pointer-events: none; white-space: nowrap;
+        font-size: 8px; font-weight: 900; letter-spacing: .18em; line-height: 1;
+        padding: 3px 6px; rotate: -6deg;
+        color: #2C1A06; background: linear-gradient(#FFD98A, #E0A63F);
+        border: 1.5px solid #2A1B20;
+        box-shadow: 2px 2px 0 rgba(9,6,8,.7);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .lj-scroll.is-newest .lj-scroll-svg { animation: none; }
+      }
+
       .lj-scroll-lock {
         position: absolute; right: -7px; top: -8px; z-index: 4;
         display: grid; place-items: center;
         width: 16px; height: 16px; border-radius: 999px;
         background: #EAD9A9; color: #7D2834; border: 1.5px solid #45140E;
       }
+
+      /* ------------------------------------- the pile carries on past here -- */
+      .lj-more {
+        position: absolute; left: 0; right: 0; height: 42px; z-index: 22;
+        pointer-events: none;
+      }
+      .lj-more.top {
+        top: 0;
+        background: linear-gradient(rgba(10,6,8,.72), transparent);
+      }
+      .lj-more.bottom {
+        bottom: 0;
+        background: linear-gradient(transparent, rgba(10,6,8,.62));
+      }
+
+      /* ------------------------------------------------ digging control ---- */
+      .lj-dig {
+        position: absolute; right: -30px; top: 18%; bottom: 20%; z-index: 30;
+        display: flex; flex-direction: column; align-items: center; gap: 6px;
+      }
+      .lj-dig-btn {
+        display: grid; place-items: center; flex: 0 0 auto;
+        width: 22px; height: 22px; cursor: pointer;
+        color: #F2DDC2; background: linear-gradient(#4A1119, #2A0A0F);
+        border: 2px solid #12080B; border-radius: 4px;
+        box-shadow: 2px 2px 0 rgba(9,6,8,.8);
+        transition: transform .13s ease, background .18s ease;
+      }
+      .lj-dig-btn:hover:not(:disabled) { transform: translateY(-1px); background: linear-gradient(#6E1A26, #3A0D14); }
+      .lj-dig-btn:active:not(:disabled) { transform: translate(1px, 1px); box-shadow: none; }
+      .lj-dig-btn:disabled { opacity: .3; cursor: default; }
+      .lj-dig-btn:focus-visible { outline: 2px solid #EAD9A9; outline-offset: 2px; }
+
+      .lj-dig-rail {
+        position: relative; flex: 1 1 auto; width: 5px; border-radius: 999px;
+        background: rgba(226,236,233,.14);
+        box-shadow: inset 0 0 0 1px rgba(9,6,8,.5);
+      }
+      .lj-dig-thumb {
+        position: absolute; left: 50%; translate: -50% -50%;
+        width: 11px; height: 26px; border-radius: 999px;
+        background: linear-gradient(#EAD9A9, #C9A972);
+        border: 1.5px solid #2A1B20;
+        transition: top .42s cubic-bezier(.22,.61,.36,1);
+      }
+      /* an unread letter sitting at that depth in the pile */
+      .lj-dig-mark {
+        position: absolute; left: 50%; translate: -50% -50%;
+        width: 7px; height: 7px; border-radius: 999px;
+        background: #FFC98A;
+        box-shadow: 0 0 6px rgba(255,201,138,.9);
+      }
+      .lj-dig-hint {
+        font-size: 7px; font-weight: 900; letter-spacing: .2em;
+        color: rgba(224,177,174,.6);
+      }
+      @media (prefers-reduced-motion: reduce) { .lj-dig-thumb { transition: none; } }
+      @media (max-width: 1119px) { .lj-dig { right: -26px; } }
 
       /* ---------------------------------------------------- hover preview -- */
       .lj-hovertag {
@@ -3181,7 +3907,7 @@ function ScopedStyles() {
       .fx-in { animation: lj-jar-bump 1.1s cubic-bezier(.34,1.56,.64,1); }
       .fx-out { animation: lj-jar-settle 1.1s ease-out; }
       .fx-shake { animation: lj-jar-shake .9s cubic-bezier(.36,.07,.19,.97); }
-      .fx-in .lj-lid { animation: lj-lid-bounce 1.1s cubic-bezier(.34,1.56,.64,1); }
+      .fx-in .lj-prop-lid { animation: lj-lid-bounce 1.1s cubic-bezier(.34,1.56,.64,1); }
       .fx-in .lj-twine, .fx-in .lj-hangtag { animation: lj-tag-swing 1.3s cubic-bezier(.34,1.56,.64,1); }
       .fx-shake .lj-field { animation: lj-field-jiggle .9s ease-in-out; }
       .fx-shake .lj-hangtag { animation: lj-tag-swing .9s ease-in-out; }
@@ -3219,11 +3945,14 @@ function ScopedStyles() {
         55% { transform: rotate(8deg); }
         80% { transform: rotate(-3deg); }
       }
+      /* The pile offset has to be carried through every frame. Animating a bare
+         transform here would drop the field back to the bottom of the pile for
+         the length of the shake and snap it back afterwards. */
       @keyframes lj-field-jiggle {
-        0%, 100% { transform: none; }
-        20% { transform: translate(2px, -3px) rotate(.7deg); }
-        45% { transform: translate(-3px, 1px) rotate(-.8deg); }
-        70% { transform: translate(2px, -1px) rotate(.4deg); }
+        0%, 100% { transform: translate3d(0, var(--pile, 0%), 0); }
+        20% { transform: translate3d(0, var(--pile, 0%), 0) translate(2px, -3px) rotate(.7deg); }
+        45% { transform: translate3d(0, var(--pile, 0%), 0) translate(-3px, 1px) rotate(-.8deg); }
+        70% { transform: translate3d(0, var(--pile, 0%), 0) translate(2px, -1px) rotate(.4deg); }
       }
 
       .lj-twine {
@@ -3300,39 +4029,83 @@ function ScopedStyles() {
         box-shadow: 0 3px 6px rgba(0,0,0,.6), inset 0 1px 2px rgba(255,255,255,.5);
       }
 
-      /* the write button, built like a sealed envelope */
+      /* The write button, built like a sealed envelope. The card itself does not
+         clip: the flap is clipped by .lj-write-paper instead, which leaves the
+         badge and the wax seal free to overhang the edges the way a real sticker
+         and a real blob of wax would. */
       .lj-write-card {
-        position: relative; overflow: hidden; text-align: left; cursor: pointer;
-        padding: 1.1rem 1rem 1.15rem;
+        position: relative; overflow: visible; text-align: left; cursor: pointer;
+        display: block; width: 100%;
+        padding: 1.15rem 4.4rem 1.2rem 1rem;
         color: #FBF3E6;
         background: linear-gradient(158deg, #96182A 0%, #6A1120 55%, #45090F 100%);
         border: 3px solid #1C1317; border-radius: .55rem;
         box-shadow: 7px 9px 0 rgba(9,6,8,.8);
         rotate: -1.4deg;
-        transition: transform .16s cubic-bezier(.34,1.56,.64,1);
+        transition: transform .16s cubic-bezier(.34,1.56,.64,1), box-shadow .16s ease;
       }
-      .lj-write-card:hover { transform: translateY(-4px) rotate(.5deg); }
+      .lj-write-card:hover { transform: translateY(-4px); }
+      .lj-write-card:focus-visible {
+        outline: none; transform: translateY(-4px);
+        box-shadow: 7px 9px 0 rgba(9,6,8,.8), 0 0 0 3px rgba(234,217,169,.85);
+      }
       .lj-write-card:active { transform: translate(2px, 3px); box-shadow: 3px 4px 0 rgba(9,6,8,.8); }
+
+      .lj-write-paper {
+        position: absolute; inset: 0; z-index: 0;
+        overflow: hidden; border-radius: .3rem; pointer-events: none;
+      }
+      /* the two back flaps, folded in from the sides */
+      .lj-write-paper::before, .lj-write-paper::after {
+        content: ""; position: absolute; inset: 0;
+        background: linear-gradient(#7E1526, #4E0B14);
+        opacity: .5;
+      }
+      .lj-write-paper::before { clip-path: polygon(0 0, 46% 50%, 0 100%); }
+      .lj-write-paper::after { clip-path: polygon(100% 0, 54% 50%, 100% 100%); }
+      /* the front flap, folded down from the top */
       .lj-write-flap {
-        position: absolute; inset: 0 0 auto 0; height: 66%;
-        background: linear-gradient(#B02236, #7C1524);
+        position: absolute; inset: 0 0 auto 0; height: 62%;
+        background: linear-gradient(#BC2A3E, #85182A 70%, #6C1122);
         clip-path: polygon(0 0, 100% 0, 50% 100%);
-        opacity: .55;
+        opacity: .92;
       }
+      .lj-write-flap::after {
+        content: ""; position: absolute; inset: 0;
+        background: linear-gradient(#FFD8B8, transparent 4px);
+        opacity: .16;
+        clip-path: polygon(0 0, 100% 0, 50% 100%);
+      }
+      /* faint address rules, so the lower half reads as an envelope face */
+      .lj-write-rules {
+        position: absolute; left: 1rem; right: 4.4rem; bottom: .85rem; height: 26px;
+        background: repeating-linear-gradient(
+          180deg, rgba(255,240,222,.16) 0 1px, transparent 1px 9px
+        );
+        opacity: .5;
+      }
+
+      .lj-write-text { position: relative; z-index: 3; display: block; }
+
       .lj-write-seal {
-        position: absolute; right: 14px; top: 46%; translate: 0 -50%; z-index: 3;
-        display: grid; place-items: center; width: 40px; height: 40px;
+        position: absolute; right: 10px; top: 50%; translate: 0 -50%; z-index: 4;
+        display: grid; place-items: center; width: 44px; height: 44px;
         border-radius: 46% 54% 51% 49% / 52% 48% 55% 45%;
-        background: radial-gradient(circle at 34% 30%, #E2AF5C, #8A5A18 72%);
+        background: radial-gradient(circle at 34% 30%, #E9BC6B, #8A5A18 72%);
         border: 2px solid rgba(28,2,4,.6); color: #2C1A06;
-        box-shadow: 0 5px 12px rgba(0,0,0,.6), inset 0 2px 5px rgba(255,255,255,.35);
+        box-shadow: 0 5px 12px rgba(0,0,0,.6), inset 0 2px 5px rgba(255,255,255,.4);
+        transition: transform .18s cubic-bezier(.34,1.56,.64,1);
       }
+      .lj-write-card:hover .lj-write-seal { transform: rotate(-9deg) scale(1.06); }
+
       .lj-write-thwip {
-        position: absolute; top: -10px; right: -8px; z-index: 5; rotate: 12deg;
-        font-family: 'Permanent Marker', cursive; font-size: 13px;
+        position: absolute; top: -11px; right: -10px; z-index: 5; rotate: 12deg;
+        font-family: 'Permanent Marker', cursive; font-size: 13px; line-height: 1.25;
         background: #EAD9A9; color: #7D2834; padding: 1px 8px;
         border: 2px solid #1C1317; box-shadow: 2px 2px 0 #0C0709;
+        transition: transform .18s cubic-bezier(.34,1.56,.64,1);
       }
+      .lj-write-card:hover .lj-write-thwip { transform: scale(1.1) rotate(-4deg); }
 
       /* the random draw, as a luggage tag on a string */
       .lj-draw-tag {
@@ -3364,6 +4137,56 @@ function ScopedStyles() {
       }
       .lj-input:focus { border-color: #450A10; box-shadow: 0 0 0 3px rgba(217,136,158,.35); }
       .lj-input::placeholder { color: rgba(42,27,32,.42); }
+
+      /* This block is injected after the Tailwind sheet, so the .lj-input padding
+         shorthand wins over a pl-8 utility and the icon lands on top of the
+         text. The inset has to be declared here, next to the shorthand. */
+      .lj-search { position: relative; }
+      .lj-search .lj-input { padding-left: 2.1rem; padding-right: 1.9rem; }
+      .lj-search-icon {
+        position: absolute; left: .62rem; top: 50%; translate: 0 -50%;
+        z-index: 2; pointer-events: none; color: #7D2834;
+      }
+      .lj-search-clear {
+        position: absolute; right: .4rem; top: 50%; translate: 0 -50%;
+        z-index: 2; display: grid; place-items: center;
+        width: 18px; height: 18px; border-radius: 999px; cursor: pointer;
+        color: #7D2834; background: rgba(125,40,52,.12); border: 0;
+        transition: background .15s ease;
+      }
+      .lj-search-clear:hover { background: rgba(125,40,52,.26); }
+
+      /* the shortcut scrap, torn off a notepad and pinned to the rail */
+      .lj-keys {
+        position: relative; margin-left: 4%; width: 92%; rotate: -.9deg;
+        padding: .7rem .8rem .8rem;
+        color: #2A1B20;
+        background:
+          repeating-linear-gradient(180deg, transparent 0 17px, rgba(125,40,52,.10) 17px 18px),
+          linear-gradient(#F2E6CB, #E3D2AB);
+        box-shadow: 5px 6px 0 rgba(9,6,8,.6);
+        clip-path: polygon(
+          0 0, 100% 0, 100% 96%, 92% 100%, 78% 96%, 62% 100%,
+          46% 96%, 30% 100%, 15% 96%, 0 100%
+        );
+      }
+      .lj-keys-list {
+        list-style: none; margin: .45rem 0 0; padding: 0;
+        display: flex; flex-direction: column; gap: .3rem;
+      }
+      .lj-keys-list li {
+        display: flex; align-items: center; gap: .45rem;
+        font-family: 'Caveat', cursive; font-size: 15px; line-height: 1.1;
+        color: #4A2129;
+      }
+      .lj-kbd {
+        flex: 0 0 auto; min-width: 26px; text-align: center;
+        font-family: 'Space Grotesk', monospace; font-size: 9px; font-weight: 900;
+        padding: 2px 5px; border-radius: 3px;
+        color: #F6E7D2; background: linear-gradient(#5A1520, #340A11);
+        border: 1.5px solid #1C1317;
+        box-shadow: 0 2px 0 rgba(9,6,8,.7);
+      }
 
       .lj-filter-row { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .5rem; }
       .lj-filter {
@@ -3537,11 +4360,17 @@ function ScopedStyles() {
         background-image: var(--lj-grain);
         opacity: .17; mix-blend-mode: multiply;
       }
+      /* No crease lines. The earlier version drew a hard 1%-wide dark/light band
+         down the sheet and another across it, which read as a printed cross
+         sitting on top of the words rather than as a fold. This is now only a
+         soft directional sheen, so the paper still catches the lamp without
+         anything drawn across the text. */
       .lj-paper-fold {
         position: absolute; inset: 0; z-index: 3; pointer-events: none;
         background:
-          linear-gradient(90deg, transparent 32%, rgba(0,0,0,.055) 33%, rgba(255,255,255,.24) 34%, transparent 35%),
-          linear-gradient(180deg, transparent 47%, rgba(0,0,0,.05) 48%, rgba(255,255,255,.2) 49%, transparent 50%);
+          linear-gradient(168deg, rgba(255,255,255,.10) 0%, transparent 34%),
+          radial-gradient(ellipse 120% 80% at 50% -10%, rgba(255,244,214,.10), transparent 62%),
+          radial-gradient(ellipse 90% 60% at 50% 112%, rgba(72,44,20,.10), transparent 60%);
       }
       .lj-paper-patina { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
       .patina-aged .lj-paper-patina {
