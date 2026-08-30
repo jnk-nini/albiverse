@@ -308,6 +308,14 @@ export default function SoundtrackScreen({
   const [isBuffering, setIsBuffering] = useState(false);
   const [volume, setVolume] = useState(80);
   const [ytReady, setYtReady] = useState(false);
+  /* A youtube id waiting for the player to become ready. Deliberately its own
+     state, NOT the same flag as `isBuffering`: the YT player also flips
+     `isBuffering` to true on every routine BUFFERING event during normal
+     playback, and the queued-start effect used to key off THAT SAME flag - so
+     the moment a freshly-started video buffered even once, the effect saw
+     "isBuffering=true" and reloaded the video from scratch, which buffered
+     again, forever. This flag only means "call loadVideoById once ytReady". */
+  const [pendingYoutubeId, setPendingYoutubeId] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [duration, setDuration] = useState(0);
 
@@ -640,6 +648,7 @@ export default function SoundtrackScreen({
            this branch, which is why only they appeared to work. Route through
            the same "wait for ready" queue the deferred effect already reads. */
         if (!player || !ytReady || !track.youtube_id) {
+          setPendingYoutubeId(track.youtube_id ?? null);
           setIsBuffering(true);
           return;
         }
@@ -647,7 +656,9 @@ export default function SoundtrackScreen({
           player.loadVideoById(track.youtube_id);
           player.setVolume(volumeRef.current);
           setIsPlaying(true);
+          setPendingYoutubeId(null);
         } catch {
+          setPendingYoutubeId(track.youtube_id);
           setIsBuffering(true);
         }
         return;
@@ -782,18 +793,33 @@ export default function SoundtrackScreen({
     };
   }, [stage, tapeTracks, skipTo]);
 
-  /* A YouTube track can be picked before the iframe API has finished loading.
-     When the player finally appears, start whatever is queued. */
+  /* A YouTube track can be picked before the iframe API has finished loading
+     (or before a stray call throws pre-onReady, see playTrack). This effect
+     runs the queued load once the player is actually ready.
+
+     It keys ONLY on `ytReady` and `pendingYoutubeId` - never on `isBuffering`.
+     `isBuffering` also flips true on every ordinary BUFFERING event during
+     normal playback (see onStateChange below), which is unrelated to "this
+     track is still waiting for the player". Keying this effect off that same
+     flag meant a video buffering completely normally would look identical to
+     "still queued", so the effect fired again, called loadVideoById again,
+     which naturally re-buffers, which fires the effect again - reloading the
+     same video from the start forever instead of ever letting it play. */
   useEffect(() => {
-    if (!ytReady || !isBuffering) return;
-    if (!currentTrack || currentTrack.source !== "youtube" || !currentTrack.youtube_id) return;
+    if (!ytReady || !pendingYoutubeId) return;
     const player = ytRef.current;
     if (!player) return;
-    player.loadVideoById(currentTrack.youtube_id);
-    player.setVolume(volumeRef.current);
-    setIsBuffering(false);
-    setIsPlaying(true);
-  }, [ytReady, isBuffering, currentTrack]);
+    try {
+      player.loadVideoById(pendingYoutubeId);
+      player.setVolume(volumeRef.current);
+      setIsPlaying(true);
+      setIsBuffering(false);
+      setPendingYoutubeId(null);
+    } catch {
+      /* still not truly callable; stays queued and this effect will not fire
+         again on its own until pendingYoutubeId or ytReady changes again */
+    }
+  }, [ytReady, pendingYoutubeId]);
 
   const seekToFraction = useCallback(
     (fraction: number) => {
