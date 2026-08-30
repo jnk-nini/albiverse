@@ -95,9 +95,17 @@ export default function TimelineScreen({
   const fetchMemories = async () => {
     if (!coupleId) return;
     try {
+      /* Explicit columns, not "*". `file_url` is a legacy duplicate of `url`
+         that has always been written together with it (verified byte-identical
+         on every row), so selecting both doubled the base64 payload of every
+         photo for no benefit. Writes still populate both columns; only this
+         read drops the copy, and the mapper below already falls through to
+         `url` when `file_url` is absent. */
       const { data, error: fetchErr } = await supabase
         .from("media_items")
-        .select("*")
+        .select(
+          "id, url, caption, notes, created_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v"
+        )
         .eq("couple_id", coupleId)
         .order("created_at", { ascending: true });
 
@@ -579,6 +587,8 @@ export default function TimelineScreen({
                                   <img
                                     src={m.url}
                                     alt={m.caption}
+                                    loading="lazy"
+                                    decoding="async"
                                     style={{
                                       transform: getTransformStyle(
                                         m.photo_scale ?? 1.0,

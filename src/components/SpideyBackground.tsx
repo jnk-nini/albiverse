@@ -2,7 +2,14 @@
 
 export default function SpideyBackground() {
   return (
-    <div className="fixed inset-0 pointer-events-none overflow-hidden z-0 select-none">
+    /* `isolate` makes the blend group explicit and `contain: paint` tells the
+       browser nothing in here can paint outside the viewport box, so the
+       mix-blend-screen skyline below re-composites against this subtree only
+       rather than inviting the whole document into the blend. */
+    <div
+      className="fixed inset-0 pointer-events-none overflow-hidden z-0 select-none isolate"
+      style={{ contain: "paint" }}
+    >
       {/* Dark Ambient Vignette & Halftone Dots */}
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_15%,rgba(59,6,11,0.7)_0%,transparent_75%),radial-gradient(ellipse_at_80%_85%,rgba(34,3,6,0.85)_0%,transparent_60%)]" />
       <div className="absolute inset-0 bg-[radial-gradient(rgba(212,123,145,0.06)_1.5px,transparent_1.5px)] bg-[size:24px_24px]" />
@@ -12,6 +19,8 @@ export default function SpideyBackground() {
         <img
           src="/images/nyc-skyline.webp"
           alt="Illustrated New York skyline"
+          decoding="async"
+          fetchPriority="low"
           className="absolute inset-0 w-full h-full object-cover object-center mix-blend-screen opacity-65"
         />
       </div>
@@ -29,7 +38,8 @@ export default function SpideyBackground() {
         <div className="w-[3px] h-52 bg-gradient-to-b from-white to-[#D47B91]/50 mx-auto" />
         <div className="relative -mt-3 flex flex-col items-center drop-shadow-[6px_8px_0_rgba(9,12,16,.6)]">
           <img 
-            src="/images/peter.webp" 
+            src="/images/peter.webp"
+            decoding="async" 
             alt="Spider-Man" 
             className="w-28 h-40 object-contain drop-shadow-xl" 
             onError={(e) => {
@@ -52,7 +62,8 @@ export default function SpideyBackground() {
         <div className="w-[3px] h-60 bg-gradient-to-b from-white to-[#D47B91]/50 mx-auto" />
         <div className="relative -mt-3 flex flex-col items-center drop-shadow-[6px_8px_0_rgba(9,12,16,.6)]">
           <img 
-            src="/images/gwen.webp" 
+            src="/images/gwen.webp"
+            decoding="async" 
             alt="Spider-Gwen" 
             className="w-28 h-40 object-contain drop-shadow-xl" 
             onError={(e) => {

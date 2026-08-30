@@ -19,8 +19,18 @@ export default function AmbientSound({ coupleId }: AmbientSoundProps) {
   const [playing, setPlaying] = useState(false);
   const [trackSrc, setTrackSrc] = useState("/audio/ambient.mp3");
   const [trackName, setTrackName] = useState<string | null>(null);
+  const [hasCustomTrack, setHasCustomTrack] = useState(false);
   const [hasTrackError, setHasTrackError] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /* The custom track is stored as a base64 data URL in Postgres, and a normal
+     one runs to several megabytes. This component is mounted on the dashboard,
+     so fetching the audio on mount meant every single visit to the home screen
+     downloaded that blob before the reader had touched anything.
+
+     Only the track NAME is fetched up front, which is all the idle UI shows.
+     The audio itself is fetched the first time Play is pressed. */
+  const customTrackLoaded = useRef(false);
 
   useEffect(() => {
     if (!coupleId) return;
@@ -29,14 +39,14 @@ export default function AmbientSound({ coupleId }: AmbientSoundProps) {
     (async () => {
       const { data } = await supabase
         .from("couples")
-        .select("ambient_audio_data, ambient_audio_name")
+        .select("ambient_audio_name")
         .eq("id", coupleId)
         .maybeSingle();
 
       if (cancelled) return;
-      if (data?.ambient_audio_data) {
-        setTrackSrc(data.ambient_audio_data);
-        setTrackName(data.ambient_audio_name ?? "Custom track");
+      if (data?.ambient_audio_name) {
+        setTrackName(data.ambient_audio_name);
+        setHasCustomTrack(true);
         setHasTrackError(false);
       }
     })();
@@ -45,6 +55,25 @@ export default function AmbientSound({ coupleId }: AmbientSoundProps) {
       cancelled = true;
     };
   }, [coupleId, supabase]);
+
+  /* Pulls the base64 audio down the first time it is actually needed. Returns
+     the data URL so the caller can put it straight onto the element: going
+     through state alone would not update the DOM until after the next commit,
+     and play() has to happen inside the same user gesture. */
+  const loadCustomTrack = async (): Promise<string | null> => {
+    if (!coupleId || !hasCustomTrack || customTrackLoaded.current) return null;
+    customTrackLoaded.current = true;
+
+    const { data } = await supabase
+      .from("couples")
+      .select("ambient_audio_data")
+      .eq("id", coupleId)
+      .maybeSingle();
+
+    if (!data?.ambient_audio_data) return null;
+    setTrackSrc(data.ambient_audio_data);
+    return data.ambient_audio_data;
+  };
 
   const [togglePlay] = useGuardedAction(async () => {
     const audio = audioRef.current;
@@ -57,6 +86,11 @@ export default function AmbientSound({ coupleId }: AmbientSoundProps) {
     }
 
     try {
+      const lazySrc = await loadCustomTrack();
+      if (lazySrc) {
+        audio.src = lazySrc;
+        audio.load();
+      }
       await audio.play();
       setPlaying(true);
     } catch (err) {
@@ -98,6 +132,8 @@ export default function AmbientSound({ coupleId }: AmbientSoundProps) {
     setHasTrackError(false);
     setTrackSrc(dataUrl);
     setTrackName(file.name);
+    setHasCustomTrack(true);
+    customTrackLoaded.current = true; // we already hold the bytes we just uploaded
 
     requestAnimationFrame(async () => {
       const audio = audioRef.current;

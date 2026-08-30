@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import SpideyBackground from "./SpideyBackground";
+import { Typewriter } from "./DiaryArt";
 import AmbientSound from "./AmbientSound";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import {
@@ -186,6 +187,7 @@ useEffect(() => {
   router.prefetch("/countdowns");
   router.prefetch("/clock");
   router.prefetch("/letters");
+  router.prefetch("/diary");
 }, [router]);
 
 // 2. Updated Chapter 2 Navigation Handler
@@ -232,6 +234,21 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     }, 1250);
   };
 
+  // Chapter 6 Spider Diary Warp State
+  const [isWarpingDiary, setIsWarpingDiary] = useState(false);
+
+  /* Ch.06 carries the reader's spread out with them the same way Ch.05 does, so
+     BACK from the diary lands on this page of the contents rather than page one. */
+  const handleOpenDiary = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWarpingDiary(true);
+    router.prefetch("/diary");
+
+    setTimeout(() => {
+      router.push(`/diary?from=${currentSpread}`);
+    }, 1250);
+  };
+
   const features = [
     {
     title: "Live Canon Clock", 
@@ -254,7 +271,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     { title: "Red String Timeline", desc: "Fate threads & milestone polaroids", href: "/timeline", tag: "CH. 03", icon: Compass, note: "Connected by destiny", onClick: handleOpenTimeline },
     { title: "Retro Digicam", desc: "Instant snapshots & viewfinder clips", href: "/media", tag: "CH. 04", icon: Camera, note: "Earth-65 & 616 gallery" },
     { title: "Love Letter Jar", desc: "Folded scrolls & wax-sealed notes", href: "/letters", tag: "CH. 05", icon: Mail, note: "Confidential unsealed letters", onClick: handleOpenLetters },
-    { title: "Spider Diary", desc: "Daily mood entries & shared doodles", href: "/diary", tag: "CH. 06", icon: BookHeart, note: "Our private logbook" },
+    { title: "Spider Diary", desc: "Typed field logs, pinned to the board", href: "/diary", tag: "CH. 06", icon: BookHeart, note: "Our private logbook", onClick: handleOpenDiary },
     { title: "Web Planner", desc: "Shared date schedules & reminders", href: "/planner", tag: "CH. 07", icon: CheckSquare, note: "Adventures on the docket" },
     { title: "Multiverse Bucket List", desc: "Adventures across dimensions to complete", href: "/bucket-list", tag: "CH. 08", icon: Sparkles, note: "Cross off our milestones" },
     { title: "Soundtrack Deck", desc: "Spinning vinyl & our special playlist", href: "/soundtrack", tag: "CH. 09", icon: Disc, note: "Songs for our universe" },
@@ -344,7 +361,12 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
             src={`/images/scrapbook/page-${pageNum}.png`}
             alt=""
             aria-hidden
-            onError={() => setPageImageErrors((prev) => ({ ...prev, [pageNum]: true }))}
+            /* Returning the same object lets React bail out of the re-render.
+               Building a fresh one unconditionally re-rendered the whole
+               contents tree mid page-flip every time a page-art 404 landed. */
+            onError={() =>
+              setPageImageErrors((prev) => (prev[pageNum] ? prev : { ...prev, [pageNum]: true }))
+            }
             className="absolute inset-0 w-full h-full object-cover z-0 pointer-events-none opacity-90"
           />
         )}
@@ -1333,6 +1355,137 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
 
             <span className="font-handwriting text-2xl text-[#E0B1AE] mt-3 font-black drop-shadow-md">
               Gathering every note we ever rolled up...
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* ================= CH. 06 SPIDER DIARY WARP OVERLAY =================
+          The chapter is a typewriter and a corkboard, so its loading screen is
+          the machine coming up onto the desk, a sheet feeding out of the platen,
+          and the headline striking itself out one character at a time while the
+          clippings fly in to be filed.
+
+          All of it is transform, opacity and clip-path. The typing is a stepped
+          clip-path rather than an animated width, which would relayout the line
+          on every character. */}
+      {isWarpingDiary && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#100A0C]/94 backdrop-blur-md overflow-hidden pointer-events-none">
+          <style>{`
+            @keyframes dywarp-rise {
+              0%   { transform: translateY(78vh) scale(0.7); opacity: 0; }
+              46%  { transform: translateY(0) scale(1.05); opacity: 1; }
+              64%  { transform: translateY(0) scale(0.97); }
+              82%  { transform: translateY(0) scale(1.02); }
+              100% { transform: translateY(0) scale(1); opacity: 1; }
+            }
+            @keyframes dywarp-feed {
+              0%, 22% { transform: scaleY(0.04) translateY(38%); opacity: 0; }
+              40%     { opacity: 1; }
+              100%    { transform: scaleY(1) translateY(0); opacity: 1; }
+            }
+            @keyframes dywarp-type {
+              0%, 42% { clip-path: inset(0 100% 0 0); }
+              100%    { clip-path: inset(0 0 0 0); }
+            }
+            @keyframes dywarp-bars {
+              0%, 100% { transform: translateY(0); }
+              50%      { transform: translateY(-6px); }
+            }
+            @keyframes dywarp-file {
+              0%   { transform: translate(var(--fly-x), var(--fly-y)) rotate(var(--fly-rot)) scale(1.2); opacity: 0; }
+              20%  { opacity: 1; }
+              100% { transform: translate(0, 6vh) rotate(0deg) scale(0.2); opacity: 0; }
+            }
+            @keyframes dywarp-bell {
+              0%, 62% { transform: rotate(0deg); }
+              72%     { transform: rotate(-26deg); }
+              84%     { transform: rotate(18deg); }
+              100%    { transform: rotate(0deg); }
+            }
+            .dywarp-machine { animation: dywarp-rise 1.25s cubic-bezier(0.2, 0.9, 0.3, 1) forwards; }
+            .dywarp-sheet   { animation: dywarp-feed 1.25s cubic-bezier(0.2, 0.9, 0.3, 1) forwards; transform-origin: bottom center; }
+            .dywarp-typed   { animation: dywarp-type 1.15s steps(13, end) forwards; }
+            .dywarp-machine .dy-tw-bars { transform-box: fill-box; transform-origin: bottom center; animation: dywarp-bars 150ms ease-in-out infinite; }
+            .dywarp-clip    { animation: dywarp-file 1.15s cubic-bezier(0.55, 0, 0.35, 1) forwards; }
+            .dywarp-bell    { display: inline-block; animation: dywarp-bell 1.25s ease-out forwards; transform-origin: center; }
+          `}</style>
+
+          {/* grid paper behind everything, so the screen reads as the board */}
+          <div
+            className="absolute inset-0 opacity-[0.13]"
+            style={{
+              backgroundImage:
+                "repeating-linear-gradient(0deg,#ECA8B8 0 1px,transparent 1px 32px),repeating-linear-gradient(90deg,#ECA8B8 0 1px,transparent 1px 32px)",
+            }}
+          />
+
+          {/* the machine, with the sheet rolling up out of its platen */}
+          <div className="dywarp-machine relative w-[min(560px,88vw)] translate-y-6">
+            <div className="dywarp-sheet relative mx-auto w-[74%] border border-[#C9BEAA] border-b-0 bg-[#FCF8F1] px-5 pt-5 pb-10 shadow-[0_18px_38px_rgba(0,0,0,.55)]">
+              <span className="block border-t-2 border-dashed border-[#B9AC96]" />
+              <p className="mt-3 font-mono text-[9px] font-black uppercase tracking-[0.22em] text-[#8A7A62]">
+                Field log
+              </p>
+              <p className="dywarp-typed mt-1 whitespace-nowrap font-mono text-lg sm:text-2xl font-black uppercase tracking-tight text-[#1C1317]">
+                TODAY&apos;S LOG_
+              </p>
+              <span className="mt-3 block h-[3px] w-2/3 bg-[#1C1317]" />
+              <span className="mt-2 block h-[6px] w-full bg-[#1C1317]/15" />
+              <span className="mt-1.5 block h-[6px] w-5/6 bg-[#1C1317]/15" />
+            </div>
+
+            <div className="relative -mt-8">
+              <Typewriter className="block w-full h-auto" />
+            </div>
+          </div>
+
+          {/* clippings, pins and caption boxes rushing in to be filed */}
+          {[
+            { text: "\u{1F5DE}\uFE0F", x: "-44vw", y: "-30vh", rot: "-22deg" },
+            { text: "\u{1F4CC}", x: "42vw", y: "-26vh", rot: "16deg" },
+            { text: "\u{1F4F0}", x: "-34vw", y: "28vh", rot: "30deg" },
+            { text: "\u{1F577}\uFE0F", x: "38vw", y: "24vh", rot: "-14deg" },
+            { text: "\u{1F4DD}", x: "0vw", y: "-42vh", rot: "9deg" },
+            { text: "\u{1F4CD}", x: "-22vw", y: "-15vh", rot: "-28deg" },
+            { text: "\u{1F5FA}\uFE0F", x: "26vw", y: "13vh", rot: "24deg" },
+            { text: "\u{1F4CE}", x: "-27vw", y: "19vh", rot: "14deg" },
+            { text: "\u{1F4F8}", x: "47vw", y: "2vh", rot: "-38deg" },
+            { text: "\u{1F58B}\uFE0F", x: "-47vw", y: "3vh", rot: "18deg" },
+          ].map((item, idx) => (
+            <span
+              key={idx}
+              style={
+                {
+                  "--fly-x": item.x,
+                  "--fly-y": item.y,
+                  "--fly-rot": item.rot,
+                  animationDelay: `${idx * 0.05}s`,
+                } as React.CSSProperties
+              }
+              className="dywarp-clip absolute text-4xl sm:text-5xl select-none"
+            >
+              {item.text}
+            </span>
+          ))}
+
+          {/* comic bubble, parked under the machine so it never covers it */}
+          <div className="absolute bottom-[7vh] left-1/2 -translate-x-1/2 flex flex-col items-center animate-comic-pop">
+            <div className="bg-[#450A10] border-4 border-[#FAF4EB] shadow-[10px_10px_0_#17131A] px-6 py-4 rounded-2xl -rotate-1 flex items-center gap-4">
+              <span className="dywarp-bell text-4xl">&#128276;</span>
+              <div>
+                <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#E0B1AE] block">
+                  CHAPTER 06 &bull; SPIDER DIARY
+                </span>
+                <h2 className="font-marker text-2xl sm:text-4xl text-[#FAF4EB] leading-tight">
+                  *CLACK!* FEEDING THE SHEET...
+                </h2>
+              </div>
+              <span className="text-4xl animate-pulse">&#128393;</span>
+            </div>
+
+            <span className="font-handwriting text-2xl text-[#E0B1AE] mt-3 font-black drop-shadow-md">
+              Pinning every day we bothered to write down...
             </span>
           </div>
         </div>

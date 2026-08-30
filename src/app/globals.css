@@ -1277,7 +1277,13 @@ body {
   48% { opacity: 0.92; }
   51% { opacity: 0.58; }
 }
-.animate-skyline-flicker { animation: skyline-flicker 3.2s steps(7, end) infinite; }
+/* The skyline sits under a full-viewport `mix-blend-screen` image. Without a
+   layer hint every opacity step re-blends the whole viewport on the main
+   thread; promoting it keeps the flicker on the compositor. */
+.animate-skyline-flicker {
+  animation: skyline-flicker 3.2s steps(7, end) infinite;
+  will-change: opacity;
+}
 
 @keyframes peter-swing {
   0%, 100% { transform: rotate(-5deg) translateY(0); }
@@ -1287,36 +1293,63 @@ body {
   0%, 100% { transform: rotate(6deg) translateY(12px); }
   50% { transform: rotate(-9deg) translateY(-2px); }
 }
-.animate-peter-swing { animation: peter-swing 3.6s ease-in-out infinite; transform-origin: top center; }
-.animate-gwen-swing { animation: gwen-swing 4.2s ease-in-out infinite; transform-origin: top center; }
+/* Both swings carry hard-offset drop-shadow filters on the artwork inside them.
+   A filter on a subtree that moves every frame repaints every frame unless the
+   subtree owns a layer, which is what `will-change` buys here. */
+.animate-peter-swing {
+  animation: peter-swing 3.6s ease-in-out infinite;
+  transform-origin: top center;
+  will-change: transform;
+}
+.animate-gwen-swing {
+  animation: gwen-swing 4.2s ease-in-out infinite;
+  transform-origin: top center;
+  will-change: transform;
+}
 
 @keyframes web-drift {
   from { transform: translateX(-2%) scale(1); }
   to { transform: translateX(2%) scale(1.04); }
 }
-.animate-web-drift { animation: web-drift 7s ease-in-out infinite alternate; }
+/* Two 32rem stroked SVGs. Scaling an SVG re-rasterises it unless it is layered. */
+.animate-web-drift {
+  animation: web-drift 7s ease-in-out infinite alternate;
+  will-change: transform;
+}
 
-/* Screen Crawling Spiders */
+/* Screen Crawling Spiders
+
+   These three run forever on every screen that mounts them (dashboard, clock,
+   countdowns, timeline, digicam), so they are the app's single most expensive
+   piece of ambient motion. They used to animate `left` and `top`, which forces
+   a layout + full-document repaint on every frame of a 19-28s loop, on up to
+   four elements at once. The paths below are identical to the pixel: the start
+   offset moved onto the class as a static `left`/`top`, and the travel is now
+   a translate the compositor can run off the main thread.
+
+   The percentages inside each keyframe are the same interpolated positions the
+   old `left`/`top` values produced at those exact frames, so the flip still
+   happens at the same point in the crawl. */
 @keyframes crawl-screen-horizontal {
-  0% { left: -5%; transform: scaleX(1); }
-  49% { transform: scaleX(1); }
-  50% { left: 105%; transform: scaleX(-1); }
-  99% { transform: scaleX(-1); }
-  100% { left: -5%; transform: scaleX(1); }
+  0%   { transform: translate3d(0, 0, 0) scaleX(1); }
+  49%  { transform: translate3d(107.8vw, 0, 0) scaleX(1); }
+  50%  { transform: translate3d(110vw, 0, 0) scaleX(-1); }
+  99%  { transform: translate3d(2.2vw, 0, 0) scaleX(-1); }
+  100% { transform: translate3d(0, 0, 0) scaleX(1); }
 }
 
 @keyframes crawl-screen-diagonal {
-  0% { top: 10%; left: -5%; transform: rotate(15deg); }
-  50% { top: 85%; left: 105%; transform: rotate(15deg); }
-  51% { transform: rotate(195deg); }
-  100% { top: 10%; left: -5%; transform: rotate(195deg); }
+  0%   { transform: translate3d(0, 0, 0) rotate(15deg); }
+  50%  { transform: translate3d(110vw, 75vh, 0) rotate(15deg); }
+  51%  { transform: translate3d(107.8vw, 73.5vh, 0) rotate(195deg); }
+  100% { transform: translate3d(0, 0, 0) rotate(195deg); }
 }
 
 @keyframes crawl-screen-vertical {
-  0% { top: -5%; transform: rotate(90deg); }
-  50% { top: 105%; transform: rotate(90deg); }
-  51% { transform: rotate(-90deg); }
-  100% { top: -5%; transform: rotate(-90deg); }
+  0%   { transform: translate3d(0, 0, 0) rotate(90deg); }
+  50%  { transform: translate3d(0, 110vh, 0) rotate(90deg); }
+  51%  { transform: translate3d(0, 107.8vh, 0) rotate(-90deg); }
+  100% { transform: translate3d(0, 0, 0) rotate(-90deg); }
 }
 
 @keyframes hanging-spider-bounce {
@@ -1324,10 +1357,35 @@ body {
   50% { transform: translateY(18px); }
 }
 
-.animate-crawl-h { animation: crawl-screen-horizontal 22s linear infinite; }
-.animate-crawl-d { animation: crawl-screen-diagonal 28s linear infinite; }
-.animate-crawl-v { animation: crawl-screen-vertical 19s linear infinite; }
-.animate-hanging-bounce { animation: hanging-spider-bounce 3.5s ease-in-out infinite; }
+/* `right`/`bottom` are pinned to auto so the crawler is an auto-width box sitting
+   at its start offset. Some call sites pair these classes with a Tailwind
+   `right-12` / `bottom-16`, which used to over-constrain the box and squash its
+   width to zero mid-crawl; the emoji rendered in the same place either way, and
+   an auto box is what the translate needs to travel cleanly. */
+.animate-crawl-h {
+  left: -5%;
+  right: auto;
+  animation: crawl-screen-horizontal 22s linear infinite;
+  will-change: transform;
+}
+.animate-crawl-d {
+  top: 10%;
+  left: -5%;
+  right: auto;
+  bottom: auto;
+  animation: crawl-screen-diagonal 28s linear infinite;
+  will-change: transform;
+}
+.animate-crawl-v {
+  top: -5%;
+  bottom: auto;
+  animation: crawl-screen-vertical 19s linear infinite;
+  will-change: transform;
+}
+.animate-hanging-bounce {
+  animation: hanging-spider-bounce 3.5s ease-in-out infinite;
+  will-change: transform;
+}
 
 /* Mini Spidey Swing Along Timer */
 @keyframes spidey-clock-swing {
@@ -1340,16 +1398,19 @@ body {
   transform-origin: top center;
 }
 
-/* Spider-Bot Patrol */
+/* Spider-Bot Patrol. Same left-to-transform conversion as the crawlers above. */
 @keyframes spiderbot-patrol {
-  0% { left: 4%; transform: scaleX(1); }
-  48% { left: 90%; transform: scaleX(1); }
-  50% { left: 90%; transform: scaleX(-1); }
-  98% { left: 4%; transform: scaleX(-1); }
-  100% { left: 4%; transform: scaleX(1); }
+  0%   { transform: translate3d(0, 0, 0) scaleX(1); }
+  48%  { transform: translate3d(86vw, 0, 0) scaleX(1); }
+  50%  { transform: translate3d(86vw, 0, 0) scaleX(-1); }
+  98%  { transform: translate3d(0, 0, 0) scaleX(-1); }
+  100% { transform: translate3d(0, 0, 0) scaleX(1); }
 }
 .animate-spiderbot-patrol {
+  left: 4%;
+  right: auto;
   animation: spiderbot-patrol 14s linear infinite;
+  will-change: transform;
 }
 
 /* ================= CH. 02 COUNTDOWN WARP ANIMATIONS ================= */
@@ -1546,6 +1607,9 @@ body {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    /* Without this the infinite ambient loops keep restarting at 0.01ms apiece,
+       which is more main-thread work under reduced motion, not less. */
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }

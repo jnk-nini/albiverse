@@ -314,6 +314,11 @@ function FilmStrip({
                 <img
                   src={item.url}
                   alt=""
+                  /* Every thumbnail here is the full-size photo as a base64 data
+                     URL, so without these the strip decodes the whole gallery at
+                     full resolution the moment the chapter mounts. */
+                  loading="lazy"
+                  decoding="async"
                   className="absolute inset-0 w-full h-full object-cover"
                   style={{ filter: filterCss(item.filter), transform: frameTransform(f) }}
                 />
