@@ -51,22 +51,42 @@ export default function CoupleConnect({ userId, myInviteCode, onConnected }: Cou
         throw new Error("This Spider-Hero is already connected to another universe!");
       }
 
-      // 2. Create the shared couple entry
-      const { data: newCouple, error: coupleErr } = await supabase
+      /* 2. If these two were ever linked before and unlinked (Dashboard's
+         "Unlink" only clears couple_id, it never touches this table - see
+         Dashboard.tsx), reattach that same couple row instead of creating a
+         blank one, so their old shared scrapbook comes back instead of being
+         replaced. A pairing that's never existed between these two still
+         creates a fresh row exactly as before. */
+      const { data: existingCouple, error: existingErr } = await supabase
         .from("couples")
-        .insert({
-          partner_1_id: userId,
-          partner_2_id: partnerProfile.id,
-        })
-        .select()
-        .single();
+        .select("id")
+        .or(
+          `and(partner_1_id.eq.${userId},partner_2_id.eq.${partnerProfile.id}),and(partner_1_id.eq.${partnerProfile.id},partner_2_id.eq.${userId})`
+        )
+        .maybeSingle();
+      if (existingErr) throw existingErr;
 
-      if (coupleErr || !newCouple) throw coupleErr;
+      let coupleId: string;
+      if (existingCouple) {
+        coupleId = existingCouple.id;
+      } else {
+        const { data: newCouple, error: coupleErr } = await supabase
+          .from("couples")
+          .insert({
+            partner_1_id: userId,
+            partner_2_id: partnerProfile.id,
+          })
+          .select()
+          .single();
+
+        if (coupleErr || !newCouple) throw coupleErr;
+        coupleId = newCouple.id;
+      }
 
       // 3. Update both users with the shared couple ID
       const { error: profileUpdateError } = await supabase
         .from("profiles")
-        .update({ couple_id: newCouple.id })
+        .update({ couple_id: coupleId })
         .in("id", [userId, partnerProfile.id]);
       if (profileUpdateError) throw profileUpdateError;
 
@@ -82,7 +102,7 @@ export default function CoupleConnect({ userId, myInviteCode, onConnected }: Cou
     <div className="relative w-full max-w-md z-10">
       
       {/* Comic Washi Tape Badge */}
-      <div className="absolute -top-3 left-1/2 -translate-x-1/2 comic-washi-tape w-44 h-7 rounded-sm rotate-1 z-20 flex items-center justify-center">
+      <div className="absolute -top-3 left-1/2 -translate-x-1/2 tape-red-solid w-44 h-7 rounded-sm rotate-1 z-20 flex items-center justify-center">
         <span className="text-[9px] font-black tracking-widest text-pink-100 uppercase">
           DIMENSIONAL SYNC
         </span>
@@ -97,11 +117,11 @@ export default function CoupleConnect({ userId, myInviteCode, onConnected }: Cou
             <HeartHandshake className="w-7 h-7 text-pink-400" />
           </div>
           
-          <h2 className="text-2xl font-black text-white flex items-center justify-center gap-2 drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
+          <h2 className="text-2xl font-black text-[#1a0d10] flex items-center justify-center gap-2">
             Link Your Universe
             <Sparkles className="w-5 h-5 text-pink-400 animate-pulse" />
           </h2>
-          <p className="text-xs text-pink-200/80 mt-1 font-medium">
+          <p className="text-xs text-[#7a1f34] mt-1 font-medium">
             Connect your scrapbook with your partner across the multiverse.
           </p>
         </div>
@@ -129,7 +149,7 @@ export default function CoupleConnect({ userId, myInviteCode, onConnected }: Cou
             </button>
           </div>
           
-          <p className="text-[11px] text-pink-200/60 font-medium">
+          <p className="text-[11px] text-pink-100 font-medium">
             Share this code with your partner so they can join your story.
           </p>
         </div>
@@ -137,8 +157,8 @@ export default function CoupleConnect({ userId, myInviteCode, onConnected }: Cou
         {/* Enter Partner Code Form */}
         <form onSubmit={handleLinkPartner} className="space-y-4">
           <div>
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-pink-200 text-center mb-1.5">
-              Or Enter Partner's Web Code
+            <label className="block text-[11px] font-bold uppercase tracking-wider text-[#7a1f34] text-center mb-1.5">
+              Or Enter Partner&apos;s Web Code
             </label>
             <input
               type="text"

@@ -233,9 +233,10 @@ export default function TimelineScreen({
     setIsModalOpen(true);
   };
 
-  // Drag & Pan Handlers
-  const handleMouseDownCrop = (e: React.MouseEvent) => {
+  // Drag & Pan Handlers (Pointer Events cover mouse, touch and pen in one path)
+  const handlePointerDownCrop = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
     setIsDraggingImage(true);
     dragStartPos.current = {
       x: e.clientX,
@@ -245,7 +246,7 @@ export default function TimelineScreen({
     };
   };
 
-  const handleMouseMoveCrop = (e: React.MouseEvent) => {
+  const handlePointerMoveCrop = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!isDraggingImage || !dragStartPos.current) return;
     const deltaX = e.clientX - dragStartPos.current.x;
     const deltaY = e.clientY - dragStartPos.current.y;
@@ -253,7 +254,7 @@ export default function TimelineScreen({
     setPhotoY(Math.max(-100, Math.min(100, dragStartPos.current.startY + deltaY / 2.5)));
   };
 
-  const handleMouseUpCrop = () => {
+  const handlePointerUpCrop = () => {
     setIsDraggingImage(false);
     dragStartPos.current = null;
   };
@@ -730,12 +731,12 @@ export default function TimelineScreen({
                         POLAROID LIVE FRAME (1:1 WHAT YOU SEE IS WHAT YOU GET)
                       </span>
 
-                      <div 
-                        onMouseDown={handleMouseDownCrop}
-                        onMouseMove={handleMouseMoveCrop}
-                        onMouseUp={handleMouseUpCrop}
-                        onMouseLeave={handleMouseUpCrop}
-                        className={`relative w-64 h-64 aspect-square rounded bg-[#1A0D10] border-2 border-[#261D24] overflow-hidden select-none flex items-center justify-center ${
+                      <div
+                        onPointerDown={handlePointerDownCrop}
+                        onPointerMove={handlePointerMoveCrop}
+                        onPointerUp={handlePointerUpCrop}
+                        onPointerCancel={handlePointerUpCrop}
+                        className={`relative w-64 h-64 aspect-square rounded bg-[#1A0D10] border-2 border-[#261D24] overflow-hidden select-none touch-none flex items-center justify-center ${
                           isDraggingImage ? "cursor-grabbing" : "cursor-grab"
                         }`}
                       >

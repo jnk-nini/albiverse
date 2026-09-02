@@ -1,5 +1,15 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { checkRateLimit } from "@/lib/rateLimit";
+
+/* Quota/cost guardrails: this route is the only one that spends metered
+   YouTube API quota and eats a Vercel invocation per call, and it used to be
+   reachable by anyone who could sign up on the public login page - signing up
+   only needs an email, never joining a couple. The couple_id check below
+   closes that "free account, unlimited proxy" gap, and the rate limit stops
+   either partner's client (buggy or malicious) from looping. */
+const SEARCH_RATE_LIMIT = 40;
+const SEARCH_RATE_WINDOW_MS = 60_000;
 
 /* ================= CH.09 - THE FREE SEARCH ENGINE =================
    Track search runs through YouTube Data API v3. The key stays on the server:
@@ -100,6 +110,27 @@ export async function GET(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) {
     return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+  }
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("couple_id")
+    .eq("id", user.id)
+    .maybeSingle();
+  if (!profile?.couple_id) {
+    return NextResponse.json({ error: "Link both universes first." }, { status: 403 });
+  }
+
+  const { allowed, retryAfterSeconds } = checkRateLimit(
+    user.id,
+    SEARCH_RATE_LIMIT,
+    SEARCH_RATE_WINDOW_MS
+  );
+  if (!allowed) {
+    return NextResponse.json(
+      { configured: true, results: [], error: "Searching too fast - give it a moment." },
+      { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } }
+    );
   }
 
   const key = process.env.YOUTUBE_API_KEY;

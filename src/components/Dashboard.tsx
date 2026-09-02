@@ -5,8 +5,8 @@ import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import SpideyBackground from "./SpideyBackground";
 import { Typewriter } from "./DiaryArt";
-import AmbientSound from "./AmbientSound";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
+import { createClient } from "@/lib/supabase/client";
 import {
   Clock,
   Calendar,
@@ -29,8 +29,21 @@ import {
   UserCheck,
   Sparkles,
   List,
+  Loader2,
+  RotateCcw,
   X
 } from "lucide-react";
+
+const COVER_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
+    reader.readAsDataURL(file);
+  });
+}
 
 interface DashboardProps {
   user: any;
@@ -58,13 +71,20 @@ export default function Dashboard({
   const [isPageFlipSequence, setIsPageFlipSequence] = useState(false);
   const [pageFlipRect, setPageFlipRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [hasCoverImageError, setHasCoverImageError] = useState(false);
-  
+
+  // undefined = no local override yet, defer to couple?.cover_image_data
+  // null      = explicitly reset to default this session
+  // string    = freshly uploaded base64 data URL
+  const [coverOverride, setCoverOverride] = useState<string | null | undefined>(undefined);
+  const [coverUploadError, setCoverUploadError] = useState<string | null>(null);
+  const coverFileInputRef = useRef<HTMLInputElement>(null);
+  const supabase = useMemo(() => createClient(), []);
+
   // Track failed page images by page number
   const [pageImageErrors, setPageImageErrors] = useState<Record<number, boolean>>({});
 
   const [bloomPhase, setBloomPhase] = useState<"bursting" | "sliding-down" | null>(null);
   const openTimersRef = useRef<number[]>([]);
-  const [unlinking, setUnlinking] = useState(false);
 
   // Big & Fun Transition State for Live Clock Warp
   const [isWarpingToClock, setIsWarpingToClock] = useState(false);
@@ -81,6 +101,17 @@ export default function Dashboard({
 
   const myName = profile?.full_name || "Gwen Stacy";
   const partnerName = partner?.full_name || "Peter Parker";
+
+  const coupleId = couple?.id as string | undefined;
+  /* No shared static default image on purpose - the original placeholder,
+     /images/scrapbook/Journal-cover.webp, turned out to be a real photo of
+     Nini and her partner, which meant every couple who hadn't uploaded their
+     own cover yet (i.e. every new signup on the now-public app) was shown a
+     stranger's personal photo by default. The hand-drawn CSS placeholder
+     below (no photo, just paper/type) is the real default now; a couple's
+     own upload is the only way a photo ever appears here. */
+  const effectiveCoverImageData =
+    coverOverride !== undefined ? coverOverride : (couple?.cover_image_data ?? null);
 
   
 
@@ -157,10 +188,86 @@ export default function Dashboard({
     }, 1250);
   };
 
+  /* Clean break, not a delete: this only clears both profiles' couple_id
+     (via profiles_unlink_participant, an RLS policy that already existed for
+     exactly this and was simply never called from the UI before now) - the
+     couples row and every piece of shared content under it (media, letters,
+     diary, mixtapes...) is left completely untouched. If the same two people
+     ever link to each other again, CoupleConnect.tsx's re-link check finds
+     that old couples row by partner-id pair and reattaches it instead of
+     creating a blank one, so the content comes back. A brand-new pairing
+     with someone else, though, always starts fresh - it has no way to find
+     (and shouldn't get access to) a couple it was never part of. */
   const handleUnlink = async () => {
-    if (!confirm("Are you sure you want to disconnect both universes?")) return;
-    setUnlinking(true);
+    if (!confirm("Are you sure you want to disconnect both universes? Your shared scrapbook will stay saved in case you two link again later.")) return;
+    await runUnlink();
+  };
+
+  const [runUnlink, unlinking] = useGuardedAction(async () => {
+    const myId = (profile?.id ?? user?.id) as string | undefined;
+    const partnerId = partner?.id as string | undefined;
+    const ids = [myId, partnerId].filter(Boolean) as string[];
+    if (ids.length === 0) return;
+
+    const { error } = await supabase.from("profiles").update({ couple_id: null }).in("id", ids);
+    if (error) {
+      alert(`Could not unlink: ${error.message}`);
+      return;
+    }
+
     if (onUnlinked) onUnlinked();
+  }, 500);
+
+  const [runCoverUpload, coverUploading] = useGuardedAction(async (file: File) => {
+    if (!coupleId) return;
+    setCoverUploadError(null);
+
+    if (!file.type.startsWith("image/")) {
+      setCoverUploadError("Please choose an image file.");
+      return;
+    }
+    if (file.size > COVER_MAX_IMAGE_BYTES) {
+      setCoverUploadError(`Keep the cover photo under ${COVER_MAX_IMAGE_BYTES / (1024 * 1024)}MB.`);
+      return;
+    }
+
+    const dataUrl = await readFileAsDataUrl(file);
+    const { error } = await supabase
+      .from("couples")
+      .update({ cover_image_data: dataUrl })
+      .eq("id", coupleId);
+
+    if (error) {
+      setCoverUploadError(error.message);
+      return;
+    }
+
+    setCoverOverride(dataUrl);
+    setHasCoverImageError(false);
+  }, 800);
+
+  const [runCoverReset, coverResetting] = useGuardedAction(async () => {
+    if (!coupleId) return;
+    setCoverUploadError(null);
+
+    const { error } = await supabase
+      .from("couples")
+      .update({ cover_image_data: null })
+      .eq("id", coupleId);
+
+    if (error) {
+      setCoverUploadError(error.message);
+      return;
+    }
+
+    setCoverOverride(null);
+    setHasCoverImageError(false);
+  }, 500);
+
+  const handleCoverFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) void runCoverUpload(file);
   };
 
   const [runSignOut, signingOut] = useGuardedAction(onSignOut, 600);
@@ -569,7 +676,6 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     <main className="min-h-screen p-3 sm:p-6 lg:p-8 flex flex-col justify-between relative overflow-hidden select-none bg-[#181114]">
       
       <SpideyBackground />
-      <AmbientSound coupleId={couple?.id} />
 
       <div className="fixed top-8 animate-crawl-h text-xl z-10 pointer-events-none">🕷️</div>
       <div className="fixed animate-crawl-d text-2xl z-10 pointer-events-none">🕷️</div>
@@ -665,10 +771,10 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
                   ))}
                 </div>
 
-                {!hasCoverImageError ? (
+                {!hasCoverImageError && effectiveCoverImageData ? (
                   <div className="ml-5 sm:ml-7 flex-1 border-3 border-[#261D24] rounded-lg shadow-inner relative overflow-hidden flex flex-col justify-between bg-[#1B0D12]">
-                    <img 
-                      src="/images/scrapbook/Journal-cover.webp" 
+                    <img
+                      src={effectiveCoverImageData}
                       alt="Scrapbook Cover"
                       loading="eager"
                       fetchPriority="high"
@@ -758,6 +864,59 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
 
                   </div>
                 )}
+
+                {/* Cover photo controls sit above whichever branch is
+                   showing (real photo or the CSS placeholder) so the
+                   "add a photo" trigger is always available - not just once
+                   a couple already has a custom cover. */}
+                <div className="absolute top-4 right-4 z-40 flex flex-col items-end gap-2">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        coverFileInputRef.current?.click();
+                      }}
+                      disabled={coverUploading}
+                      title="Change cover photo"
+                      className="w-9 h-9 rounded-full bg-[#FAF7F2] hover:bg-white text-[#261D24] border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] flex items-center justify-center transition cursor-pointer disabled:opacity-60 disabled:pointer-events-none"
+                    >
+                      {coverUploading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Camera className="w-4 h-4" />
+                      )}
+                    </button>
+                    {effectiveCoverImageData && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void runCoverReset();
+                        }}
+                        disabled={coverResetting}
+                        title="Reset to default cover"
+                        className="w-7 h-7 rounded-full bg-[#3C1820] hover:bg-[#5A2029] text-[#E0B1AE] border-2 border-[#261D24] shadow-[2px_2px_0_#171B22] flex items-center justify-center transition cursor-pointer disabled:opacity-60 disabled:pointer-events-none"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  {coverUploadError && (
+                    <span className="max-w-[140px] text-right font-mono text-[9px] font-bold text-[#F2E6D2] bg-[#5A2029] border border-[#261D24] px-2 py-1 shadow-[2px_2px_0_#171B22]">
+                      {coverUploadError}
+                    </span>
+                  )}
+                </div>
+
+                <input
+                  ref={coverFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={handleCoverFileChange}
+                />
 
               </div>
             </div>
@@ -930,12 +1089,31 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
               pages underneath (z-0) already swap to the destination content the
               instant a flip starts, so removing the clip lets that show through
               continuously as the leaf turns. */}
-          <div className="paper-open-notebook-spread min-h-[460px] sm:min-h-[520px] p-4 sm:p-8 relative grid grid-cols-1 md:grid-cols-2 gap-6">
-            
+          <div className="paper-open-notebook-spread min-h-[460px] sm:min-h-[520px] p-4 sm:p-8 relative grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-6">
+
             <div className="hidden md:block absolute inset-y-0 left-1/2 -translate-x-1/2 w-12 book-gutter-crease pointer-events-none z-30" />
+
+            {/* Mobile-only spiral notebook binding: below md the two chapters
+                stack instead of sitting side by side, so there's no hardcover
+                spine to sell the "book" read - a wire coil along the top edge
+                (the same .spiral-binder-ring used on the closed cover, just
+                rotated 90deg into a row instead of a column) ties the stack
+                together as one bound notepad instead of two loose cards. */}
+            <div
+              className="flex md:hidden items-center justify-center gap-2.5 absolute -top-3 left-0 right-0 z-30 pointer-events-none px-8"
+              aria-hidden
+            >
+              {Array.from({ length: 9 }).map((_, i) => (
+                <div key={i} className="w-7 h-2.5 spiral-binder-ring border border-black/60 rotate-90 shrink-0" />
+              ))}
+            </div>
 
             {/* Base Left Page */}
             <div className="h-full relative z-0">
+              {/* Fold shadow where the mobile stack "turns" into the second
+                  page beneath it - hidden on desktop, where the two pages sit
+                  side by side with the real gutter crease between them instead. */}
+              <div className="md:hidden absolute -bottom-2.5 inset-x-3 h-3 bg-gradient-to-b from-black/25 to-transparent blur-[2px] pointer-events-none z-20" aria-hidden />
               {flippingState === "backward"
                 ? renderChapterContent(prevLeft, (currentSpread - 1) * 2 + 1)
                 : renderChapterContent(curLeft, currentSpread * 2 + 1)}
