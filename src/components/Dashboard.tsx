@@ -5,7 +5,6 @@ import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import SpideyBackground from "./SpideyBackground";
 import { Typewriter } from "./DiaryArt";
-import AmbientSound from "./AmbientSound";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import {
   Clock,
@@ -569,7 +568,6 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     <main className="min-h-screen p-3 sm:p-6 lg:p-8 flex flex-col justify-between relative overflow-hidden select-none bg-[#181114]">
       
       <SpideyBackground />
-      <AmbientSound coupleId={couple?.id} />
 
       <div className="fixed top-8 animate-crawl-h text-xl z-10 pointer-events-none">🕷️</div>
       <div className="fixed animate-crawl-d text-2xl z-10 pointer-events-none">🕷️</div>

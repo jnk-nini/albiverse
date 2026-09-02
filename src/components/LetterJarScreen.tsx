@@ -1665,7 +1665,6 @@ export default function LetterJarScreen({
                       letter={l}
                       left={50}
                       top={0}
-                      below={false}
                       fromName={nameOf(l.sender_id)}
                       sealed={!myMarks[l.id]?.opened_at}
                       locked={isLocked(l)}
@@ -1929,15 +1928,23 @@ export default function LetterJarScreen({
                     space above it inside the glass itself. Loose rolls
                     (outside the glass, on the desk) keep their own
                     percentage-anchored tag - unrelated, unaffected. */}
-                {hoverAnchor && !phase && (
-                  <JarHoverTag
-                    letter={letters.find((l) => l.id === hovered) as Letter}
-                    anchor={hoverAnchor}
-                    fromName={nameOf((letters.find((l) => l.id === hovered) as Letter).sender_id)}
-                    sealed={!myMarks[hovered as string]?.opened_at}
-                    locked={isLocked(letters.find((l) => l.id === hovered) as Letter)}
-                  />
-                )}
+                {hoverAnchor && !phase && (() => {
+                  /* `hovered` can outlive the letter it points to - e.g. the
+                     list changes out from under an in-progress hover - so
+                     this has to actually check, not just assert the type
+                     away and crash on a missing letter's .sender_id. */
+                  const hoveredLetter = letters.find((l) => l.id === hovered);
+                  if (!hoveredLetter) return null;
+                  return (
+                    <JarHoverTag
+                      letter={hoveredLetter}
+                      anchor={hoverAnchor}
+                      fromName={nameOf(hoveredLetter.sender_id)}
+                      sealed={!myMarks[hovered as string]?.opened_at}
+                      locked={isLocked(hoveredLetter)}
+                    />
+                  );
+                })()}
               </div>
             </div>
           )}

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { AudioPlayerProvider } from "@/components/AudioPlayerProvider";
 
 export const metadata: Metadata = {
   title: "Albiverse | Across Every Universe",
@@ -21,7 +22,9 @@ export default function RootLayout({
           rel="stylesheet"
         />
       </head>
-      <body>{children}</body>
+      <body>
+        <AudioPlayerProvider>{children}</AudioPlayerProvider>
+      </body>
     </html>
   );
 }

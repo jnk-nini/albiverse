@@ -58,6 +58,7 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import { encodeQr } from "@/lib/qr";
+import { useMixtapePlayer, type MixtapeTrack as Track } from "./AudioPlayerProvider";
 import {
   Boombox,
   Cassette,
@@ -96,23 +97,6 @@ type Mixtape = {
   shell_style: string;
   tape_rotation: number;
   share_slug: string;
-  created_at: string;
-};
-
-type Track = {
-  id: string;
-  mixtape_id: string;
-  couple_id: string;
-  added_by: string;
-  position: number;
-  title: string;
-  artist: string | null;
-  source: "youtube" | "local";
-  youtube_id: string | null;
-  thumbnail_url: string | null;
-  media_type: "audio" | "video";
-  duration_seconds: number | null;
-  liner_note: string | null;
   created_at: string;
 };
 
@@ -240,58 +224,6 @@ function useClack() {
   }, []);
 }
 
-/* --------------------------------------------------- YouTube IFrame loader */
-
-type YtPlayer = {
-  playVideo: () => void;
-  pauseVideo: () => void;
-  loadVideoById: (id: string) => void;
-  cueVideoById: (id: string) => void;
-  seekTo: (seconds: number, allowSeekAhead: boolean) => void;
-  setVolume: (v: number) => void;
-  getCurrentTime: () => number;
-  getDuration: () => number;
-  destroy: () => void;
-};
-
-type YtNamespace = {
-  Player: new (
-    el: HTMLElement | string,
-    options: Record<string, unknown>
-  ) => YtPlayer;
-  PlayerState: { ENDED: number; PLAYING: number; PAUSED: number; BUFFERING: number };
-};
-
-declare global {
-  interface Window {
-    YT?: YtNamespace;
-    onYouTubeIframeAPIReady?: () => void;
-  }
-}
-
-let ytApiPromise: Promise<YtNamespace> | null = null;
-
-function loadYoutubeApi(): Promise<YtNamespace> {
-  if (typeof window === "undefined") return Promise.reject(new Error("no window"));
-  if (window.YT?.Player) return Promise.resolve(window.YT);
-  if (ytApiPromise) return ytApiPromise;
-
-  ytApiPromise = new Promise<YtNamespace>((resolve, reject) => {
-    const previous = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => {
-      previous?.();
-      if (window.YT?.Player) resolve(window.YT);
-      else reject(new Error("YouTube player did not load."));
-    };
-    const script = document.createElement("script");
-    script.src = "https://www.youtube.com/iframe_api";
-    script.async = true;
-    script.onerror = () => reject(new Error("Could not load the YouTube player."));
-    document.head.appendChild(script);
-  });
-  return ytApiPromise;
-}
-
 /* ============================================================== the screen */
 
 export default function SoundtrackScreen({
@@ -304,6 +236,7 @@ export default function SoundtrackScreen({
 }: SoundtrackScreenProps) {
   const supabase = useMemo(() => createClient(), []);
   const clack = useClack();
+  const mixtape = useMixtapePlayer();
 
   /* ---------------------------------------------------------------- data */
   const [tapes, setTapes] = useState<Mixtape[]>([]);
@@ -317,26 +250,10 @@ export default function SoundtrackScreen({
   const [droppingTapeId, setDroppingTapeId] = useState<string | null>(null);
 
   /* ------------------------------------------------------------- playback */
-  const [currentTrackId, setCurrentTrackId] = useState<string | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isBuffering, setIsBuffering] = useState(false);
-  const [volume, setVolume] = useState(80);
-  const [ytReady, setYtReady] = useState(false);
-  /* A youtube id waiting for the player to become ready. Deliberately its own
-     state, NOT the same flag as `isBuffering`: the YT player also flips
-     `isBuffering` to true on every routine BUFFERING event during normal
-     playback, and the queued-start effect used to key off THAT SAME flag - so
-     the moment a freshly-started video buffered even once, the effect saw
-     "isBuffering=true" and reloaded the video from scratch, which buffered
-     again, forever. This flag only means "call loadVideoById once ytReady". */
-  const [pendingYoutubeId, setPendingYoutubeId] = useState<string | null>(null);
-  const [elapsed, setElapsed] = useState(0);
-  const [duration, setDuration] = useState(0);
-  /* "off" wraps only when skipping manually and stops at the end of the tape
-     when a track finishes on its own; "all" also wraps on natural end; "one"
-     replays the same track forever. Shuffle only changes what "next" means. */
-  const [repeatMode, setRepeatMode] = useState<"off" | "all" | "one">("off");
-  const [shuffleOn, setShuffleOn] = useState(false);
+  /* Play/pause/queue/seek state all now live in the global AudioPlayerProvider
+     (`mixtape` above), so this survives navigating away from the chapter.
+     What stays local here: which tape's tracklist is currently in view, and
+     the presentational flags around the boombox drop animation. */
   /* Set when a board widget (the "fresh off the tape" card) wants a specific
      track playing the moment its tape finishes dropping into the boombox,
      rather than just opening on the tracklist like a normal pick-up does. */
@@ -364,13 +281,7 @@ export default function SoundtrackScreen({
   const [apiConfigured, setApiConfigured] = useState(true);
 
   /* -------------------------------------------------------------- refs */
-  const ytRef = useRef<YtPlayer | null>(null);
-  const volumeRef = useRef(80);
-  const ytHostRef = useRef<HTMLDivElement | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
   const seekTrackRef = useRef<HTMLDivElement | null>(null);
-  const blobCacheRef = useRef<Map<string, string>>(new Map());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mirrorRef = useRef<HTMLSpanElement | null>(null);
   const nameInputRef = useRef<HTMLInputElement | null>(null);
@@ -388,12 +299,6 @@ export default function SoundtrackScreen({
         .sort((a, b) => a.position - b.position || a.created_at.localeCompare(b.created_at)),
     [tracks, activeTapeId]
   );
-  const currentTrack = useMemo(
-    () => tapeTracks.find((t) => t.id === currentTrackId) ?? null,
-    [tapeTracks, currentTrackId]
-  );
-  const currentIndex = currentTrack ? tapeTracks.indexOf(currentTrack) : -1;
-
   const trackCounts = useMemo(() => {
     const map = new Map<string, number>();
     for (const t of tracks) map.set(t.mixtape_id, (map.get(t.mixtape_id) ?? 0) + 1);
@@ -598,143 +503,13 @@ export default function SoundtrackScreen({
     node.style.setProperty("--st-progress", fraction.toFixed(4));
   }, []);
 
-  /* One polling loop for both engines. 250ms is smooth enough for a bead on a
-     thread and cheap enough to leave running. */
+  /* Mirrors mixtape.elapsed/mixtape.duration (now polled by the global
+     provider) into the seek bar's CSS custom properties. This write has to
+     stay a direct DOM mutation rather than a React re-render, so a drag never
+     fights the render cycle - see writeProgress above. */
   useEffect(() => {
-    if (stage !== "player" || !currentTrack) return;
-
-    const tick = () => {
-      let position = 0;
-      let total = 0;
-      if (currentTrack.source === "youtube") {
-        const p = ytRef.current;
-        if (!p) return;
-        try {
-          position = p.getCurrentTime();
-          total = p.getDuration();
-        } catch {
-          return;
-        }
-      } else {
-        const el = currentTrack.media_type === "video" ? videoRef.current : audioRef.current;
-        if (!el) return;
-        position = el.currentTime;
-        total = Number.isFinite(el.duration) ? el.duration : 0;
-      }
-      writeProgress(position, total);
-      setElapsed(position);
-      setDuration(total);
-    };
-
-    tick();
-    const id = window.setInterval(tick, 250);
-    return () => window.clearInterval(id);
-  }, [stage, currentTrack, writeProgress]);
-
-  useEffect(() => {
-    return () => {
-      try {
-        ytRef.current?.destroy();
-      } catch {
-        /* the iframe may already be gone with the unmounted subtree */
-      }
-      ytRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    volumeRef.current = volume;
-    try {
-      ytRef.current?.setVolume(volume);
-    } catch {
-      /* not ready yet */
-    }
-    if (audioRef.current) audioRef.current.volume = volume / 100;
-    if (videoRef.current) videoRef.current.volume = volume / 100;
-  }, [volume]);
-
-  /* --------------------------------------------------------- play a track */
-
-  const fetchBlob = useCallback(
-    async (trackId: string): Promise<string | null> => {
-      const cached = blobCacheRef.current.get(trackId);
-      if (cached) return cached;
-      const { data, error: blobError } = await supabase
-        .from("mixtape_tracks")
-        .select("audio_data")
-        .eq("id", trackId)
-        .eq("couple_id", coupleId)
-        .maybeSingle();
-      if (blobError || !data?.audio_data) return null;
-      blobCacheRef.current.set(trackId, data.audio_data);
-      return data.audio_data;
-    },
-    [supabase, coupleId]
-  );
-
-  const playTrack = useCallback(
-    async (track: Track) => {
-      setError(null);
-      setCurrentTrackId(track.id);
-      setElapsed(0);
-      setDuration(track.duration_seconds ?? 0);
-      writeProgress(0, track.duration_seconds ?? 0);
-
-      if (track.source === "youtube") {
-        if (audioRef.current) audioRef.current.pause();
-        if (videoRef.current) videoRef.current.pause();
-        const player = ytRef.current;
-        /* `ytRef.current` is set the instant `new YT.Player(...)` returns, but
-           its API methods (loadVideoById etc.) aren't wired up until `onReady`
-           fires some time later - calling one before that throws a TypeError
-           ("loadVideoById is not a function"), which used to abort this
-           function before setIsPlaying ever ran. Local tracks never touched
-           this branch, which is why only they appeared to work. Route through
-           the same "wait for ready" queue the deferred effect already reads. */
-        if (!player || !ytReady || !track.youtube_id) {
-          setPendingYoutubeId(track.youtube_id ?? null);
-          setIsBuffering(true);
-          return;
-        }
-        try {
-          player.loadVideoById(track.youtube_id);
-          player.setVolume(volumeRef.current);
-          setIsPlaying(true);
-          setPendingYoutubeId(null);
-        } catch {
-          setPendingYoutubeId(track.youtube_id);
-          setIsBuffering(true);
-        }
-        return;
-      }
-
-      try {
-        ytRef.current?.pauseVideo();
-      } catch {
-        /* nothing loaded yet */
-      }
-
-      setIsBuffering(true);
-      const src = await fetchBlob(track.id);
-      setIsBuffering(false);
-      if (!src) {
-        setError("That bootleg could not be found on the tape.");
-        return;
-      }
-      const el = track.media_type === "video" ? videoRef.current : audioRef.current;
-      if (!el) return;
-      el.src = src;
-      el.volume = volume / 100;
-      try {
-        await el.play();
-        setIsPlaying(true);
-      } catch {
-        setIsPlaying(false);
-        setError("The browser blocked playback. Press play again.");
-      }
-    },
-    [fetchBlob, volume, writeProgress, ytReady]
-  );
+    writeProgress(mixtape.elapsed, mixtape.duration);
+  }, [mixtape.elapsed, mixtape.duration, writeProgress]);
 
   /* The other half of pendingPlayTrackId: once the boombox drop lands on the
      player, start the specific track the board widget asked for instead of
@@ -743,218 +518,33 @@ export default function SoundtrackScreen({
     if (stage !== "player" || !pendingPlayTrackId) return;
     const track = tracks.find((t) => t.id === pendingPlayTrackId);
     setPendingPlayTrackId(null);
-    if (track) void playTrack(track);
-  }, [stage, pendingPlayTrackId, tracks, playTrack]);
+    if (track) mixtape.play(track, tapeTracks, track.mixtape_id);
+  }, [stage, pendingPlayTrackId, tracks, tapeTracks, mixtape]);
 
-  const togglePlay = useCallback(() => {
-    if (!currentTrack) {
+  /* mixtape.togglePlay()/skip() only ever act on whatever the engine already
+     has loaded. The very first press - nothing loaded into it yet - has to
+     supply the currently-viewed tape's tracklist as the starting queue, the
+     same way the old local implementation read off its own `tapeTracks`. */
+  const handleTogglePlay = useCallback(() => {
+    if (!mixtape.currentTrack) {
       const first = tapeTracks[0];
-      if (first) void playTrack(first);
+      if (first && activeTape) mixtape.play(first, tapeTracks, activeTape.id);
       return;
     }
-    if (currentTrack.source === "youtube") {
-      const player = ytRef.current;
-      /* Same readiness gate as playTrack - a track can already be "current"
-         while its player is still mid-buffering (e.g. the API was loading
-         when it was first picked), and calling a method before onReady throws. */
-      if (!player || !ytReady) return;
-      try {
-        if (isPlaying) {
-          player.pauseVideo();
-          setIsPlaying(false);
-        } else {
-          player.playVideo();
-          setIsPlaying(true);
-        }
-      } catch {
-        /* not actually ready yet; the queued-start effect will catch up */
-      }
-      return;
-    }
-    const el = currentTrack.media_type === "video" ? videoRef.current : audioRef.current;
-    if (!el) return;
-    if (isPlaying) {
-      el.pause();
-      setIsPlaying(false);
-    } else {
-      void el.play().then(
-        () => setIsPlaying(true),
-        () => setIsPlaying(false)
-      );
-    }
-  }, [currentTrack, isPlaying, playTrack, tapeTracks, ytReady]);
+    mixtape.togglePlay();
+  }, [mixtape, tapeTracks, activeTape]);
 
-  /* Shuffle only changes what "a different track" means; it never touches
-     track order in the tracklist itself. */
-  const pickShuffledIndex = useCallback(
-    (excludeIndex: number) => {
-      if (tapeTracks.length <= 1) return excludeIndex < 0 ? 0 : excludeIndex;
-      let idx = Math.floor(Math.random() * tapeTracks.length);
-      while (idx === excludeIndex) idx = Math.floor(Math.random() * tapeTracks.length);
-      return idx;
-    },
-    [tapeTracks]
-  );
-
-  const skipTo = useCallback(
+  const handleSkip = useCallback(
     (delta: number) => {
-      if (tapeTracks.length === 0) return;
-      const from = currentIndex >= 0 ? currentIndex : -1;
-      /* Repeat-one is a lock on the current track: Prev/Next restart it
-         instead of leaving it, same as a natural end already does. */
-      if (repeatMode === "one" && from >= 0) {
-        void playTrack(tapeTracks[from]);
+      if (!mixtape.currentTrack) {
+        if (tapeTracks.length === 0 || !activeTape) return;
+        const next = (-1 + delta + tapeTracks.length) % tapeTracks.length;
+        mixtape.play(tapeTracks[next], tapeTracks, activeTape.id);
         return;
       }
-      if (shuffleOn) {
-        void playTrack(tapeTracks[pickShuffledIndex(from)]);
-        return;
-      }
-      const next = (from + delta + tapeTracks.length) % tapeTracks.length;
-      void playTrack(tapeTracks[next]);
+      mixtape.skip(delta);
     },
-    [currentIndex, pickShuffledIndex, playTrack, repeatMode, shuffleOn, tapeTracks]
-  );
-
-  /* What happens when a track finishes on its own, as opposed to being
-     skipped by hand - manual Prev/Next always moves; a natural end respects
-     repeat/shuffle and can legitimately stop at the end of the tape. */
-  const handleTrackEnded = useCallback(() => {
-    if (tapeTracks.length === 0) return;
-    const from = currentIndex >= 0 ? currentIndex : 0;
-    if (repeatMode === "one") {
-      void playTrack(tapeTracks[from]);
-      return;
-    }
-    if (shuffleOn) {
-      if (tapeTracks.length === 1 && repeatMode !== "all") {
-        setIsPlaying(false);
-        return;
-      }
-      void playTrack(tapeTracks[pickShuffledIndex(from)]);
-      return;
-    }
-    const isLast = from === tapeTracks.length - 1;
-    if (isLast && repeatMode !== "all") {
-      setIsPlaying(false);
-      return;
-    }
-    void playTrack(tapeTracks[(from + 1) % tapeTracks.length]);
-  }, [currentIndex, pickShuffledIndex, playTrack, repeatMode, shuffleOn, tapeTracks]);
-
-  /* Read inside the YouTube player's onStateChange, which is wired up once
-     when the player is created (see ytRef.current guard below) and would
-     otherwise keep calling a stale closure forever, same reasoning as
-     volumeRef just above. */
-  const trackEndedRef = useRef(() => {});
-  useEffect(() => {
-    trackEndedRef.current = handleTrackEnded;
-  }, [handleTrackEnded]);
-
-  /* ------------------------------------------------- the YouTube player */
-
-  /* Built lazily: a tape of nothing but local bootlegs never loads the iframe
-     API at all. `ytReady` exists because a ref is not a reactive dependency,
-     and something has to tell the "start what is queued" effect below that the
-     player finally exists. */
-  useEffect(() => {
-    if (stage !== "player") return;
-    if (!tapeTracks.some((t) => t.source === "youtube")) return;
-    if (ytRef.current) return;
-
-    let cancelled = false;
-    void loadYoutubeApi()
-      .then((YT) => {
-        if (cancelled || !ytHostRef.current || ytRef.current) return;
-        ytRef.current = new YT.Player(ytHostRef.current, {
-          height: "100%",
-          width: "100%",
-          playerVars: {
-            controls: 0,
-            disablekb: 1,
-            modestbranding: 1,
-            rel: 0,
-            playsinline: 1,
-            iv_load_policy: 3,
-          },
-          events: {
-            onReady: () => {
-              ytRef.current?.setVolume(volumeRef.current);
-              setYtReady(true);
-            },
-            onStateChange: (event: { data: number }) => {
-              if (event.data === YT.PlayerState.ENDED) trackEndedRef.current();
-              setIsBuffering(event.data === YT.PlayerState.BUFFERING);
-              if (event.data === YT.PlayerState.PLAYING) setIsPlaying(true);
-              if (event.data === YT.PlayerState.PAUSED) setIsPlaying(false);
-            },
-            onError: () => {
-              setError("That track would not play. It may be blocked from embedding.");
-              setIsPlaying(false);
-            },
-          },
-        });
-      })
-      .catch(() => {
-        if (!cancelled) setError("The YouTube player could not load.");
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [stage, tapeTracks]);
-
-  /* A YouTube track can be picked before the iframe API has finished loading
-     (or before a stray call throws pre-onReady, see playTrack). This effect
-     runs the queued load once the player is actually ready.
-
-     It keys ONLY on `ytReady` and `pendingYoutubeId` - never on `isBuffering`.
-     `isBuffering` also flips true on every ordinary BUFFERING event during
-     normal playback (see onStateChange below), which is unrelated to "this
-     track is still waiting for the player". Keying this effect off that same
-     flag meant a video buffering completely normally would look identical to
-     "still queued", so the effect fired again, called loadVideoById again,
-     which naturally re-buffers, which fires the effect again - reloading the
-     same video from the start forever instead of ever letting it play. */
-  useEffect(() => {
-    if (!ytReady || !pendingYoutubeId) return;
-    const player = ytRef.current;
-    if (!player) return;
-    try {
-      player.loadVideoById(pendingYoutubeId);
-      player.setVolume(volumeRef.current);
-      setIsPlaying(true);
-      setIsBuffering(false);
-      setPendingYoutubeId(null);
-    } catch {
-      /* still not truly callable; stays queued and this effect will not fire
-         again on its own until pendingYoutubeId or ytReady changes again */
-    }
-  }, [ytReady, pendingYoutubeId]);
-
-  const seekToFraction = useCallback(
-    (fraction: number) => {
-      const clamped = Math.min(1, Math.max(0, fraction));
-      if (!currentTrack) return;
-      if (currentTrack.source === "youtube") {
-        const player = ytRef.current;
-        if (!player || !ytReady) return;
-        try {
-          const total = player.getDuration();
-          if (!total) return;
-          player.seekTo(total * clamped, true);
-          writeProgress(total * clamped, total);
-        } catch {
-          /* not actually ready yet */
-        }
-        return;
-      }
-      const el = currentTrack.media_type === "video" ? videoRef.current : audioRef.current;
-      if (!el || !Number.isFinite(el.duration)) return;
-      el.currentTime = el.duration * clamped;
-      writeProgress(el.currentTime, el.duration);
-    },
-    [currentTrack, writeProgress, ytReady]
+    [mixtape, tapeTracks, activeTape]
   );
 
   const handleSeekPointer = useCallback(
@@ -965,7 +555,7 @@ export default function SoundtrackScreen({
       if (rect.width === 0) return;
 
       const seekFromClientX = (clientX: number) => {
-        seekToFraction((clientX - rect.left) / rect.width);
+        mixtape.seekToFraction((clientX - rect.left) / rect.width);
       };
 
       seekFromClientX(event.clientX);
@@ -988,7 +578,26 @@ export default function SoundtrackScreen({
       node.addEventListener("pointerup", up);
       node.addEventListener("pointercancel", up);
     },
-    [seekToFraction]
+    [mixtape]
+  );
+
+  /* Hands the viewfinder's window to the global engine for exactly as long as
+     the <div> is actually mounted (i.e. only while stage === "player"), so
+     its <video>/YouTube iframe portal in here instead of the offscreen
+     fallback. A callback ref, not an effect: registerVisualSlot's own
+     identity is stable, so this only fires on real mount/unmount, never on
+     the 250ms playback-tick re-renders that recreate the `mixtape` object. */
+  const setVisualSlot = useCallback(
+    (node: HTMLDivElement | null) => {
+      mixtape.registerVisualSlot(node);
+    },
+    // Deliberately narrow: `mixtape` itself is a new object on every playback
+    // tick, and depending on the whole thing here would give this callback a
+    // new identity just as often - which, as a ref callback, would make React
+    // detach/reattach the slot (and visibly flicker the frame) every 250ms.
+    // registerVisualSlot's own identity is stable, so this is safe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mixtape.registerVisualSlot]
   );
 
   /* -------------------------------------------------------------- writes */
@@ -1035,12 +644,14 @@ export default function SoundtrackScreen({
     setTapes((prev) => prev.filter((t) => t.id !== tapeId));
     setTracks((prev) => prev.filter((t) => t.mixtape_id !== tapeId));
     setShowTapeEditor(false);
+    /* Stop playback if the deleted tape is the one actually playing, even in
+       the background on a tape other than the one currently being viewed -
+       it can no longer be fetched or resumed either way. */
+    mixtape.stopPlaybackForTape(tapeId);
     /* Deleting from the board (not the currently-open tape) shouldn't yank
-       the user out of whatever tape they're actually viewing/playing. */
+       the user out of whatever tape they're actually viewing. */
     if (activeTapeId === tapeId) {
       setActiveTapeId(null);
-      setCurrentTrackId(null);
-      setIsPlaying(false);
       setStage("board");
     }
   }, 700);
@@ -1117,13 +728,9 @@ export default function SoundtrackScreen({
       setError("That track would not come off the tape.");
       return;
     }
-    blobCacheRef.current.delete(trackId);
+    mixtape.forgetTrack(trackId);
     setTracks((prev) => prev.filter((t) => t.id !== trackId));
     setOpenTrackMenu(null);
-    if (currentTrackId === trackId) {
-      setCurrentTrackId(null);
-      setIsPlaying(false);
-    }
   }, 500);
 
   const [runMoveTrack] = useGuardedAction(async (trackId: string, delta: number) => {
@@ -1372,11 +979,11 @@ export default function SoundtrackScreen({
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
       if (e.code === "Space") {
         e.preventDefault();
-        togglePlay();
+        handleTogglePlay();
       } else if (e.code === "ArrowRight" && e.shiftKey) {
-        skipTo(1);
+        handleSkip(1);
       } else if (e.code === "ArrowLeft" && e.shiftKey) {
-        skipTo(-1);
+        handleSkip(-1);
       } else if (e.code === "Escape") {
         setShowSearch(false);
         setShowShare(false);
@@ -1386,33 +993,16 @@ export default function SoundtrackScreen({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [stage, togglePlay, skipTo]);
+  }, [stage, handleTogglePlay, handleSkip]);
 
   /* ================================================================ views */
 
   const boardTapes = tapes;
 
+  /* Playback is global now - leaving the tape only resets this screen's own
+     view state. The engine keeps whatever was playing going in the
+     background, per the app-wide "audio survives navigation" goal. */
   const leaveTape = () => {
-    try {
-      ytRef.current?.pauseVideo();
-    } catch {
-      /* nothing loaded */
-    }
-    audioRef.current?.pause();
-    videoRef.current?.pause();
-    /* The YT host div is unmounted the moment stage leaves "player" - destroy
-       the player and reset its readiness flags here too, or the next tape's
-       setup effect sees a stale non-null ytRef and never builds a fresh
-       player, silently breaking every YouTube track on that tape. */
-    try {
-      ytRef.current?.destroy();
-    } catch {
-      /* already gone with the unmounted subtree */
-    }
-    ytRef.current = null;
-    setYtReady(false);
-    setPendingYoutubeId(null);
-    setIsPlaying(false);
     setStage("board");
   };
 
@@ -1427,13 +1017,13 @@ export default function SoundtrackScreen({
 
       {/* the only thing that is not an object: a live region for messages */}
       <div className="st-messages" role="status" aria-live="polite">
-        {error && (
+        {(error || mixtape.error) && (
           <p className="st-toast st-toast-bad">
             <X className="w-3.5 h-3.5" strokeWidth={3} />
-            {error}
+            {error || mixtape.error}
           </p>
         )}
-        {notice && !error && (
+        {notice && !error && !mixtape.error && (
           <p className="st-toast">
             <Check className="w-3.5 h-3.5" strokeWidth={3} />
             {notice}
@@ -1768,7 +1358,7 @@ export default function SoundtrackScreen({
               )}
 
               {tapeTracks.map((track, index) => {
-                const isCurrent = track.id === currentTrackId;
+                const isCurrent = track.id === mixtape.currentTrackId;
                 return (
                   <article
                     key={track.id}
@@ -1779,7 +1369,11 @@ export default function SoundtrackScreen({
                   >
                     <span className={`st-track-tape st-track-tape-${index % 3}`} aria-hidden />
 
-                    <button type="button" className="st-track-main" onClick={() => void playTrack(track)}>
+                    <button
+                      type="button"
+                      className="st-track-main"
+                      onClick={() => mixtape.play(track, tapeTracks, activeTape.id)}
+                    >
                       <span className="st-track-num">{String(index + 1).padStart(2, "0")}</span>
                       <span className="st-track-text">
                         <span className="st-track-title">{track.title}</span>
@@ -1814,7 +1408,7 @@ export default function SoundtrackScreen({
                         >
                           Move down
                         </button>
-                        <button type="button" onClick={() => void playTrack(track)}>
+                        <button type="button" onClick={() => mixtape.play(track, tapeTracks, activeTape.id)}>
                           Play now
                         </button>
                         <button
@@ -1859,16 +1453,16 @@ export default function SoundtrackScreen({
               <div className="st-deck-record">
                 <VinylRecord
                   title={activeTape.title}
-                  subtitle={currentTrack?.title}
-                  spinning={isPlaying}
+                  subtitle={mixtape.currentTrack?.title}
+                  spinning={mixtape.isPlaying}
                   labelColor={activeTape.label_color}
                 />
-                <Tonearm down={isPlaying || !!currentTrack} />
+                <Tonearm down={mixtape.isPlaying || !!mixtape.currentTrack} />
               </div>
 
               {/* woven progress thread */}
               <div className="st-seek-wrap">
-                <span className="st-seek-time">{formatClock(elapsed)}</span>
+                <span className="st-seek-time">{formatClock(mixtape.elapsed)}</span>
                 <div
                   ref={seekTrackRef}
                   className="st-seek"
@@ -1876,13 +1470,13 @@ export default function SoundtrackScreen({
                   tabIndex={0}
                   aria-label="Seek"
                   aria-valuemin={0}
-                  aria-valuemax={Math.max(1, Math.round(duration))}
-                  aria-valuenow={Math.round(elapsed)}
+                  aria-valuemax={Math.max(1, Math.round(mixtape.duration))}
+                  aria-valuenow={Math.round(mixtape.elapsed)}
                   onPointerDown={handleSeekPointer}
                   onKeyDown={(e) => {
-                    if (!duration) return;
-                    if (e.key === "ArrowRight") seekToFraction((elapsed + 5) / duration);
-                    if (e.key === "ArrowLeft") seekToFraction((elapsed - 5) / duration);
+                    if (!mixtape.duration) return;
+                    if (e.key === "ArrowRight") mixtape.seekToFraction((mixtape.elapsed + 5) / mixtape.duration);
+                    if (e.key === "ArrowLeft") mixtape.seekToFraction((mixtape.elapsed - 5) / mixtape.duration);
                   }}
                 >
                   <span className="st-seek-thread" aria-hidden />
@@ -1900,17 +1494,17 @@ export default function SoundtrackScreen({
                     </svg>
                   </span>
                 </div>
-                <span className="st-seek-time">{formatClock(duration)}</span>
+                <span className="st-seek-time">{formatClock(mixtape.duration)}</span>
               </div>
 
               {/* neomorphic rubber buttons */}
               <div className="st-controls">
                 <button
                   type="button"
-                  className={`st-neo st-neo-xs ${shuffleOn ? "st-neo-active" : ""}`}
-                  onClick={() => setShuffleOn((v) => !v)}
+                  className={`st-neo st-neo-xs ${mixtape.shuffleOn ? "st-neo-active" : ""}`}
+                  onClick={() => mixtape.setShuffleOn((v) => !v)}
                   aria-label="Shuffle"
-                  aria-pressed={shuffleOn}
+                  aria-pressed={mixtape.shuffleOn}
                 >
                   <Shuffle className="w-4 h-4" strokeWidth={2.5} />
                 </button>
@@ -1918,7 +1512,7 @@ export default function SoundtrackScreen({
                 <button
                   type="button"
                   className="st-neo st-neo-sm"
-                  onClick={() => skipTo(-1)}
+                  onClick={() => handleSkip(-1)}
                   aria-label="Previous track"
                 >
                   <SkipBack className="w-5 h-5" strokeWidth={2.5} />
@@ -1926,13 +1520,13 @@ export default function SoundtrackScreen({
 
                 <button
                   type="button"
-                  className={`st-neo st-neo-lg st-neo-primary ${isPlaying ? "st-neo-live" : ""}`}
-                  onClick={togglePlay}
-                  aria-label={isPlaying ? "Pause" : "Play"}
+                  className={`st-neo st-neo-lg st-neo-primary ${mixtape.isPlaying ? "st-neo-live" : ""}`}
+                  onClick={handleTogglePlay}
+                  aria-label={mixtape.isPlaying ? "Pause" : "Play"}
                 >
-                  {isBuffering ? (
+                  {mixtape.isBuffering ? (
                     <Loader2 className="w-7 h-7 st-spin" strokeWidth={2.5} />
-                  ) : isPlaying ? (
+                  ) : mixtape.isPlaying ? (
                     <Pause className="w-7 h-7" strokeWidth={2.5} />
                   ) : (
                     <Play className="w-7 h-7" strokeWidth={2.5} />
@@ -1942,7 +1536,7 @@ export default function SoundtrackScreen({
                 <button
                   type="button"
                   className="st-neo st-neo-sm"
-                  onClick={() => skipTo(1)}
+                  onClick={() => handleSkip(1)}
                   aria-label="Next track"
                 >
                   <SkipForward className="w-5 h-5" strokeWidth={2.5} />
@@ -1950,13 +1544,13 @@ export default function SoundtrackScreen({
 
                 <button
                   type="button"
-                  className={`st-neo st-neo-xs ${repeatMode !== "off" ? "st-neo-active" : ""}`}
+                  className={`st-neo st-neo-xs ${mixtape.repeatMode !== "off" ? "st-neo-active" : ""}`}
                   onClick={() =>
-                    setRepeatMode((m) => (m === "off" ? "all" : m === "all" ? "one" : "off"))
+                    mixtape.setRepeatMode((m) => (m === "off" ? "all" : m === "all" ? "one" : "off"))
                   }
-                  aria-label={`Repeat: ${repeatMode === "off" ? "off" : repeatMode === "all" ? "all tracks" : "one track"}`}
+                  aria-label={`Repeat: ${mixtape.repeatMode === "off" ? "off" : mixtape.repeatMode === "all" ? "all tracks" : "one track"}`}
                 >
-                  {repeatMode === "one" ? (
+                  {mixtape.repeatMode === "one" ? (
                     <Repeat1 className="w-4 h-4" strokeWidth={2.5} />
                   ) : (
                     <Repeat className="w-4 h-4" strokeWidth={2.5} />
@@ -1969,18 +1563,18 @@ export default function SoundtrackScreen({
                     type="range"
                     min={0}
                     max={100}
-                    value={volume}
-                    onChange={(e) => setVolume(Number(e.target.value))}
+                    value={mixtape.volume}
+                    onChange={(e) => mixtape.setVolume(Number(e.target.value))}
                     aria-label="Volume"
                   />
                 </label>
               </div>
 
               <p className="st-now-playing">
-                {currentTrack ? (
+                {mixtape.currentTrack ? (
                   <>
                     <Music className="w-3.5 h-3.5" strokeWidth={3} />
-                    {currentTrack.title}
+                    {mixtape.currentTrack.title}
                   </>
                 ) : (
                   <>
@@ -2000,35 +1594,18 @@ export default function SoundtrackScreen({
           <section className="st-rail st-rail-right">
             <PolaroidViewfinder
               caption={
-                currentTrack?.source === "local" && currentTrack.media_type === "video"
+                mixtape.currentTrack?.source === "local" && mixtape.currentTrack.media_type === "video"
                   ? "Home footage"
-                  : currentTrack?.source === "youtube"
+                  : mixtape.currentTrack?.source === "youtube"
                     ? "Off the wire"
                     : "Viewfinder"
               }
-              live={isPlaying}
+              live={mixtape.isPlaying}
             >
-              {/* Both engines render here so the picture never lives offscreen. */}
-              <div className={`st-yt ${currentTrack?.source === "youtube" ? "st-yt-on" : ""}`}>
-                <div ref={ytHostRef} className="st-yt-host" />
-              </div>
-              <video
-                ref={videoRef}
-                className={`st-local-video ${
-                  currentTrack?.source === "local" && currentTrack.media_type === "video" ? "st-local-on" : ""
-                }`}
-                playsInline
-                onEnded={handleTrackEnded}
-                onPlay={() => setIsPlaying(true)}
-                onPause={() => setIsPlaying(false)}
-              />
-              {currentTrack?.source === "local" && currentTrack.media_type === "audio" && (
-                <div className="st-audio-card">
-                  <Disc3 className={`w-8 h-8 ${isPlaying ? "st-spin-slow" : ""}`} strokeWidth={2} />
-                  <span>{currentTrack.title}</span>
-                  <span className="st-audio-card-sub">audio bootleg</span>
-                </div>
-              )}
+              {/* The global engine portals its <video>/YouTube host into this
+                  slot for as long as this screen is mounted - see
+                  AudioPlayerProvider's registerVisualSlot. */}
+              <div ref={setVisualSlot} className="st-visual-slot" />
             </PolaroidViewfinder>
 
             <button type="button" className="st-bugle" onClick={() => setShowShare(true)}>
@@ -2055,7 +1632,6 @@ export default function SoundtrackScreen({
             </button>
           </section>
 
-          <audio ref={audioRef} onEnded={handleTrackEnded} onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)} />
         </div>
       )}
 
@@ -3520,6 +3096,7 @@ const SOUNDTRACK_CSS = `
   color: #3B2A22;
 }
 
+.st-visual-slot { position: absolute; inset: 0; width: 100%; height: 100%; }
 .st-yt, .st-local-video { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; pointer-events: none; }
 .st-yt-on, .st-local-on { opacity: 1; pointer-events: auto; }
 .st-yt-host { width: 100%; height: 100%; }
