@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowLeft,
   Bug,
@@ -333,7 +334,6 @@ const KEY_HINTS = [
   { key: "R", what: "pick one for me" },
   { key: "/", what: "search the jar" },
   { key: "L", what: "candle on or off" },
-  { key: "[ ]", what: "dig through the pile" },
   { key: "esc", what: "close what is open" },
 ];
 
@@ -508,6 +508,11 @@ export default function LetterJarScreen({
   const [flight, setFlight] = useState<{ dx: number; dy: number; k: number } | null>(null);
 
   const [hovered, setHovered] = useState<string | null>(null);
+  /* Real viewport pixels for the currently-hovered in-jar letter's own DOM
+     node (see the effect below, keyed off `hovered`) - JarHoverTag portals
+     into document.body and positions off this instead of a jar-relative
+     percentage, so it is never clipped by .lj-glass's overflow:hidden. */
+  const [hoverAnchor, setHoverAnchor] = useState<{ x: number; y: number } | null>(null);
   const [jarFx, setJarFx] = useState<JarFx>(null);
   /* Only a letter that was still sealed gets the petal shower, so re-reading an
      old one stays quiet. */
@@ -791,17 +796,36 @@ export default function LetterJarScreen({
      takes as many letters as they care to write. */
   const [dig, setDig] = useState(0);
   const digRef = useRef(0);
+  const digRaf = useRef(0);
   const glassRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const draggedRef = useRef(false);
 
+  /* digRef.current updates synchronously so hit-testing/keyboard nav always
+     read the latest value, but the React state commit (which re-renders the
+     whole, unbounded letter pile) is coalesced to at most once per animation
+     frame - a drag or wheel gesture used to call setDig on every native
+     pointermove/wheel event, which on a high-poll-rate device is far more
+     often than the screen can even repaint. Same technique as handleParallax
+     above, just applied to state that other logic still needs to read. */
   const setDigClamped = useCallback(
     (next: number) => {
       const v = Math.max(0, Math.min(pack.overflow, next));
       digRef.current = v;
-      setDig(v);
+      if (digRaf.current) return;
+      digRaf.current = requestAnimationFrame(() => {
+        digRaf.current = 0;
+        setDig(digRef.current);
+      });
     },
     [pack.overflow]
+  );
+
+  useEffect(
+    () => () => {
+      if (digRaf.current) cancelAnimationFrame(digRaf.current);
+    },
+    []
   );
 
   /* A shorter pile after a filter change must not leave the view stranded
@@ -1270,6 +1294,23 @@ export default function LetterJarScreen({
      letters load oldest first, so the newest are at the end. */
   const loose = useMemo(() => visible.slice(-3), [visible]);
 
+  /* Measures the hovered in-jar letter's real on-screen position for
+     JarHoverTag's portal. Loose rolls (outside the glass) keep their own
+     separate, purely CSS-anchored tag and are excluded here. */
+  useLayoutEffect(() => {
+    if (!hovered || loose.some((l) => l.id === hovered)) {
+      setHoverAnchor(null);
+      return;
+    }
+    const el = scrollRefs.current[hovered];
+    if (!el) {
+      setHoverAnchor(null);
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    setHoverAnchor({ x: rect.left + rect.width / 2, y: rect.top });
+  }, [hovered, loose]);
+
   return (
     <main
       ref={rootRef}
@@ -1310,8 +1351,8 @@ export default function LetterJarScreen({
           <span className="lj-bg-lamp-flex" />
           <span className="lj-bg-lamp-shade" />
           <span className="lj-bg-lamp-bulb" />
+          <span className="lj-bg-lampcone" />
         </span>
-        <span className="lj-bg-lampcone" />
 
         {/* Gwen and Peter swinging far back in the dark. Optional art: if the
             file is missing the scene simply loses two silhouettes. */}
@@ -1616,6 +1657,20 @@ export default function LetterJarScreen({
                     sealed={!myMarks[l.id]?.opened_at}
                     className="w-full h-full"
                   />
+                  {/* Anchored to this button itself (left:50%/top:0%), not to
+                      a jar-glass slot percentage - this letter isn't inside
+                      the glass. */}
+                  {hovered === l.id && !phase && (
+                    <HoverTag
+                      letter={l}
+                      left={50}
+                      top={0}
+                      below={false}
+                      fromName={nameOf(l.sender_id)}
+                      sealed={!myMarks[l.id]?.opened_at}
+                      locked={isLocked(l)}
+                    />
+                  )}
                 </button>
               ))}
 
@@ -1866,12 +1921,20 @@ export default function LetterJarScreen({
                   </div>
                 )}
 
-                {hovered && slots[hovered] && !phase && (
-                  <HoverTag
+                {/* Portalled into document.body (see JarHoverTag) so it always
+                    floats fully above the letter, uncropped, exactly like the
+                    ones over lower letters - .lj-glass clips overflow to
+                    contain the pile, which cut this off whenever a letter's
+                    real on-screen position didn't leave 150-190px of clear
+                    space above it inside the glass itself. Loose rolls
+                    (outside the glass, on the desk) keep their own
+                    percentage-anchored tag - unrelated, unaffected. */}
+                {hoverAnchor && !phase && (
+                  <JarHoverTag
                     letter={letters.find((l) => l.id === hovered) as Letter}
-                    slot={slots[hovered]}
+                    anchor={hoverAnchor}
                     fromName={nameOf((letters.find((l) => l.id === hovered) as Letter).sender_id)}
-                    sealed={!myMarks[hovered]?.opened_at}
+                    sealed={!myMarks[hovered as string]?.opened_at}
                     locked={isLocked(letters.find((l) => l.id === hovered) as Letter)}
                   />
                 )}
@@ -2197,29 +2260,19 @@ function CountChip({ label, value, tone }: { label: string; value: number; tone:
   );
 }
 
-function HoverTag({
+function HoverTagBody({
   letter,
-  slot,
   fromName,
   sealed,
   locked,
 }: {
   letter: Letter;
-  slot: Slot;
   fromName: string;
   sealed: boolean;
   locked: boolean;
 }) {
   return (
-    <div
-      className="lj-hovertag"
-      style={{
-        left: `${Math.min(86, Math.max(14, slot.x))}%`,
-        top: `${slot.y}%`,
-      }}
-    >
-      <span className="lj-hovertag-string" aria-hidden />
-      <span className="lj-hovertag-hole" aria-hidden />
+    <>
       <span className="font-mono text-[9px] font-black tracking-[.16em] text-[#7D2834]">
         FROM {fromName.toUpperCase()}
       </span>
@@ -2240,7 +2293,72 @@ function HoverTag({
           <span className="opacity-70">READ</span>
         )}
       </div>
+    </>
+  );
+}
+
+/* Used only for the loose rolls beside the jar - anchored as a plain
+   percentage position inside that letter's own (non-clipping) button. */
+function HoverTag({
+  letter,
+  left,
+  top,
+  fromName,
+  sealed,
+  locked,
+}: {
+  letter: Letter;
+  left: number;
+  top: number;
+  fromName: string;
+  sealed: boolean;
+  locked: boolean;
+}) {
+  return (
+    <div
+      className="lj-hovertag"
+      style={{
+        left: `${Math.min(86, Math.max(14, left))}%`,
+        top: `${top}%`,
+      }}
+    >
+      <span className="lj-hovertag-string" aria-hidden />
+      <span className="lj-hovertag-hole" aria-hidden />
+      <HoverTagBody letter={letter} fromName={fromName} sealed={sealed} locked={locked} />
     </div>
+  );
+}
+
+/* Used for letters inside the glass. The glass clips overflow to contain the
+   pile, so a tag anchored with jar-relative percentages gets clipped whenever
+   it floats above a letter near the top - there just isn't 150-190px of
+   uncropped room above it in there. Portalled straight into document.body and
+   positioned in real viewport pixels (measured off the letter's own DOM node,
+   via scrollRefs) instead, so it always renders fully on top of everything,
+   above the letter, exactly like the ones over lower letters already do. */
+function JarHoverTag({
+  letter,
+  anchor,
+  fromName,
+  sealed,
+  locked,
+}: {
+  letter: Letter;
+  anchor: { x: number; y: number };
+  fromName: string;
+  sealed: boolean;
+  locked: boolean;
+}) {
+  return createPortal(
+    <div
+      className="lj-hovertag lj-hovertag-fixed"
+      style={{ left: `${anchor.x}px`, top: `${anchor.y}px` }}
+    >
+      <span className="lj-hovertag-string" aria-hidden />
+      <span className="lj-hovertag-hole" aria-hidden />
+      <HoverTagBody letter={letter} fromName={fromName} sealed={sealed} locked={locked} />
+    </div>,
+    document.body
   );
 }
 
@@ -3309,11 +3427,16 @@ function ScopedStyles() {
         box-shadow: 0 0 26px 10px rgba(255,196,128,.45);
         transition: opacity .45s ease;
       }
+      /* Was a sibling of .lj-bg-lamp, positioned with its own independent
+         right%/top offsets instead of anchoring to the bulb - the two only
+         lined up by coincidence at one viewport width and drifted apart
+         (the light visibly not coming from the bulb) at every other width.
+         Now a child of .lj-bg-lamp, centered on the bulb via left:50%. */
       .lj-bg-lampcone {
-        position: absolute; right: 6%; top: 150px; width: 52%; height: 74%;
+        position: absolute; left: 50%; top: 154px; translate: -50% 0;
+        width: 46vw; height: 62vh; max-width: 640px; max-height: 760px;
         background: linear-gradient(184deg, rgba(255,206,150,.14), rgba(255,186,120,.04) 42%, transparent 70%);
         clip-path: polygon(46% 0, 54% 0, 100% 100%, 0 100%);
-        transform: translate3d(calc(var(--mx) * 10px), 0, 0);
         transition: opacity .45s ease;
       }
       .lights-off .lj-bg-lamp-bulb { opacity: .22; box-shadow: none; }
@@ -3740,6 +3863,12 @@ function ScopedStyles() {
         position: absolute; inset: 0; z-index: 10;
         transform: translate3d(0, var(--pile, 0%), 0);
         transition: transform .42s cubic-bezier(.22,.61,.36,1);
+        /* Without this, a touch drag on this element is up for grabs between
+           the browser's own page-scroll gesture and our pointermove handler -
+           on a real phone the browser usually wins, so digging through the
+           pile silently does nothing. Mouse/pointer dragging never needed it,
+           which is why this only showed up on a touchscreen. */
+        touch-action: none;
       }
       .lj-field.is-dragging { transition: none; }
       @media (prefers-reduced-motion: reduce) { .lj-field { transition: none; } }
@@ -3873,6 +4002,12 @@ function ScopedStyles() {
         width: 8px; height: 8px; border-radius: 999px;
         background: #241A20; box-shadow: inset 0 1px 2px rgba(0,0,0,.8);
       }
+      /* Portalled straight into document.body (see JarHoverTag) so it always
+         floats fully above the letter with no clipping ancestor in the way -
+         left/top are real viewport pixels here, not a percentage of anything,
+         so position:fixed with no translate-based anchor conversion needed
+         beyond the same "float above by my own height" translate. */
+      .lj-hovertag-fixed { position: fixed; z-index: 200; }
       @keyframes lj-tag-in {
         from { opacity: 0; transform: translateY(6px) scale(.95); }
         to { opacity: 1; transform: none; }

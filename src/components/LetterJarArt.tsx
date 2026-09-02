@@ -1,5 +1,7 @@
 "use client";
 
+import { memo } from "react";
+
 /* ============================================================================
    CH.05 - LOVE LETTER JAR: MATERIALS AND DRAWN OBJECTS
 
@@ -417,7 +419,7 @@ interface ScrollGlyphProps {
    deckled top and bottom edge, the ends show the spiral of the roll with the
    outermost turn lifting away, and the tie is a real knot with two tails. The
    viewBox is 220x64, and every caller keeps that aspect so nothing stretches. */
-export function ScrollGlyph({
+function ScrollGlyphBase({
   paperId,
   ribbon,
   ribbonStyle,
@@ -536,6 +538,12 @@ export function ScrollGlyph({
     </svg>
   );
 }
+
+/* The jar renders every letter the couple has ever written as its own live
+   SVG node (see LetterJarScreen's `visible.map`) - memoized so dragging
+   through the pile (which re-renders that whole list on every animation
+   frame, see setDigClamped) doesn't also re-diff every unchanged scroll. */
+export const ScrollGlyph = memo(ScrollGlyphBase);
 
 /* ------------------------------------------------------------------ wax --- */
 

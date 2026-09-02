@@ -82,7 +82,7 @@ export default function CoupleConnect({ userId, myInviteCode, onConnected }: Cou
     <div className="relative w-full max-w-md z-10">
       
       {/* Comic Washi Tape Badge */}
-      <div className="absolute -top-3 left-1/2 -translate-x-1/2 comic-washi-tape w-44 h-7 rounded-sm rotate-1 z-20 flex items-center justify-center">
+      <div className="absolute -top-3 left-1/2 -translate-x-1/2 tape-red-solid w-44 h-7 rounded-sm rotate-1 z-20 flex items-center justify-center">
         <span className="text-[9px] font-black tracking-widest text-pink-100 uppercase">
           DIMENSIONAL SYNC
         </span>
@@ -97,11 +97,11 @@ export default function CoupleConnect({ userId, myInviteCode, onConnected }: Cou
             <HeartHandshake className="w-7 h-7 text-pink-400" />
           </div>
           
-          <h2 className="text-2xl font-black text-white flex items-center justify-center gap-2 drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
+          <h2 className="text-2xl font-black text-[#1a0d10] flex items-center justify-center gap-2">
             Link Your Universe
             <Sparkles className="w-5 h-5 text-pink-400 animate-pulse" />
           </h2>
-          <p className="text-xs text-pink-200/80 mt-1 font-medium">
+          <p className="text-xs text-[#7a1f34] mt-1 font-medium">
             Connect your scrapbook with your partner across the multiverse.
           </p>
         </div>
@@ -129,7 +129,7 @@ export default function CoupleConnect({ userId, myInviteCode, onConnected }: Cou
             </button>
           </div>
           
-          <p className="text-[11px] text-pink-200/60 font-medium">
+          <p className="text-[11px] text-pink-100 font-medium">
             Share this code with your partner so they can join your story.
           </p>
         </div>
@@ -137,8 +137,8 @@ export default function CoupleConnect({ userId, myInviteCode, onConnected }: Cou
         {/* Enter Partner Code Form */}
         <form onSubmit={handleLinkPartner} className="space-y-4">
           <div>
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-pink-200 text-center mb-1.5">
-              Or Enter Partner's Web Code
+            <label className="block text-[11px] font-bold uppercase tracking-wider text-[#7a1f34] text-center mb-1.5">
+              Or Enter Partner&apos;s Web Code
             </label>
             <input
               type="text"

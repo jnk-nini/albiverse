@@ -346,6 +346,7 @@ export default function SoundtrackScreen({
   const [showSearch, setShowSearch] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [showTapeEditor, setShowTapeEditor] = useState(false);
+  const [confirmDeleteTapeId, setConfirmDeleteTapeId] = useState<string | null>(null);
   const [openTrackMenu, setOpenTrackMenu] = useState<string | null>(null);
   const [fileChooser, setFileChooser] = useState<PendingUpload[] | null>(null);
 
@@ -799,6 +800,12 @@ export default function SoundtrackScreen({
     (delta: number) => {
       if (tapeTracks.length === 0) return;
       const from = currentIndex >= 0 ? currentIndex : -1;
+      /* Repeat-one is a lock on the current track: Prev/Next restart it
+         instead of leaving it, same as a natural end already does. */
+      if (repeatMode === "one" && from >= 0) {
+        void playTrack(tapeTracks[from]);
+        return;
+      }
       if (shuffleOn) {
         void playTrack(tapeTracks[pickShuffledIndex(from)]);
         return;
@@ -806,7 +813,7 @@ export default function SoundtrackScreen({
       const next = (from + delta + tapeTracks.length) % tapeTracks.length;
       void playTrack(tapeTracks[next]);
     },
-    [currentIndex, pickShuffledIndex, playTrack, shuffleOn, tapeTracks]
+    [currentIndex, pickShuffledIndex, playTrack, repeatMode, shuffleOn, tapeTracks]
   );
 
   /* What happens when a track finishes on its own, as opposed to being
@@ -956,11 +963,30 @@ export default function SoundtrackScreen({
       if (!node) return;
       const rect = node.getBoundingClientRect();
       if (rect.width === 0) return;
-      seekToFraction((event.clientX - rect.left) / rect.width);
+
+      const seekFromClientX = (clientX: number) => {
+        seekToFraction((clientX - rect.left) / rect.width);
+      };
+
+      seekFromClientX(event.clientX);
       node.classList.remove("st-seek-ping");
       // reading offsetWidth forces the class removal to land before it is re-added
       void node.offsetWidth;
       node.classList.add("st-seek-ping");
+
+      /* Pointer capture keeps every subsequent move/up event for this pointer
+         routed to the seek bar itself, even once the finger/cursor drifts off
+         it - the same reason a native slider thumb never "drops" a drag. */
+      node.setPointerCapture(event.pointerId);
+      const move = (ev: PointerEvent) => seekFromClientX(ev.clientX);
+      const up = () => {
+        node.removeEventListener("pointermove", move);
+        node.removeEventListener("pointerup", up);
+        node.removeEventListener("pointercancel", up);
+      };
+      node.addEventListener("pointermove", move);
+      node.addEventListener("pointerup", up);
+      node.addEventListener("pointercancel", up);
     },
     [seekToFraction]
   );
@@ -997,7 +1023,6 @@ export default function SoundtrackScreen({
   }, 700);
 
   const [runDeleteTape] = useGuardedAction(async (tapeId: string) => {
-    if (!window.confirm("Throw this whole tape away? Every track on it goes too.")) return;
     const { error: deleteError } = await supabase
       .from("mixtapes")
       .delete()
@@ -1010,10 +1035,14 @@ export default function SoundtrackScreen({
     setTapes((prev) => prev.filter((t) => t.id !== tapeId));
     setTracks((prev) => prev.filter((t) => t.mixtape_id !== tapeId));
     setShowTapeEditor(false);
-    setActiveTapeId(null);
-    setCurrentTrackId(null);
-    setIsPlaying(false);
-    setStage("board");
+    /* Deleting from the board (not the currently-open tape) shouldn't yank
+       the user out of whatever tape they're actually viewing/playing. */
+    if (activeTapeId === tapeId) {
+      setActiveTapeId(null);
+      setCurrentTrackId(null);
+      setIsPlaying(false);
+      setStage("board");
+    }
   }, 700);
 
   const [runSaveTape] = useGuardedAction(
@@ -1371,6 +1400,18 @@ export default function SoundtrackScreen({
     }
     audioRef.current?.pause();
     videoRef.current?.pause();
+    /* The YT host div is unmounted the moment stage leaves "player" - destroy
+       the player and reset its readiness flags here too, or the next tape's
+       setup effect sees a stale non-null ytRef and never builds a fresh
+       player, silently breaking every YouTube track on that tape. */
+    try {
+      ytRef.current?.destroy();
+    } catch {
+      /* already gone with the unmounted subtree */
+    }
+    ytRef.current = null;
+    setYtReady(false);
+    setPendingYoutubeId(null);
     setIsPlaying(false);
     setStage("board");
   };
@@ -1449,6 +1490,25 @@ export default function SoundtrackScreen({
                       <span className="st-object-caption">
                         {trackCounts.get(tape.id) ?? 0} track
                         {(trackCounts.get(tape.id) ?? 0) === 1 ? "" : "s"}
+                      </span>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        className="st-stack-delete"
+                        aria-label={`Throw away ${tape.title}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDeleteTapeId(tape.id);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setConfirmDeleteTapeId(tape.id);
+                          }
+                        }}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" strokeWidth={3} />
                       </span>
                     </button>
                   ))}
@@ -2184,10 +2244,55 @@ export default function SoundtrackScreen({
               ))}
             </div>
 
-            <button type="button" className="st-danger-btn" onClick={() => void runDeleteTape(activeTape.id)}>
+            <button type="button" className="st-danger-btn" onClick={() => setConfirmDeleteTapeId(activeTape.id)}>
               <Trash2 className="w-4 h-4" strokeWidth={3} />
               throw this tape away
             </button>
+          </div>
+        </div>
+      )}
+
+      {confirmDeleteTapeId && (
+        <div className="st-sheet-wrap">
+          <button
+            type="button"
+            className="st-scrim"
+            aria-label="Cancel"
+            onClick={() => setConfirmDeleteTapeId(null)}
+          />
+          <div className="st-sheet st-sheet-narrow" role="alertdialog" aria-label="Confirm throwing this tape away">
+            <div className="st-sheet-head">
+              <div>
+                <span className="st-kicker">This can&apos;t be undone</span>
+                <h3 className="st-sheet-title">Throw this tape away?</h3>
+              </div>
+              <button
+                type="button"
+                className="st-icon-btn"
+                onClick={() => setConfirmDeleteTapeId(null)}
+                aria-label="Cancel"
+              >
+                <X className="w-4 h-4" strokeWidth={3} />
+              </button>
+            </div>
+            <p className="st-sheet-note">Every track on it goes too.</p>
+            <div className="st-confirm-row">
+              <button type="button" className="st-ghost-btn" onClick={() => setConfirmDeleteTapeId(null)}>
+                keep it
+              </button>
+              <button
+                type="button"
+                className="st-danger-btn"
+                onClick={() => {
+                  const tapeId = confirmDeleteTapeId;
+                  setConfirmDeleteTapeId(null);
+                  void runDeleteTape(tapeId);
+                }}
+              >
+                <Trash2 className="w-4 h-4" strokeWidth={3} />
+                throw it away
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2247,7 +2352,7 @@ export default function SoundtrackScreen({
    terminates the template literal and produces a wall of errors far from the
    real line. */
 
-export const SOUNDTRACK_CSS = `
+const SOUNDTRACK_CSS = `
 .st-root {
   position: relative;
   min-height: 100svh;
@@ -2362,15 +2467,20 @@ export const SOUNDTRACK_CSS = `
 }
 @media (min-width: 900px) {
   .st-board-field {
-    /* The right-hand padding is the gutter the exit ticket stub lives in, so
-       an absolutely positioned exit can never land on top of another object. */
-    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, .95fr);
+    /* The share column is sized to its own content (an "auto" track, not a
+       fraction) rather than claiming a near-equal third of the board for one
+       small button - that used to leave a wide dead column on the right,
+       worst at the bottom since the button sat pinned to the top of it. The
+       leftover width flows to leftcol/create instead, per their existing fr
+       ratio. The remaining right-hand padding is just enough gutter for the
+       absolutely positioned exit ticket stub in the top-right corner. */
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, auto);
     grid-template-areas:
       'leftcol create   share'
       'leftcol envelope share';
     grid-template-rows: auto auto;
     align-items: start;
-    padding: 34px 176px 60px 4px;
+    padding: 34px 48px 60px 4px;
   }
 }
 .st-leftcol {
@@ -2388,6 +2498,7 @@ export const SOUNDTRACK_CSS = `
 .st-stack { position: relative; width: 100%; padding-bottom: 30px; }
 .st-stack-item {
   display: block;
+  position: relative;
   width: 100%;
   /* percentage margins resolve against the container WIDTH, so this scales
      with the tape instead of being a fixed pixel bite out of a fluid box */
@@ -2402,6 +2513,26 @@ export const SOUNDTRACK_CSS = `
 .st-stack-item:focus-visible .st-object-caption,
 .st-stack-item:last-of-type .st-object-caption { opacity: 1; }
 .st-stack-item:first-of-type { margin-top: 0; }
+/* Always visible (never hover-only - a touch screen has no hover) so a tape
+   can be thrown away in one tap without opening it first. */
+.st-stack-delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  background: #F7DADD;
+  color: #A61B27;
+  border: 3px solid #201319;
+  box-shadow: 3px 3px 0 rgba(12, 7, 5, .5);
+  cursor: pointer;
+  transform: rotate(-4deg);
+}
+.st-stack-delete:active { transform: rotate(-4deg) translate(2px, 2px); box-shadow: none; }
+.st-stack-delete:focus-visible { outline: 2px solid #A61B27; outline-offset: 2px; }
 .st-stack-item:hover { z-index: 40; }
 .st-stack-caption {
   display: block;
@@ -2429,7 +2560,10 @@ export const SOUNDTRACK_CSS = `
   filter: drop-shadow(2px 4px 4px rgba(0, 0, 0, .5));
 }
 .st-envelope-btn { width: min(260px, 72vw); }
-.st-share-btn { width: fit-content; }
+/* Bottom-aligned so it sits in the bottom-right of its spanned rows instead
+   of pinned to the top (which is also where the exit ticket floats) - that
+   used to leave the whole bottom of this column looking empty. */
+.st-share-btn { width: fit-content; align-self: end; }
 
 .st-exit { position: absolute; }
 .st-exit-top { top: 0; right: 4px; }
@@ -3540,6 +3674,9 @@ export const SOUNDTRACK_CSS = `
   background: #EFE4C4;
   border: 2px dashed #9A7A50;
 }
+
+.st-sheet-narrow { width: min(360px, 92vw); }
+.st-confirm-row { display: flex; gap: 10px; justify-content: flex-end; }
 
 .st-search-field {
   display: flex;
