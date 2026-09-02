@@ -1089,12 +1089,31 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
               pages underneath (z-0) already swap to the destination content the
               instant a flip starts, so removing the clip lets that show through
               continuously as the leaf turns. */}
-          <div className="paper-open-notebook-spread min-h-[460px] sm:min-h-[520px] p-4 sm:p-8 relative grid grid-cols-1 md:grid-cols-2 gap-6">
-            
+          <div className="paper-open-notebook-spread min-h-[460px] sm:min-h-[520px] p-4 sm:p-8 relative grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-6">
+
             <div className="hidden md:block absolute inset-y-0 left-1/2 -translate-x-1/2 w-12 book-gutter-crease pointer-events-none z-30" />
+
+            {/* Mobile-only spiral notebook binding: below md the two chapters
+                stack instead of sitting side by side, so there's no hardcover
+                spine to sell the "book" read - a wire coil along the top edge
+                (the same .spiral-binder-ring used on the closed cover, just
+                rotated 90deg into a row instead of a column) ties the stack
+                together as one bound notepad instead of two loose cards. */}
+            <div
+              className="flex md:hidden items-center justify-center gap-2.5 absolute -top-3 left-0 right-0 z-30 pointer-events-none px-8"
+              aria-hidden
+            >
+              {Array.from({ length: 9 }).map((_, i) => (
+                <div key={i} className="w-7 h-2.5 spiral-binder-ring border border-black/60 rotate-90 shrink-0" />
+              ))}
+            </div>
 
             {/* Base Left Page */}
             <div className="h-full relative z-0">
+              {/* Fold shadow where the mobile stack "turns" into the second
+                  page beneath it - hidden on desktop, where the two pages sit
+                  side by side with the real gutter crease between them instead. */}
+              <div className="md:hidden absolute -bottom-2.5 inset-x-3 h-3 bg-gradient-to-b from-black/25 to-transparent blur-[2px] pointer-events-none z-20" aria-hidden />
               {flippingState === "backward"
                 ? renderChapterContent(prevLeft, (currentSpread - 1) * 2 + 1)
                 : renderChapterContent(curLeft, currentSpread * 2 + 1)}
