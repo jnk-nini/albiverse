@@ -51,22 +51,42 @@ export default function CoupleConnect({ userId, myInviteCode, onConnected }: Cou
         throw new Error("This Spider-Hero is already connected to another universe!");
       }
 
-      // 2. Create the shared couple entry
-      const { data: newCouple, error: coupleErr } = await supabase
+      /* 2. If these two were ever linked before and unlinked (Dashboard's
+         "Unlink" only clears couple_id, it never touches this table - see
+         Dashboard.tsx), reattach that same couple row instead of creating a
+         blank one, so their old shared scrapbook comes back instead of being
+         replaced. A pairing that's never existed between these two still
+         creates a fresh row exactly as before. */
+      const { data: existingCouple, error: existingErr } = await supabase
         .from("couples")
-        .insert({
-          partner_1_id: userId,
-          partner_2_id: partnerProfile.id,
-        })
-        .select()
-        .single();
+        .select("id")
+        .or(
+          `and(partner_1_id.eq.${userId},partner_2_id.eq.${partnerProfile.id}),and(partner_1_id.eq.${partnerProfile.id},partner_2_id.eq.${userId})`
+        )
+        .maybeSingle();
+      if (existingErr) throw existingErr;
 
-      if (coupleErr || !newCouple) throw coupleErr;
+      let coupleId: string;
+      if (existingCouple) {
+        coupleId = existingCouple.id;
+      } else {
+        const { data: newCouple, error: coupleErr } = await supabase
+          .from("couples")
+          .insert({
+            partner_1_id: userId,
+            partner_2_id: partnerProfile.id,
+          })
+          .select()
+          .single();
+
+        if (coupleErr || !newCouple) throw coupleErr;
+        coupleId = newCouple.id;
+      }
 
       // 3. Update both users with the shared couple ID
       const { error: profileUpdateError } = await supabase
         .from("profiles")
-        .update({ couple_id: newCouple.id })
+        .update({ couple_id: coupleId })
         .in("id", [userId, partnerProfile.id]);
       if (profileUpdateError) throw profileUpdateError;
 
