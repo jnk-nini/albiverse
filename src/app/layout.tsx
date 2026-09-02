@@ -1,10 +1,19 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { AudioPlayerProvider } from "@/components/AudioPlayerProvider";
 
 export const metadata: Metadata = {
   title: "Albiverse | Across Every Universe",
   description: "A shared Spider-Man & Gwen vintage scrapbook universe.",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#FAF5EB" },
+    { media: "(prefers-color-scheme: dark)", color: "#1A0D10" },
+  ],
 };
 
 export default function RootLayout({

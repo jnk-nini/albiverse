@@ -2089,6 +2089,11 @@ const SOUNDTRACK_CSS = `
 .st-stack-item:focus-visible .st-object-caption,
 .st-stack-item:last-of-type .st-object-caption { opacity: 1; }
 .st-stack-item:first-of-type { margin-top: 0; }
+/* Same reasoning as .st-stack-delete above: a touch screen never fires
+   :hover, so the track-count caption would otherwise never surface there. */
+@media (hover: none) {
+  .st-stack-item .st-object-caption { opacity: 1; }
+}
 /* Always visible (never hover-only - a touch screen has no hover) so a tape
    can be thrown away in one tap without opening it first. */
 .st-stack-delete {
