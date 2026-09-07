@@ -1,60 +1,41 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import DigicamScreen from "@/components/DigicamScreen";
-import { createClient } from "@/lib/supabase/client";
-import { CHAPTER_SPREAD } from "@/lib/nav/chapterReturn";
-import { useTocReturn } from "@/lib/nav/useTocReturn";
+import { CHAPTER_SPREAD, tocReturnHref } from "@/lib/nav/chapterReturn";
+import { useChapterAccess } from "@/lib/hooks/useChapterAccess";
 
 /* CH.04 - RETRO DIGICAM
-   `from` carries the table-of-contents spread the reader was looking at when
-   they opened this chapter, so BACK returns them to that exact spread instead
-   of a hardcoded guess at where the chapter lives. */
+   The auth/identity resolution that used to live inline here (getUser, then
+   profiles, then couples, then the partner's profile - four network round
+   trips in series, before the chapter could draw anything) now lives in
+   `useChapterAccess`, which resolves it once per tab and caches it. `from`
+   carries the table-of-contents spread the reader opened this chapter from -
+   see chapterReturn.ts. */
 
 const LOADING_SHELL =
   "min-h-screen bg-[#181114] text-[#F2E6D2] grid place-items-center p-6 font-mono text-sm";
 
 function MediaPageInner() {
   const router = useRouter();
-  const supabase = createClient();
-  const backHref = useTocReturn(CHAPTER_SPREAD.media);
-  const [state, setState] = useState<{ userId: string; coupleId: string } | null>(null);
-  const [message, setMessage] = useState("Loading your digicam...");
+  const searchParams = useSearchParams();
+  const access = useChapterAccess();
 
-  useEffect(() => {
-    const loadAccess = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        router.replace("/");
-        return;
-      }
+  const backHref = tocReturnHref(searchParams?.get("from"), CHAPTER_SPREAD.media);
 
-      const { data: profile, error } = await supabase
-        .from("profiles")
-        .select("couple_id")
-        .eq("id", user.id)
-        .maybeSingle();
+  if (access.status === "checking") {
+    return <main className={LOADING_SHELL}>Loading your digicam...</main>;
+  }
 
-      if (error || !profile?.couple_id) {
-        setMessage("Link both universes before opening the digicam.");
-        return;
-      }
-
-      setState({ userId: user.id, coupleId: profile.couple_id });
-    };
-
-    loadAccess();
-  }, [router, supabase]);
-
-  if (!state) {
-    return <main className={LOADING_SHELL}>{message}</main>;
+  if (access.status === "unlinked") {
+    return <main className={LOADING_SHELL}>Link both universes before opening the digicam.</main>;
   }
 
   return (
     <DigicamScreen
-      userId={state.userId}
-      coupleId={state.coupleId}
+      userId={access.identity.userId}
+      coupleId={access.identity.coupleId!}
       onBack={() => router.push(backHref)}
     />
   );

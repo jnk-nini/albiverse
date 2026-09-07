@@ -29,6 +29,14 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
+import {
+  compressImage,
+  formatBytes,
+  playableMediaSrc,
+  readFileAsDataUrl,
+  relabelDataUrl,
+  transcodeVideo,
+} from "@/lib/media/mediaPrep";
 
 /* ============================================================================
    CH.04 - RETRO DIGICAM
@@ -43,7 +51,6 @@ interface DigicamItem {
   id: string;
   couple_id: string;
   uploader_id: string;
-  url: string;
   media_type: "image" | "video";
   caption: string;
   notes: string;
@@ -73,14 +80,35 @@ interface Frame {
   flipV: boolean;
 }
 
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const MAX_VIDEO_BYTES = 20 * 1024 * 1024;
+/* What a file may weigh when it is PICKED. Photos are downscaled and clips
+   re-encoded in the browser before they are stored, so these are only a sanity
+   ceiling on what is worth reading into memory at all - not the size that ends
+   up in the database. See src/lib/media/mediaPrep.ts. */
+const MAX_IMAGE_PICK_BYTES = 40 * 1024 * 1024;
+const MAX_VIDEO_PICK_BYTES = 300 * 1024 * 1024;
+
+/* What may actually be STORED, after preparation. `digicam_media.url` has a
+   35MB CHECK constraint in Postgres; staying well under it keeps the roll fast
+   to load and leaves the constraint as a backstop rather than a tripwire. */
+const MAX_STORED_IMAGE_BYTES = 3 * 1024 * 1024;
+const MAX_STORED_VIDEO_BYTES = 26 * 1024 * 1024;
+
+/* A clip is re-encoded when it is bigger than this, regardless of format -
+   under it, the original is kept so a short clip isn't needlessly degraded. */
+const VIDEO_TRANSCODE_THRESHOLD = 12 * 1024 * 1024;
 
 /* Must stay ONE string literal. Supabase parses the column list at compile time
    from the literal type, so concatenating pieces widens it to `string` and the
-   query comes back typed as GenericStringError[] instead of the row shape. */
+   query comes back typed as GenericStringError[] instead of the row shape.
+
+   PERFORMANCE: `url` is deliberately NOT in this list. It holds the entire
+   photo or clip as base64 - on this account the five rows in the roll come to
+   ~35MB - and selecting it here meant the chapter downloaded every frame in
+   the roll at full size before it could draw anything at all. The metadata
+   below is a couple of KB and arrives instantly; the media itself is fetched
+   afterwards by `loadMediaFor`, current frame first. */
 const SELECT_COLUMNS =
-  "id, couple_id, uploader_id, url, media_type, caption, notes, created_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v, filter, is_favorite";
+  "id, couple_id, uploader_id, media_type, caption, notes, created_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v, filter, is_favorite";
 
 /* Film stocks. `css` goes straight into the CSS filter property on the photo,
    `chip` is the swatch colour used in the picker so each stock is identifiable
@@ -142,15 +170,6 @@ const CAM = {
 } as const;
 
 const CHASSIS_RATIO = "1698 / 1080";
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
-    reader.readAsDataURL(file);
-  });
-}
 
 const DEFAULT_FRAME: Frame = { scale: 1, x: 0, y: 0, rotation: 0, flipH: false, flipV: false };
 
@@ -273,10 +292,15 @@ function FilmStrip({
   items,
   currentIndex,
   onJump,
+  urlOf,
 }: {
   items: DigicamItem[];
   currentIndex: number;
   onJump: (i: number) => void;
+  /* Media bytes are fetched separately from row metadata, so the strip is
+     handed a resolver rather than reading `item.url` (which no longer exists
+     on the row). Returns "" while a frame's bytes are still in flight. */
+  urlOf: (item: DigicamItem) => string;
 }) {
   const stripRef = useRef<HTMLDivElement>(null);
   const [thumbErrors, setThumbErrors] = useState<Set<string>>(new Set());
@@ -310,14 +334,21 @@ function FilmStrip({
               className={`film-frame relative shrink-0 w-24 h-[72px] overflow-hidden cursor-pointer
                 ${isCurrent ? "film-frame-current" : ""}`}
             >
-              {item.media_type === "video" ? (
+              {!urlOf(item) ? (
+                /* Unexposed frame: the row is known, its bytes are still on the
+                   way. Keeps the strip's length and paging stable instead of
+                   letting frames pop into existence one by one. */
+                <div className="absolute inset-0 bg-[#131417] flex items-center justify-center">
+                  <span className="w-3 h-3 rounded-full border border-[#3c3238] border-t-[#ECA8B8] animate-spin" />
+                </div>
+              ) : item.media_type === "video" ? (
                 thumbErrors.has(item.id) ? (
                   <div className="absolute inset-0 flex items-center justify-center bg-[#131417] text-lg">
                     🎞️
                   </div>
                 ) : (
                   <video
-                    src={item.url}
+                    src={urlOf(item)}
                     muted
                     playsInline
                     preload="metadata"
@@ -328,7 +359,7 @@ function FilmStrip({
                 )
               ) : (
                 <img
-                  src={item.url}
+                  src={urlOf(item)}
                   alt=""
                   /* Every thumbnail here is the full-size photo as a base64 data
                      URL, so without these the strip decodes the whole gallery at
@@ -383,6 +414,39 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
   const lcdRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ id: number; x: number; y: number; ox: number; oy: number } | null>(null);
 
+  /* The base64 media, fetched separately from the row metadata and keyed by
+     row id. A missing entry means "not fetched yet", which the LCD renders as
+     the loading state rather than as an empty frame. */
+  const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({});
+  const inflightMediaRef = useRef<Set<string>>(new Set());
+
+  const loadMediaFor = useCallback(
+    async (ids: string[]) => {
+      const wanted = ids.filter((id) => id && !inflightMediaRef.current.has(id));
+      if (wanted.length === 0) return;
+      wanted.forEach((id) => inflightMediaRef.current.add(id));
+
+      const { data, error: mediaError } = await supabase
+        .from("digicam_media")
+        .select("id, url")
+        .eq("couple_id", coupleId)
+        .in("id", wanted);
+
+      if (mediaError) {
+        wanted.forEach((id) => inflightMediaRef.current.delete(id));
+        setError(mediaError.message);
+        return;
+      }
+
+      setMediaUrls((prev) => {
+        const next = { ...prev };
+        for (const row of data ?? []) next[row.id as string] = row.url as string;
+        return next;
+      });
+    },
+    [coupleId, supabase]
+  );
+
   const loadItems = useCallback(async () => {
     const { data, error: loadError } = await supabase
       .from("digicam_media")
@@ -396,6 +460,11 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
       const rows = (data ?? []) as DigicamItem[];
       setItems(rows);
       setCurrentIndex((i) => (rows.length ? Math.min(i, rows.length - 1) : 0));
+      /* Anything whose bytes are already held stays cached; a Replace clears
+         its own entry so the new media is refetched. */
+      inflightMediaRef.current = new Set(
+        [...inflightMediaRef.current].filter((id) => rows.some((r) => r.id === id))
+      );
     }
     setLoading(false);
   }, [coupleId, supabase]);
@@ -405,6 +474,29 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
   }, [loadItems]);
 
   const currentItem = items[currentIndex];
+
+  /* Fetch the frame on screen first, then its immediate neighbours so paging
+     left/right is instant, and only then everything else in the roll. This is
+     what turns "wait for 35MB, then see the chapter" into "see the chapter,
+     then the current photo, then the rest". */
+  useEffect(() => {
+    if (items.length === 0) return;
+    const near = [currentIndex, currentIndex + 1, currentIndex - 1]
+      .filter((i) => i >= 0 && i < items.length)
+      .map((i) => items[i].id);
+    loadMediaFor(near);
+
+    const rest = items.map((i) => i.id).filter((id) => !near.includes(id));
+    if (rest.length === 0) return;
+    const timer = window.setTimeout(() => loadMediaFor(rest), 400);
+    return () => window.clearTimeout(timer);
+  }, [items, currentIndex, loadMediaFor]);
+
+  /** The stored bytes for a row, MIME-corrected, or "" while still loading. */
+  const urlOf = useCallback(
+    (item: DigicamItem | undefined) => (item ? playableMediaSrc(mediaUrls[item.id]) : ""),
+    [mediaUrls]
+  );
   const liveFrame = panel === "adjust" ? draftFrame : frameOf(currentItem);
   const liveFilter = panel === "filter" ? draftFilter : currentItem?.filter ?? "none";
 
@@ -605,36 +697,118 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
     }
   }, 150);
 
+  /* -------------------------------------------------------- media prep ----
+     Everything picked for the roll goes through here before it is stored.
+     Photos are downscaled (a 9MB phone photo becomes a few hundred KB, which
+     is the difference between this chapter loading instantly and hanging on
+     35MB of base64), and clips get their container MIME corrected and are
+     re-encoded when they are too heavy.
+
+     The MIME correction is the actual fix for "videos don't play": a clip
+     from an iPhone is handed over as `video/quicktime`, which no desktop
+     browser will touch even though the bytes inside are ordinary H.264/AAC.
+     See src/lib/media/mediaPrep.ts for the evidence. */
+  const [prepProgress, setPrepProgress] = useState<{ label: string; pct: number } | null>(null);
+  const prepAbortRef = useRef<AbortController | null>(null);
+
+  const cancelPrep = useCallback(() => {
+    prepAbortRef.current?.abort();
+  }, []);
+
+  const prepareFile = useCallback(
+    async (file: File): Promise<{ dataUrl: string; isVideo: boolean } | null> => {
+      setError(null);
+      setUploadNotice(null);
+
+      const isVideo = file.type.startsWith("video/");
+      const isImage = file.type.startsWith("image/");
+      if (!isVideo && !isImage) {
+        setError("Only image or video files can go in the digicam roll.");
+        return null;
+      }
+
+      const pickCap = isVideo ? MAX_VIDEO_PICK_BYTES : MAX_IMAGE_PICK_BYTES;
+      if (file.size > pickCap) {
+        setError(
+          `That ${isVideo ? "clip" : "photo"} is ${formatBytes(file.size)} — too big to even open here. Keep it under ${formatBytes(pickCap)}.`
+        );
+        return null;
+      }
+
+      try {
+        if (isImage) {
+          setPrepProgress({ label: "Developing…", pct: 0 });
+          const prepared = await compressImage(file, {
+            maxEdge: 2048,
+            targetBytes: MAX_STORED_IMAGE_BYTES,
+          });
+          if (prepared.bytes > MAX_STORED_IMAGE_BYTES * 3) {
+            setError(
+              `That photo is still ${formatBytes(prepared.bytes)} after optimising and won't fit on the roll. Try a smaller export.`
+            );
+            return null;
+          }
+          if (prepared.note) setUploadNotice(prepared.note);
+          return { dataUrl: prepared.dataUrl, isVideo: false };
+        }
+
+        /* Small, already-portable clips are stored untouched (apart from the
+           MIME label) so a short video isn't needlessly re-encoded. */
+        if (file.size <= VIDEO_TRANSCODE_THRESHOLD) {
+          setPrepProgress({ label: "Loading clip…", pct: 0 });
+          const raw = await readFileAsDataUrl(file);
+          const fixed = relabelDataUrl(raw, file.type);
+          if (fixed.changed) {
+            setUploadNotice(
+              "This clip was labelled .mov, which most browsers refuse to open. It's been saved as MP4 so it plays everywhere — the video itself is untouched."
+            );
+          }
+          return { dataUrl: fixed.dataUrl, isVideo: true };
+        }
+
+        const controller = new AbortController();
+        prepAbortRef.current = controller;
+        setPrepProgress({ label: "Re-encoding clip… (runs in real time)", pct: 0 });
+        const result = await transcodeVideo(
+          file,
+          { maxEdge: 1280 },
+          (fraction) =>
+            setPrepProgress({
+              label: "Re-encoding clip… (runs in real time)",
+              pct: Math.round(fraction * 100),
+            }),
+          controller.signal
+        );
+        prepAbortRef.current = null;
+
+        if (result.failed) {
+          setError(result.failed);
+          return null;
+        }
+        if (result.bytes > MAX_STORED_VIDEO_BYTES) {
+          setError(
+            `That clip is still ${formatBytes(result.bytes)} after re-encoding. Trim it shorter and try again.`
+          );
+          return null;
+        }
+        if (result.note) setUploadNotice(result.note);
+        return { dataUrl: result.dataUrl, isVideo: true };
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not read that file.");
+        return null;
+      } finally {
+        prepAbortRef.current = null;
+        setPrepProgress(null);
+      }
+    },
+    []
+  );
+
   const [runUpload, uploading] = useGuardedAction(async (file: File) => {
-    setError(null);
-    const isVideo = file.type.startsWith("video/");
-    const isImage = file.type.startsWith("image/");
+    const prepared = await prepareFile(file);
+    if (!prepared) return;
+    const { dataUrl, isVideo } = prepared;
 
-    if (!isVideo && !isImage) {
-      setError("Only image or video files can go in the digicam roll.");
-      return;
-    }
-    const cap = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
-    if (file.size > cap) {
-      setError(
-        `That file is too big. Keep ${isVideo ? "clips" : "photos"} under ${cap / (1024 * 1024)}MB.`
-      );
-      return;
-    }
-
-    /* iPhone-recorded .mov/HEVC video often has no decoder on Chrome/Firefox
-       on Windows or Android - a browser codec-support gap, not something a
-       data-URL upload can fix. This can't be detected with certainty from
-       the MIME type alone (some .mov files ARE H.264), so it's a heads-up,
-       not a block - the upload still proceeds either way. */
-    const looksLikeMov = file.type === "video/quicktime" || /\.mov$/i.test(file.name);
-    if (isVideo && looksLikeMov) {
-      setUploadNotice(
-        "Heads up: .mov clips from iPhone sometimes won't play in Chrome or on Windows for whoever else opens this. If it doesn't play for them, re-export as MP4 (H.264) and replace it."
-      );
-    }
-
-    const dataUrl = await readFileAsDataUrl(file);
     const { error: insertError } = await supabase.from("digicam_media").insert({
       couple_id: coupleId,
       uploader_id: userId,
@@ -663,23 +837,10 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
      photo's composition and a new image is unlikely to match it. */
   const [runReplace, replacing] = useGuardedAction(async (file: File) => {
     if (!currentItem) return;
-    setError(null);
-    const isVideo = file.type.startsWith("video/");
-    const isImage = file.type.startsWith("image/");
+    const prepared = await prepareFile(file);
+    if (!prepared) return;
+    const { dataUrl, isVideo } = prepared;
 
-    if (!isVideo && !isImage) {
-      setError("Only image or video files can go in the digicam roll.");
-      return;
-    }
-    const cap = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
-    if (file.size > cap) {
-      setError(
-        `That file is too big. Keep ${isVideo ? "clips" : "photos"} under ${cap / (1024 * 1024)}MB.`
-      );
-      return;
-    }
-
-    const dataUrl = await readFileAsDataUrl(file);
     const { error: updateError } = await supabase
       .from("digicam_media")
       .update({
@@ -701,6 +862,16 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
       return;
     }
 
+    /* Same row id, new bytes - drop the cached media for it (and the stale
+       "can't decode" flags) so the next render refetches instead of showing
+       the photo that was just replaced. */
+    setMediaUrls((prev) => {
+      const next = { ...prev };
+      delete next[currentItem.id];
+      return next;
+    });
+    inflightMediaRef.current.delete(currentItem.id);
+    setVideoErrorId((id) => (id === currentItem.id ? null : id));
     setDraftFrame(DEFAULT_FRAME);
     setFlashing(true);
     window.setTimeout(() => setFlashing(false), 620);
@@ -736,15 +907,17 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
 
   const downloadCurrent = useCallback(() => {
     if (!currentItem) return;
+    const href = urlOf(currentItem);
+    if (!href) return; // bytes still loading
     const a = document.createElement("a");
-    a.href = currentItem.url;
+    a.href = href;
     a.download = `albiverse-${String(currentIndex + 1).padStart(2, "0")}.${
       currentItem.media_type === "video" ? "mp4" : "jpg"
     }`;
     document.body.appendChild(a);
     a.click();
     a.remove();
-  }, [currentItem, currentIndex]);
+  }, [currentItem, currentIndex, urlOf]);
 
   const openFilePicker = useCallback(() => fileInputRef.current?.click(), []);
 
@@ -1233,6 +1406,34 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
               </div>
             )}
 
+            {/* Re-encoding a clip runs in real time, so it needs a visible
+                progress read-out and a way out - a silent multi-minute freeze
+                on a phone reads as a broken app. */}
+            {prepProgress && (
+              <div
+                role="status"
+                className="w-full max-w-xl mb-4 p-3 bg-[#2E0509] text-[#F2E6D2] text-xs font-mono border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] z-20"
+              >
+                <div className="flex items-center gap-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-[#ECA8B8]" />
+                  <span className="flex-1 uppercase tracking-wider">{prepProgress.label}</span>
+                  <span className="tabular-nums text-[#ECA8B8]">{prepProgress.pct}%</span>
+                  <button
+                    onClick={cancelPrep}
+                    className="ml-1 px-2 py-0.5 border border-[#E0B1AE]/50 rounded-sm text-[10px] uppercase tracking-wider hover:bg-[#450A10] cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <div className="mt-2 h-1.5 bg-[#171B22] border border-[#261D24] overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-[#7D2834] to-[#ECA8B8] transition-all duration-200"
+                    style={{ width: `${prepProgress.pct}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* ---------------- masthead ---------------- */}
             <div className="relative z-20 text-center mb-6 sm:mb-8">
               <h1 className="font-marker text-4xl sm:text-6xl text-[#F2E6D2] leading-[1.1] drop-shadow-[3px_4px_0_#781420]">
@@ -1299,23 +1500,36 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
                         key={currentItem.id}
                         className={`absolute inset-0 ${glitching ? "digicam-glitch" : ""}`}
                       >
-                        {currentItem.media_type === "video" ? (
+                        {!urlOf(currentItem) ? (
+                          /* Metadata arrived, the frame's bytes have not yet.
+                             A real camera says "loading" on its screen rather
+                             than showing an empty slot, and an <img src=""> is
+                             worse than useless - browsers treat it as a request
+                             for the page itself. */
+                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[#131417]">
+                            <Loader2 className="w-5 h-5 animate-spin text-[#ECA8B8]" />
+                            <p className="font-mono text-[8px] text-[#8faeaa] uppercase tracking-[0.2em]">
+                              Reading frame…
+                            </p>
+                          </div>
+                        ) : currentItem.media_type === "video" ? (
                           videoErrorId === currentItem.id ? (
                             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-6 bg-[#131417]">
                               <span className="text-2xl">🎞️</span>
                               <p className="font-mono text-[9px] text-[#ECA8B8] uppercase tracking-wide leading-relaxed max-w-[28ch]">
-                                This browser can&apos;t play this clip&apos;s format
+                                This browser can&apos;t decode this clip
                               </p>
-                              <p className="font-mono text-[8px] text-[#8faeaa] leading-relaxed max-w-[30ch]">
-                                Common with iPhone video (HEVC/.mov) on Chrome or Windows. Try opening
-                                it on an Apple device, or re-export it as a standard MP4 (H.264) before
-                                uploading.
+                              <p className="font-mono text-[8px] text-[#8faeaa] leading-relaxed max-w-[32ch]">
+                                Rare now that .mov clips are relabelled on the way in — this one is
+                                most likely HEVC, which Windows browsers have no decoder for. Use
+                                Replace and upload it again from the phone that recorded it: it will be
+                                re-encoded to MP4 on the way through.
                               </p>
                             </div>
                           ) : (
                             <video
                               key={currentItem.id}
-                              src={currentItem.url}
+                              src={urlOf(currentItem)}
                               controls={panel !== "adjust"}
                               playsInline
                               onError={() => setVideoErrorId(currentItem.id)}
@@ -1328,7 +1542,7 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
                           )
                         ) : (
                           <img
-                            src={currentItem.url}
+                            src={urlOf(currentItem)}
                             alt={currentItem.caption || "Digicam snapshot"}
                             draggable={false}
                             className="absolute inset-0 w-full h-full object-contain"
@@ -1940,7 +2154,7 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
               />
             </div>
 
-            <FilmStrip items={items} currentIndex={currentIndex} onJump={goTo} />
+            <FilmStrip items={items} currentIndex={currentIndex} onJump={goTo} urlOf={urlOf} />
 
             <footer className="max-w-md mx-auto text-center z-20 mt-10 mb-4">
               <span className="font-mono text-[10px] font-black text-[#261D24] uppercase tracking-widest bg-[#EAD9A9] px-4 py-1 border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] inline-block -rotate-1">

@@ -225,12 +225,19 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
   /* "Partner Profile" score: a rough, cosmetic sense of how much dossier has
      accumulated (items + logged snippets), not a real analytics score.
      snippetCount is lifted from WishlistSnippets so this doesn't need its
-     own duplicate query against wishlist_snippets. */
+     own duplicate query against wishlist_snippets.
+
+     The old `Math.max(2, ...)` floor meant a brand-new, completely empty lab
+     still read "2%", which looks like a bug (it says progress exists when
+     nothing has been filed at all) rather than a nudge. An empty dossier is
+     now honestly 0%; the floor only applies once there is genuinely at least
+     one item or snippet, so a single entry can't round down to nothing. */
   const [snippetCount, setSnippetCount] = useState(0);
-  const profilePct = useMemo(
-    () => Math.max(2, Math.min(100, items.length * 8 + snippetCount * 4)),
-    [items.length, snippetCount]
-  );
+  const profilePct = useMemo(() => {
+    const filed = items.length + snippetCount;
+    if (filed === 0) return 0;
+    return Math.max(2, Math.min(100, items.length * 8 + snippetCount * 4));
+  }, [items.length, snippetCount]);
 
   /* ------------------------------------------------------------- CRUD */
 
@@ -668,7 +675,7 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
             )}
           </div>
 
-          <WishlistFundTracker items={items} />
+          <WishlistFundTracker items={items} userId={userId} />
         </section>
       </div>
 

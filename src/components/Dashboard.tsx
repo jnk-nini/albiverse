@@ -7,6 +7,8 @@ import SpideyBackground from "./SpideyBackground";
 import { Typewriter } from "./DiaryArt";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import { createClient } from "@/lib/supabase/client";
+import { compressImage } from "@/lib/media/mediaPrep";
+import { clearChapterAccessCache } from "@/lib/hooks/useChapterAccess";
 import {
   Clock,
   Calendar,
@@ -34,16 +36,9 @@ import {
   X
 } from "lucide-react";
 
-const COVER_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
-    reader.readAsDataURL(file);
-  });
-}
+/* The size a cover photo may be when PICKED. It is downscaled before it is
+   stored, so this only bounds what gets read into memory. */
+const COVER_MAX_IMAGE_BYTES = 40 * 1024 * 1024;
 
 interface DashboardProps {
   user: any;
@@ -219,6 +214,9 @@ export default function Dashboard({
       return;
     }
 
+    /* couple_id just changed for both partners - the per-tab chapter cache
+       still holds the old one. */
+    clearChapterAccessCache();
     if (onUnlinked) onUnlinked();
   }, 500);
 
@@ -235,7 +233,12 @@ export default function Dashboard({
       return;
     }
 
-    const dataUrl = await readFileAsDataUrl(file);
+    /* The cover is the very first thing the app has to paint, and it used to be
+       stored at whatever size the phone produced - the existing one on this
+       account is 9.5MB of base64. Downscaling to book-cover size makes it a few
+       hundred KB with no visible difference at the size it is displayed. */
+    const prepared = await compressImage(file, { maxEdge: 1600, targetBytes: 900_000 });
+    const dataUrl = prepared.dataUrl;
     const { error } = await supabase
       .from("couples")
       .update({ cover_image_data: dataUrl })
@@ -480,7 +483,7 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     { title: "Multiverse Bucket List", desc: "Adventures across dimensions to complete", href: "/bucket-list", tag: "CH. 08", icon: Sparkles, note: "Cross off our milestones", onClick: handleOpenBucketList },
     { title: "Soundtrack Deck", desc: "Spinning vinyl & our special playlist", href: "/soundtrack", tag: "CH. 09", icon: Disc, note: "Songs for our universe", onClick: handleOpenSoundtrack },
     { title: "Secret Wishlist", desc: "A private R&D lab for surprise gift plans, just yours", href: "/wishlist", tag: "CH. 10", icon: Gift, note: "Owner-only — not shared, ever", onClick: handleOpenWishlist },
-    { title: "About Him Dossier", desc: "Confidential intel, sizes & favorites", href: "/about-him", tag: "CH. 11", icon: Lock, note: "Classified Peter Parker Intel" },
+    { title: "Partner Dossier", desc: "Confidential intel, sizes & favorites", href: "/dossier", tag: "CH. 11", icon: Lock, note: "Classified intel on your other half" },
   ];
 
   const totalSpreads = Math.ceil(features.length / 2);

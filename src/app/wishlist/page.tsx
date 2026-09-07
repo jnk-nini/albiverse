@@ -1,10 +1,10 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import WishlistScreen from "@/components/WishlistScreen";
-import { createClient } from "@/lib/supabase/client";
 import { CHAPTER_SPREAD, tocReturnHref } from "@/lib/nav/chapterReturn";
+import { useChapterAccess } from "@/lib/hooks/useChapterAccess";
 
 /* CH.10 - SECRET WISHLIST
    Unlike every other chapter, this one is deliberately NOT couple-scoped.
@@ -12,9 +12,10 @@ import { CHAPTER_SPREAD, tocReturnHref } from "@/lib/nav/chapterReturn";
    RLS-locked to `owner_id = auth.uid()` only - no couple_id anywhere in the
    query, no couple membership check, no realtime broadcast to a partner
    channel. Whoever is signed in sees only their own secret R&D lab, whether
-   or not they're even linked to anyone. See CLAUDE.md's "partner_vault is
-   NOT couple-shared" rule and albiverse-partner-swap memory for why this
-   table exists the way it does. */
+   or not they're even linked to anyone - hence `useChapterAccess(false)`,
+   which resolves the reader without demanding a couple. See CLAUDE.md's
+   "partner_vault is NOT couple-shared" rule for why this table exists the
+   way it does. */
 
 const LOADING_SHELL =
   "min-h-screen bg-[#14181A] text-[#F1E2CB] grid place-items-center p-6 font-mono text-sm";
@@ -22,31 +23,15 @@ const LOADING_SHELL =
 function WishlistPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const supabase = createClient();
-
-  const [userId, setUserId] = useState<string | null>(null);
+  const access = useChapterAccess(false);
 
   const backHref = tocReturnHref(searchParams?.get("from"), CHAPTER_SPREAD.wishlist);
 
-  useEffect(() => {
-    const loadAccess = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) {
-        router.replace("/");
-        return;
-      }
-      setUserId(user.id);
-    };
-    loadAccess();
-  }, [router, supabase]);
-
-  if (!userId) {
+  if (access.status === "checking") {
     return <main className={LOADING_SHELL}>Unlocking the classified R&amp;D lab...</main>;
   }
 
-  return <WishlistScreen userId={userId} onBack={() => router.push(backHref)} />;
+  return <WishlistScreen userId={access.identity.userId} onBack={() => router.push(backHref)} />;
 }
 
 export default function WishlistPage() {

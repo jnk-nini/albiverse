@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { clearChapterAccessCache } from "@/lib/hooks/useChapterAccess";
 import CoupleConnect from "@/components/CoupleConnect";
 import Dashboard from "@/components/Dashboard";
 import { 
@@ -20,6 +21,16 @@ import {
   Star, 
   Flame 
 } from "lucide-react";
+
+/* Only the columns this page actually reads off `couples`. Declared so the
+   lazy cover-image merge below can be typed without widening to `any`. */
+type CoupleRow = {
+  id: string;
+  partner_1_id: string | null;
+  partner_2_id: string | null;
+  anniversary_timestamp: string | null;
+  cover_image_data?: string | null;
+};
 
 export default function AuthPage() {
   const [isSignUp, setIsSignUp] = useState(false);
@@ -70,13 +81,39 @@ export default function AuthPage() {
       setUserProfile(profile);
 
       if (profile?.couple_id) {
+        /* PERFORMANCE: this used to be `select("*")`, which dragged
+           `ambient_audio_data` (a whole base64 MP3) and `cover_image_data`
+           (a base64 photo) down the wire before ANYTHING could render - on
+           this account that is ~12.6MB blocking every single app load, and
+           the ambient track was never even read from here (AudioPlayerProvider
+           fetches it lazily, only when you press play).
+
+           Only the small columns are awaited now. The cover photo is fetched
+           straight afterwards WITHOUT blocking, and merged in when it lands;
+           the book shows its hand-drawn CSS cover until then. */
         const { data: couple } = await supabase
           .from("couples")
-          .select("*")
+          .select("id, partner_1_id, partner_2_id, anniversary_timestamp")
           .eq("id", profile.couple_id)
           .maybeSingle();
 
         setCoupleData(couple);
+
+        if (couple?.id) {
+          void supabase
+            .from("couples")
+            .select("cover_image_data")
+            .eq("id", couple.id)
+            .maybeSingle()
+            .then(({ data: cover }) => {
+              if (!cover?.cover_image_data) return;
+              setCoupleData((prev: CoupleRow | null) =>
+                prev && prev.id === couple.id
+                  ? { ...prev, cover_image_data: cover.cover_image_data }
+                  : prev
+              );
+            });
+        }
 
         const partnerId = couple?.partner_1_id === userId
           ? couple.partner_2_id
@@ -119,6 +156,10 @@ export default function AuthPage() {
 
     const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === "SIGNED_OUT") {
+        /* The chapter gate caches the resolved reader per tab; a session
+           ending must invalidate it or the next sign-in could paint one
+           chapter from the previous reader's ids before revalidating. */
+        clearChapterAccessCache();
         setUser(null);
         setUserProfile(null);
         setCoupleData(null);
@@ -205,6 +246,7 @@ export default function AuthPage() {
     setIsTransitioningOut(true);
     setTimeout(async () => {
       await supabase.auth.signOut();
+      clearChapterAccessCache();
       setUser(null);
       setUserProfile(null);
       setCoupleData(null);
