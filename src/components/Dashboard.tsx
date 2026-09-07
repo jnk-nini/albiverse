@@ -7,6 +7,8 @@ import SpideyBackground from "./SpideyBackground";
 import { Typewriter } from "./DiaryArt";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import { createClient } from "@/lib/supabase/client";
+import { compressImage } from "@/lib/media/mediaPrep";
+import { clearChapterAccessCache } from "@/lib/hooks/useChapterAccess";
 import {
   Clock,
   Calendar,
@@ -34,16 +36,9 @@ import {
   X
 } from "lucide-react";
 
-const COVER_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
-    reader.readAsDataURL(file);
-  });
-}
+/* The size a cover photo may be when PICKED. It is downscaled before it is
+   stored, so this only bounds what gets read into memory. */
+const COVER_MAX_IMAGE_BYTES = 40 * 1024 * 1024;
 
 interface DashboardProps {
   user: any;
@@ -89,6 +84,10 @@ export default function Dashboard({
   // Big & Fun Transition State for Live Clock Warp
   const [isWarpingToClock, setIsWarpingToClock] = useState(false);
   const [isWarpingToCountdowns, setIsWarpingToCountdowns] = useState(false);
+  const [isWarpingToPlanner, setIsWarpingToPlanner] = useState(false);
+  const [isWarpingToBucketList, setIsWarpingToBucketList] = useState(false);
+  const [isWarpingToWishlist, setIsWarpingToWishlist] = useState(false);
+  const [plannerBadgeCount, setPlannerBadgeCount] = useState(0);
 
   const [currentSpread, setCurrentSpread] = useState(0);
   const [flippingState, setFlippingState] = useState<"forward" | "backward" | null>(null);
@@ -215,6 +214,9 @@ export default function Dashboard({
       return;
     }
 
+    /* couple_id just changed for both partners - the per-tab chapter cache
+       still holds the old one. */
+    clearChapterAccessCache();
     if (onUnlinked) onUnlinked();
   }, 500);
 
@@ -231,7 +233,12 @@ export default function Dashboard({
       return;
     }
 
-    const dataUrl = await readFileAsDataUrl(file);
+    /* The cover is the very first thing the app has to paint, and it used to be
+       stored at whatever size the phone produced - the existing one on this
+       account is 9.5MB of base64. Downscaling to book-cover size makes it a few
+       hundred KB with no visible difference at the size it is displayed. */
+    const prepared = await compressImage(file, { maxEdge: 1600, targetBytes: 900_000 });
+    const dataUrl = prepared.dataUrl;
     const { error } = await supabase
       .from("couples")
       .update({ cover_image_data: dataUrl })
@@ -296,7 +303,47 @@ useEffect(() => {
   router.prefetch("/letters");
   router.prefetch("/diary");
   router.prefetch("/soundtrack");
+  // NOTE: /planner and /bucket-list are deliberately NOT eagerly prefetched
+  // here. In dev mode, router.prefetch() triggers on-demand compilation of
+  // the target route - these two are brand new and heavy, so prefetching
+  // them on every Dashboard mount (i.e. every app load) was forcing Next.js
+  // to compile both in the background before the reader ever asked for
+  // them, which is what made the whole app feel slower to load right after
+  // they were added. Each chapter's own click handler (handleOpenPlanner/
+  // handleOpenBucketList, below) still prefetches right when it's opened,
+  // which is plenty of lead time given the ~1.2s warp animation before the
+  // actual navigation happens.
 }, [router]);
+
+// Spider-Sense badge for the Ch.07 tile: counts canon events still waiting
+// on a confirmation stamp or landing today, couple-scoped and realtime.
+useEffect(() => {
+  if (!couple?.id) return;
+  let active = true;
+  const loadBadge = async () => {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(todayStart);
+    todayEnd.setDate(todayEnd.getDate() + 1);
+    const { count } = await supabase
+      .from("calendar_events")
+      .select("id", { count: "exact", head: true })
+      .eq("couple_id", couple.id)
+      .or(
+        `and(rsvp_required.eq.true,confirmed_at.is.null),and(starts_at.gte.${todayStart.toISOString()},starts_at.lt.${todayEnd.toISOString()})`
+      );
+    if (active) setPlannerBadgeCount(count || 0);
+  };
+  loadBadge();
+  const channel = supabase
+    .channel(`dashboard_planner_badge_${couple.id}`)
+    .on("postgres_changes", { event: "*", schema: "public", table: "calendar_events", filter: `couple_id=eq.${couple.id}` }, loadBadge)
+    .subscribe();
+  return () => {
+    active = false;
+    supabase.removeChannel(channel);
+  };
+}, [couple?.id, supabase]);
 
 // 2. Updated Chapter 2 Navigation Handler
 const handleGoToCountdowns = (e: React.MouseEvent) => {
@@ -372,6 +419,43 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     }, 1250);
   };
 
+  // Chapter 7 Web Planner Warp State
+  const handleOpenPlanner = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWarpingToPlanner(true);
+    router.prefetch("/planner");
+
+    setTimeout(() => {
+      router.push(`/planner?from=${currentSpread}`);
+    }, 1200);
+  };
+
+  // Chapter 8 Multiverse Bucket List Warp State
+  const handleOpenBucketList = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWarpingToBucketList(true);
+    router.prefetch("/bucket-list");
+
+    setTimeout(() => {
+      router.push(`/bucket-list?from=${currentSpread}`);
+    }, 1200);
+  };
+
+  // Chapter 10 Secret Wishlist Warp State. This chapter is deliberately NOT
+  // couple-scoped (see src/app/wishlist/page.tsx and CLAUDE.md's
+  // partner_vault rule) - the tile is visible to both signed-in accounts on
+  // this couple, but each account's data is private to itself, invisible to
+  // whoever they're linked with.
+  const handleOpenWishlist = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsWarpingToWishlist(true);
+    router.prefetch("/wishlist");
+
+    setTimeout(() => {
+      router.push(`/wishlist?from=${currentSpread}`);
+    }, 1200);
+  };
+
   const features = [
     {
     title: "Live Canon Clock", 
@@ -395,11 +479,11 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
     { title: "Retro Digicam", desc: "Instant snapshots & viewfinder clips", href: "/media", tag: "CH. 04", icon: Camera, note: "Earth-65 & 616 gallery" },
     { title: "Love Letter Jar", desc: "Folded scrolls & wax-sealed notes", href: "/letters", tag: "CH. 05", icon: Mail, note: "Confidential unsealed letters", onClick: handleOpenLetters },
     { title: "Spider Diary", desc: "Typed field logs, pinned to the board", href: "/diary", tag: "CH. 06", icon: BookHeart, note: "Our private logbook", onClick: handleOpenDiary },
-    { title: "Web Planner", desc: "Shared date schedules & reminders", href: "/planner", tag: "CH. 07", icon: CheckSquare, note: "Adventures on the docket" },
-    { title: "Multiverse Bucket List", desc: "Adventures across dimensions to complete", href: "/bucket-list", tag: "CH. 08", icon: Sparkles, note: "Cross off our milestones" },
+    { title: "Web Planner", desc: "Shared date schedules & reminders", href: "/planner", tag: "CH. 07", icon: CheckSquare, note: "Adventures on the docket", onClick: handleOpenPlanner, badgeCount: plannerBadgeCount },
+    { title: "Multiverse Bucket List", desc: "Adventures across dimensions to complete", href: "/bucket-list", tag: "CH. 08", icon: Sparkles, note: "Cross off our milestones", onClick: handleOpenBucketList },
     { title: "Soundtrack Deck", desc: "Spinning vinyl & our special playlist", href: "/soundtrack", tag: "CH. 09", icon: Disc, note: "Songs for our universe", onClick: handleOpenSoundtrack },
-    { title: "Secret Wishlist", desc: "Gift ideas & surprise drops (Vault)", href: "/wishlist", tag: "CH. 10", icon: Gift, note: "Surprise vault items" },
-    { title: "About Him Dossier", desc: "Confidential intel, sizes & favorites", href: "/about-him", tag: "CH. 11", icon: Lock, note: "Classified Peter Parker Intel" },
+    { title: "Secret Wishlist", desc: "A private R&D lab for surprise gift plans, just yours", href: "/wishlist", tag: "CH. 10", icon: Gift, note: "Owner-only — not shared, ever", onClick: handleOpenWishlist },
+    { title: "Partner Dossier", desc: "Confidential intel, sizes & favorites", href: "/dossier", tag: "CH. 11", icon: Lock, note: "Classified intel on your other half" },
   ];
 
   const totalSpreads = Math.ceil(features.length / 2);
@@ -512,8 +596,13 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
                 Albiverse
               </p>
             </div>
-            <span className="toc-medallion shrink-0">
+            <span className="toc-medallion shrink-0 relative">
               <Icon className="w-5 h-5" strokeWidth={2} />
+              {(item as { badgeCount?: number }).badgeCount != null && (item as { badgeCount?: number }).badgeCount! > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-[#7D2834] border-2 border-[#FAF4EB] text-[#FAF4EB] text-[9px] font-mono font-black flex items-center justify-center animate-pulse">
+                  {(item as { badgeCount?: number }).badgeCount}
+                </span>
+              )}
             </span>
           </div>
 
@@ -1848,6 +1937,201 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
             <span className="font-handwriting text-2xl text-[#E0B1AE] mt-3 font-black drop-shadow-md">
               Every song we ever sent each other at 2am...
             </span>
+          </div>
+        </div>
+      )}
+
+      {/* ================= CH. 07 WEB PLANNER WARP OVERLAY =================
+          A spider-web clock face rises and spins up out of the frame while
+          little date-square cards fly in toward it like a rolodex being
+          shuffled, landing on a "syncing the shared timeline" caption. */}
+      {isWarpingToPlanner && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#150A0D]/93 backdrop-blur-md overflow-hidden pointer-events-none">
+          <style>{`
+            @keyframes plnwarp-rise {
+              0%   { transform: translateY(60vh) scale(0.55) rotate(-10deg); opacity: 0; }
+              46%  { transform: translateY(0) scale(1.08) rotate(3deg); opacity: 1; }
+              64%  { transform: translateY(0) scale(0.96) rotate(-1.5deg); }
+              82%  { transform: translateY(0) scale(1.02) rotate(0.6deg); }
+              100% { transform: translateY(0) scale(1) rotate(0deg); opacity: 1; }
+            }
+            @keyframes plnwarp-spin-ring { to { transform: rotate(360deg); } }
+            @keyframes plnwarp-hour { to { transform: rotate(390deg); } }
+            @keyframes plnwarp-minute { to { transform: rotate(750deg); } }
+            @keyframes plnwarp-card-fly {
+              0%   { transform: translate(var(--fly-x), var(--fly-y)) rotate(var(--fly-rot)) scale(1.1); opacity: 0; }
+              20%  { opacity: 1; }
+              100% { transform: translate(0, 0) rotate(0deg) scale(0.18); opacity: 0; }
+            }
+            .plnwarp-clock { animation: plnwarp-rise 1.3s cubic-bezier(0.2,0.9,0.3,1) forwards; }
+            .plnwarp-ring  { animation: plnwarp-spin-ring 4s linear infinite; }
+            .plnwarp-hour  { animation: plnwarp-hour 1.3s ease-in-out forwards; transform-origin: bottom center; }
+            .plnwarp-minute{ animation: plnwarp-minute 1.3s ease-in-out forwards; transform-origin: bottom center; }
+            .plnwarp-card  { animation: plnwarp-card-fly 1.05s cubic-bezier(0.55,0,0.35,1) forwards; }
+          `}</style>
+
+          <div className="plnwarp-clock relative w-[190px] h-[190px] sm:w-[260px] sm:h-[260px] -translate-y-6">
+            <div className="plnwarp-ring absolute inset-0 rounded-full border-4 border-dashed border-[#D9889E]/70" />
+            <div className="absolute inset-3 rounded-full border-[3px] border-[#EAD9A9] bg-[radial-gradient(circle,rgba(122,31,52,0.4),rgba(20,10,13,0.9))] flex items-center justify-center overflow-hidden">
+              <span className="absolute text-5xl opacity-70">🕸️</span>
+              <div className="plnwarp-hour absolute bottom-1/2 left-1/2 w-1.5 h-14 sm:h-20 -ml-0.75 bg-[#FAF4EB] rounded-full" />
+              <div className="plnwarp-minute absolute bottom-1/2 left-1/2 w-1 h-20 sm:h-28 -ml-0.5 bg-[#D9889E] rounded-full" />
+              <span className="absolute w-3 h-3 rounded-full bg-[#7D2834] border-2 border-[#FAF4EB]" />
+            </div>
+          </div>
+
+          {[
+            { text: "📆", x: "-40vw", y: "-28vh", rot: "-20deg" },
+            { text: "🗓️", x: "38vw", y: "-24vh", rot: "16deg" },
+            { text: "📌", x: "-32vw", y: "28vh", rot: "30deg" },
+            { text: "🕸️", x: "36vw", y: "24vh", rot: "-14deg" },
+            { text: "⏰", x: "0vw", y: "-40vh", rot: "8deg" },
+            { text: "💕", x: "-24vw", y: "-14vh", rot: "-26deg" },
+            { text: "✅", x: "26vw", y: "12vh", rot: "22deg" },
+          ].map((item, idx) => (
+            <span
+              key={idx}
+              style={{ "--fly-x": item.x, "--fly-y": item.y, "--fly-rot": item.rot, animationDelay: `${idx * 0.06}s` } as React.CSSProperties}
+              className="plnwarp-card absolute text-4xl sm:text-5xl select-none"
+            >
+              {item.text}
+            </span>
+          ))}
+
+          <div className="absolute bottom-[12vh] left-1/2 -translate-x-1/2 flex flex-col items-center animate-comic-pop">
+            <div className="bg-[#450A10] border-4 border-[#FAF4EB] shadow-[10px_10px_0_#17131A] px-6 py-4 rounded-2xl -rotate-1 flex items-center gap-4">
+              <span className="text-4xl animate-bounce">🕸️</span>
+              <div>
+                <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#E0B1AE] block">
+                  CHAPTER 07 • WEB PLANNER
+                </span>
+                <h2 className="font-marker text-2xl sm:text-4xl text-[#FAF4EB] leading-tight">SYNCING CANON TIMELINE...</h2>
+              </div>
+              <span className="text-4xl animate-pulse">📌</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= CH. 08 MULTIVERSE BUCKET LIST WARP OVERLAY =================
+          A giant rubber stamp slams "APPROVED" down onto a torn ticket stub,
+          then adventure icons burst outward from the impact point. */}
+      {isWarpingToBucketList && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#0B1210]/93 backdrop-blur-md overflow-hidden pointer-events-none">
+          <style>{`
+            @keyframes blwarp-stamp-drop {
+              0%   { transform: translateY(-60vh) rotate(-16deg) scale(1.2); opacity: 0; }
+              55%  { transform: translateY(-60vh) rotate(-16deg) scale(1.2); opacity: 1; }
+              72%  { transform: translateY(0) rotate(-4deg) scale(1); opacity: 1; }
+              82%  { transform: translateY(-16px) rotate(-6deg) scale(1.02); }
+              100% { transform: translateY(0) rotate(-4deg) scale(1); opacity: 1; }
+            }
+            @keyframes blwarp-ticket-in {
+              0%, 60% { transform: scale(0.7); opacity: 0; }
+              85%     { transform: scale(1.05); opacity: 1; }
+              100%    { transform: scale(1); opacity: 1; }
+            }
+            @keyframes blwarp-ink-mark { 0%, 74% { opacity: 0; transform: scale(0.5); } 100% { opacity: 1; transform: scale(1); } }
+            @keyframes blwarp-confetti {
+              0%   { transform: translate(0,0) rotate(0deg) scale(0.3); opacity: 0; }
+              12%  { opacity: 1; }
+              100% { transform: translate(var(--fly-x), var(--fly-y)) rotate(var(--fly-rot)) scale(1.1); opacity: 0; }
+            }
+            .blwarp-stamp    { animation: blwarp-stamp-drop 1.15s cubic-bezier(0.34,1.2,0.4,1) forwards; }
+            .blwarp-ticket   { animation: blwarp-ticket-in 1.15s ease-out forwards; }
+            .blwarp-inkmark  { animation: blwarp-ink-mark 1.15s ease-out forwards; }
+            .blwarp-confetti-piece { animation: blwarp-confetti 0.9s cubic-bezier(0.2,0.9,0.3,1) forwards; animation-delay: 0.75s; opacity: 0; }
+          `}</style>
+
+          <div className="blwarp-ticket relative w-[240px] sm:w-[320px] bg-[#EFE4D6] border-3 border-[#261D24] rounded-xl p-6 shadow-[12px_12px_0_rgba(0,0,0,0.7)] -rotate-2">
+            <div className="absolute -left-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-[#0B1210]" />
+            <div className="absolute -right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-[#0B1210]" />
+            <p className="font-mono text-[10px] font-black uppercase text-[#5A2029] tracking-widest text-center">Multiverse Boarding Pass</p>
+            <p className="font-marker text-2xl text-[#1A0D10] text-center mt-1">Next Adventure</p>
+            <div className="blwarp-inkmark absolute inset-0 flex items-center justify-center">
+              <span className="font-marker text-3xl sm:text-4xl text-[#7D2834] border-4 border-[#7D2834] rounded-lg px-4 py-1 -rotate-12 bg-[#EFE4D6]/90">
+                APPROVED
+              </span>
+            </div>
+          </div>
+
+          <div className="blwarp-stamp absolute w-24 h-32 sm:w-28 sm:h-36 -translate-y-10">
+            <div className="w-full h-20 sm:h-24 bg-[#3A2A22] rounded-t-xl border-3 border-[#1A0D10]" />
+            <div className="w-14 sm:w-16 h-12 sm:h-14 mx-auto bg-[#5A2029] border-3 border-[#1A0D10] rounded-b-lg" />
+          </div>
+
+          {["✈️", "📷", "💍", "⛰️", "🍜", "🌀"].map((icon, i) => {
+            const angle = (i / 6) * Math.PI * 2;
+            const fx = `${Math.cos(angle) * 32}vw`;
+            const fy = `${Math.sin(angle) * 26}vh`;
+            return (
+              <span
+                key={icon}
+                style={{ "--fly-x": fx, "--fly-y": fy, "--fly-rot": `${i * 40 - 100}deg` } as React.CSSProperties}
+                className="blwarp-confetti-piece absolute text-4xl select-none"
+              >
+                {icon}
+              </span>
+            );
+          })}
+
+          <div className="absolute bottom-[10vh] left-1/2 -translate-x-1/2 flex flex-col items-center animate-comic-pop">
+            <div className="bg-[#0B1210] border-4 border-[#FAF4EB] shadow-[10px_10px_0_#171B22] px-6 py-4 rounded-2xl rotate-1 flex items-center gap-4">
+              <span className="text-4xl animate-bounce">🌀</span>
+              <div>
+                <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#9FD8C4] block">
+                  CHAPTER 08 • MULTIVERSE BUCKET LIST
+                </span>
+                <h2 className="font-marker text-2xl sm:text-4xl text-[#FAF4EB] leading-tight">*THUNK!* LOADING QUESTS...</h2>
+              </div>
+              <span className="text-4xl animate-pulse">🏆</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Chapter 10 Secret Wishlist Warp - a case file dropping onto the desk
+          and getting stamped CLASSIFIED, matching the R&D-lab framing of the
+          chapter itself. */}
+      {isWarpingToWishlist && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#0B1210]/93 backdrop-blur-md overflow-hidden pointer-events-none">
+          <style>{`
+            @keyframes wlwarp-file-drop {
+              0%   { transform: translateY(-70vh) rotate(10deg) scale(1.1); opacity: 0; }
+              50%  { transform: translateY(-70vh) rotate(10deg) scale(1.1); opacity: 1; }
+              75%  { transform: translateY(0) rotate(-2deg) scale(1); opacity: 1; }
+              100% { transform: translateY(0) rotate(-2deg) scale(1); opacity: 1; }
+            }
+            @keyframes wlwarp-stamp-slam {
+              0%, 70%  { opacity: 0; transform: scale(2.4) rotate(-8deg); }
+              82%      { opacity: 1; transform: scale(0.92) rotate(-8deg); }
+              90%      { transform: scale(1.05) rotate(-8deg); }
+              100%     { opacity: 1; transform: scale(1) rotate(-8deg); }
+            }
+            .wlwarp-file  { animation: wlwarp-file-drop 1.1s cubic-bezier(0.34,1.2,0.4,1) forwards; }
+            .wlwarp-stamp { animation: wlwarp-stamp-slam 1.1s ease-out forwards; }
+          `}</style>
+
+          <div className="wlwarp-file relative w-[240px] sm:w-[300px] bg-[#EFE4D6] border-3 border-[#261D24] rounded-lg p-6 shadow-[12px_12px_0_rgba(0,0,0,0.7)]">
+            <p className="font-mono text-[10px] font-black uppercase text-[#5A2029] tracking-widest text-center">Case File</p>
+            <p className="font-marker text-2xl text-[#1A0D10] text-center mt-1">Secret Wishlist</p>
+            <div className="wlwarp-stamp absolute inset-0 flex items-center justify-center">
+              <span className="font-marker text-2xl sm:text-3xl text-[#7D2834] border-4 border-[#7D2834] rounded-lg px-4 py-1 bg-[#EFE4D6]/90">
+                CLASSIFIED
+              </span>
+            </div>
+          </div>
+
+          <div className="absolute bottom-[10vh] left-1/2 -translate-x-1/2 flex flex-col items-center animate-comic-pop">
+            <div className="bg-[#0B1210] border-4 border-[#FAF4EB] shadow-[10px_10px_0_#171B22] px-6 py-4 rounded-2xl -rotate-1 flex items-center gap-4">
+              <span className="text-4xl">🔒</span>
+              <div>
+                <span className="font-mono text-[10px] font-black uppercase tracking-widest text-[#9FD8C4] block">
+                  CHAPTER 10 • FOR YOUR EYES ONLY
+                </span>
+                <h2 className="font-marker text-2xl sm:text-4xl text-[#FAF4EB] leading-tight">UNLOCKING R&amp;D LAB...</h2>
+              </div>
+            </div>
           </div>
         </div>
       )}

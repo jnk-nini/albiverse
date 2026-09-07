@@ -1,20 +1,18 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import DiaryScreen from "@/components/DiaryScreen";
-import { createClient } from "@/lib/supabase/client";
 import { CHAPTER_SPREAD, tocReturnHref } from "@/lib/nav/chapterReturn";
+import { useChapterAccess } from "@/lib/hooks/useChapterAccess";
 
 /* CH.06 - SPIDER DIARY
-   Same shape as the other chapter routes: resolve the signed-in user and their
-   couple client-side, bounce to "/" if there is no session, then hand the screen
-   only the ids it is allowed to query with.
-
-   `from` carries the table-of-contents spread the reader was looking at when
-   they opened this chapter, so BACK returns them to that exact spread instead of
-   the front of the book. Chapter 5 does the same thing, and the two chapters
-   share a spread, so leaving the jar and leaving the diary land in one place. */
+   The auth/identity resolution that used to live inline here (getUser, then
+   profiles, then couples, then the partner's profile - four network round
+   trips in series, before the chapter could draw anything) now lives in
+   `useChapterAccess`, which resolves it once per tab and caches it. `from`
+   carries the table-of-contents spread the reader opened this chapter from -
+   see chapterReturn.ts. */
 
 const LOADING_SHELL =
   "min-h-screen bg-[#1A1013] text-[#F1E2CB] grid place-items-center p-6 font-mono text-sm";
@@ -22,79 +20,24 @@ const LOADING_SHELL =
 function DiaryPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const supabase = createClient();
-
-  const [state, setState] = useState<{
-    userId: string;
-    coupleId: string;
-    myName: string;
-    partnerName: string;
-  } | null>(null);
-  const [message, setMessage] = useState("Rolling a sheet into the machine...");
+  const access = useChapterAccess();
 
   const backHref = tocReturnHref(searchParams?.get("from"), CHAPTER_SPREAD.diary);
 
-  useEffect(() => {
-    const loadAccess = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) {
-        router.replace("/");
-        return;
-      }
+  if (access.status === "checking") {
+    return <main className={LOADING_SHELL}>Rolling a sheet into the machine...</main>;
+  }
 
-      const { data: profile, error } = await supabase
-        .from("profiles")
-        .select("couple_id, full_name")
-        .eq("id", user.id)
-        .maybeSingle();
-
-      if (error || !profile?.couple_id) {
-        setMessage("Link both universes before opening the shared diary.");
-        return;
-      }
-
-      const { data: couple } = await supabase
-        .from("couples")
-        .select("partner_1_id, partner_2_id")
-        .eq("id", profile.couple_id)
-        .maybeSingle();
-
-      const partnerId =
-        couple?.partner_1_id === user.id ? couple?.partner_2_id : couple?.partner_1_id;
-
-      let partnerName = "Your partner";
-      if (partnerId) {
-        const { data: partner } = await supabase
-          .from("profiles")
-          .select("full_name")
-          .eq("id", partnerId)
-          .maybeSingle();
-        if (partner?.full_name) partnerName = partner.full_name;
-      }
-
-      setState({
-        userId: user.id,
-        coupleId: profile.couple_id,
-        myName: profile.full_name || "Me",
-        partnerName,
-      });
-    };
-
-    loadAccess();
-  }, [router, supabase]);
-
-  if (!state) {
-    return <main className={LOADING_SHELL}>{message}</main>;
+  if (access.status === "unlinked") {
+    return <main className={LOADING_SHELL}>Link both universes before opening the shared diary.</main>;
   }
 
   return (
     <DiaryScreen
-      userId={state.userId}
-      coupleId={state.coupleId}
-      myName={state.myName}
-      partnerName={state.partnerName}
+      userId={access.identity.userId}
+      coupleId={access.identity.coupleId!}
+      myName={access.identity.myName}
+      partnerName={access.identity.partnerName}
       onBack={() => router.push(backHref)}
     />
   );

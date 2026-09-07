@@ -26,7 +26,9 @@ export const CHAPTER_SPREAD: Record<string, number> = {
   "bucket-list": 3,
   soundtrack: 4,
   wishlist: 4,
-  "about-him": 5,
+  /* Ch.11 was "about-him" until it was renamed to the gender-neutral
+     "Partner Dossier" - the route moved with the title. */
+  dossier: 5,
 };
 
 /** Normalise whatever arrived as `?from=` into a spread index we can trust. */
