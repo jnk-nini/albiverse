@@ -17,6 +17,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  RefreshCw,
   RotateCw,
   Save,
   Shuffle,
@@ -84,24 +85,31 @@ const SELECT_COLUMNS =
 /* Film stocks. `css` goes straight into the CSS filter property on the photo,
    `chip` is the swatch colour used in the picker so each stock is identifiable
    before you apply it. */
+/* Each stock is more than a `filter:` string now - `grain` and `vignette`
+   (0-1) drive an overlay layered on top of the media (see .digicam-filmgrain
+   / the vignette div next to the img/video), and `tint` is a soft-light
+   colour wash. Plain contrast/saturate/hue-rotate reads as "an Instagram CSS
+   filter"; grain + vignette + a colour cast is what actually reads as film
+   stock, which is what Nini asked for over the original bare `css` combos. */
 const FILTERS = [
-  { id: "none", label: "NO FILTER", css: "none", chip: "#F2E6D2" },
-  { id: "flash", label: "FLASH ON", css: "brightness(1.14) contrast(1.08) saturate(0.94)", chip: "#FFF3D6" },
-  { id: "y2k", label: "Y2K", css: "saturate(1.55) contrast(1.12) hue-rotate(-8deg)", chip: "#7FD8D2" },
-  { id: "noir", label: "NOIR", css: "grayscale(1) contrast(1.3) brightness(0.94)", chip: "#B9B4B8" },
-  { id: "oldroll", label: "OLD ROLL", css: "sepia(0.72) contrast(1.06) saturate(1.18)", chip: "#C89B62" },
-  { id: "faded", label: "FADED", css: "contrast(0.84) saturate(0.72) brightness(1.12)", chip: "#DCC9C4" },
-  { id: "vivid", label: "VIVID", css: "saturate(1.8) contrast(1.16)", chip: "#FF5A7A" },
-  { id: "expired", label: "EXPIRED", css: "sepia(0.34) hue-rotate(-20deg) saturate(1.45) contrast(1.1)", chip: "#C4705A" },
-  { id: "earth65", label: "EARTH-65", css: "saturate(1.35) hue-rotate(300deg) contrast(1.12) brightness(1.04)", chip: "#D9889E" },
-  { id: "nightcam", label: "NIGHT CAM", css: "grayscale(1) sepia(1) hue-rotate(62deg) saturate(3.2) brightness(0.92)", chip: "#6BE07A" },
-  { id: "negative", label: "NEGATIVE", css: "invert(1) hue-rotate(180deg) contrast(1.08)", chip: "#7FA8FF" },
+  { id: "none", label: "NO FILTER", css: "none", chip: "#F2E6D2", grain: 0.05, vignette: 0.16, tint: null },
+  { id: "flash", label: "FLASH ON", css: "brightness(1.16) contrast(1.05) saturate(0.9)", chip: "#FFF3D6", grain: 0.08, vignette: 0.4, tint: "rgba(255,244,214,0.12)" },
+  { id: "y2k", label: "Y2K", css: "saturate(1.6) contrast(1.15) hue-rotate(-6deg) brightness(1.02)", chip: "#7FD8D2", grain: 0.14, vignette: 0.22, tint: "rgba(90,220,210,0.08)" },
+  { id: "noir", label: "NOIR", css: "grayscale(1) contrast(1.35) brightness(0.92)", chip: "#B9B4B8", grain: 0.26, vignette: 0.55, tint: null },
+  { id: "oldroll", label: "OLD ROLL", css: "sepia(0.5) contrast(1.06) saturate(1.05) brightness(0.98) hue-rotate(-6deg)", chip: "#C89B62", grain: 0.32, vignette: 0.48, tint: "rgba(200,155,98,0.16)" },
+  { id: "faded", label: "FADED", css: "contrast(0.8) saturate(0.6) brightness(1.16) sepia(0.12)", chip: "#DCC9C4", grain: 0.2, vignette: 0.28, tint: "rgba(255,255,255,0.12)" },
+  { id: "vivid", label: "VIVID", css: "saturate(1.7) contrast(1.18) brightness(1.02)", chip: "#FF5A7A", grain: 0.05, vignette: 0.18, tint: null },
+  { id: "expired", label: "EXPIRED", css: "sepia(0.3) hue-rotate(-18deg) saturate(1.4) contrast(1.08)", chip: "#C4705A", grain: 0.38, vignette: 0.42, tint: "rgba(196,112,90,0.18)" },
+  { id: "earth65", label: "EARTH-65", css: "saturate(1.3) hue-rotate(300deg) contrast(1.1) brightness(1.03)", chip: "#D9889E", grain: 0.16, vignette: 0.38, tint: "rgba(217,136,158,0.18)" },
+  { id: "nightcam", label: "NIGHT CAM", css: "grayscale(1) sepia(1) hue-rotate(62deg) saturate(3) brightness(0.9)", chip: "#6BE07A", grain: 0.42, vignette: 0.6, tint: "rgba(107,224,122,0.12)" },
+  { id: "negative", label: "NEGATIVE", css: "invert(1) hue-rotate(180deg) contrast(1.06)", chip: "#7FA8FF", grain: 0.06, vignette: 0.14, tint: null },
 ] as const;
 
 const filterCss = (id: string | null) =>
   FILTERS.find((f) => f.id === (id ?? "none"))?.css ?? "none";
 const filterLabel = (id: string | null) =>
   FILTERS.find((f) => f.id === (id ?? "none"))?.label ?? "NO FILTER";
+const filterMeta = (id: string | null) => FILTERS.find((f) => f.id === (id ?? "none")) ?? FILTERS[0];
 
 /* Geometry taken off /images/digicam-landscape.webp (1698x1080).
    `lcd` is NOT eyeballed: the chassis PNG has a real transparent hole where the
@@ -271,6 +279,7 @@ function FilmStrip({
   onJump: (i: number) => void;
 }) {
   const stripRef = useRef<HTMLDivElement>(null);
+  const [thumbErrors, setThumbErrors] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const el = stripRef.current?.querySelector<HTMLElement>(`[data-frame="${currentIndex}"]`);
@@ -302,14 +311,21 @@ function FilmStrip({
                 ${isCurrent ? "film-frame-current" : ""}`}
             >
               {item.media_type === "video" ? (
-                <video
-                  src={item.url}
-                  muted
-                  playsInline
-                  preload="metadata"
-                  className="absolute inset-0 w-full h-full object-cover"
-                  style={{ filter: filterCss(item.filter), transform: frameTransform(f) }}
-                />
+                thumbErrors.has(item.id) ? (
+                  <div className="absolute inset-0 flex items-center justify-center bg-[#131417] text-lg">
+                    🎞️
+                  </div>
+                ) : (
+                  <video
+                    src={item.url}
+                    muted
+                    playsInline
+                    preload="metadata"
+                    onError={() => setThumbErrors((prev) => new Set(prev).add(item.id))}
+                    className="absolute inset-0 w-full h-full object-cover"
+                    style={{ filter: filterCss(item.filter), transform: frameTransform(f) }}
+                  />
+                )
               ) : (
                 <img
                   src={item.url}
@@ -348,6 +364,7 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const [chassisBroken, setChassisBroken] = useState(false);
 
   /* One panel open at a time keeps the LCD readable. */
@@ -362,6 +379,7 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
   const [glitching, setGlitching] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const replaceInputRef = useRef<HTMLInputElement>(null);
   const lcdRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ id: number; x: number; y: number; ox: number; oy: number } | null>(null);
 
@@ -389,6 +407,13 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
   const currentItem = items[currentIndex];
   const liveFrame = panel === "adjust" ? draftFrame : frameOf(currentItem);
   const liveFilter = panel === "filter" ? draftFilter : currentItem?.filter ?? "none";
+
+  /* Some phone-recorded video (HEVC/.mov from iPhone especially) has no
+     decoder on Chrome/Firefox/Windows/Android - the browser's own codec
+     support, not something this app controls. <video> fails silently with
+     no visible error unless we catch onError ourselves and say so plainly,
+     rather than leaving a blank black rectangle where the clip should be. */
+  const [videoErrorId, setVideoErrorId] = useState<string | null>(null);
 
   /* A short RGB split whenever the visible frame or stock changes. It marks the
      state transition, which is the only reason it exists. */
@@ -597,6 +622,18 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
       return;
     }
 
+    /* iPhone-recorded .mov/HEVC video often has no decoder on Chrome/Firefox
+       on Windows or Android - a browser codec-support gap, not something a
+       data-URL upload can fix. This can't be detected with certainty from
+       the MIME type alone (some .mov files ARE H.264), so it's a heads-up,
+       not a block - the upload still proceeds either way. */
+    const looksLikeMov = file.type === "video/quicktime" || /\.mov$/i.test(file.name);
+    if (isVideo && looksLikeMov) {
+      setUploadNotice(
+        "Heads up: .mov clips from iPhone sometimes won't play in Chrome or on Windows for whoever else opens this. If it doesn't play for them, re-export as MP4 (H.264) and replace it."
+      );
+    }
+
     const dataUrl = await readFileAsDataUrl(file);
     const { error: insertError } = await supabase.from("digicam_media").insert({
       couple_id: coupleId,
@@ -618,6 +655,66 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
     setCurrentIndex(items.length);
     setPanel(null);
   }, 400);
+
+  /* Replace swaps the raw media on the CURRENT slot in place - same row id,
+     same caption/notes/favourite/filter, so it isn't just a delete+reupload
+     that would lose everything else and shuffle its position in the roll.
+     Framing (crop/zoom/rotate) resets to default: it was tuned for the old
+     photo's composition and a new image is unlikely to match it. */
+  const [runReplace, replacing] = useGuardedAction(async (file: File) => {
+    if (!currentItem) return;
+    setError(null);
+    const isVideo = file.type.startsWith("video/");
+    const isImage = file.type.startsWith("image/");
+
+    if (!isVideo && !isImage) {
+      setError("Only image or video files can go in the digicam roll.");
+      return;
+    }
+    const cap = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+    if (file.size > cap) {
+      setError(
+        `That file is too big. Keep ${isVideo ? "clips" : "photos"} under ${cap / (1024 * 1024)}MB.`
+      );
+      return;
+    }
+
+    const dataUrl = await readFileAsDataUrl(file);
+    const { error: updateError } = await supabase
+      .from("digicam_media")
+      .update({
+        url: dataUrl,
+        media_type: isVideo ? "video" : "image",
+        photo_scale: DEFAULT_FRAME.scale,
+        photo_x: DEFAULT_FRAME.x,
+        photo_y: DEFAULT_FRAME.y,
+        photo_rotation: DEFAULT_FRAME.rotation,
+        photo_flip_h: DEFAULT_FRAME.flipH,
+        photo_flip_v: DEFAULT_FRAME.flipV,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", currentItem.id)
+      .eq("couple_id", coupleId);
+
+    if (updateError) {
+      setError(updateError.message);
+      return;
+    }
+
+    setDraftFrame(DEFAULT_FRAME);
+    setFlashing(true);
+    window.setTimeout(() => setFlashing(false), 620);
+    setPanel(null);
+    await loadItems();
+  }, 400);
+
+  const openReplacePicker = useCallback(() => replaceInputRef.current?.click(), []);
+
+  const handleReplaceFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) runReplace(file);
+  };
 
   const [runDelete, deleting] = useGuardedAction(async () => {
     if (!currentItem) return;
@@ -836,6 +933,18 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
           background: repeating-linear-gradient(
             0deg, rgba(0,0,0,0.20) 0 1px, transparent 1px 3px
           );
+        }
+        /* Film-stock grain: a tiled fractal-noise SVG blended over the media
+           itself (not the LCD chrome), intensity set per-stock via opacity.
+           This plus the vignette below is what makes a "film stock" read as
+           a film stock rather than an Instagram-style colour filter. */
+        .digicam-filmgrain {
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+          background-size: 180px 180px;
+          mix-blend-mode: overlay;
+        }
+        .digicam-vignette-media {
+          background: radial-gradient(ellipse at center, transparent 35%, var(--vig-color, rgba(0,0,0,0.4)) 100%);
         }
         .digicam-lcd-glare {
           background: linear-gradient(118deg, rgba(255,255,255,0.14) 0 18%, transparent 34%);
@@ -1061,6 +1170,13 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
               className="hidden"
               onChange={handleFileChange}
             />
+            <input
+              ref={replaceInputRef}
+              type="file"
+              accept="image/*,video/*"
+              className="hidden"
+              onChange={handleReplaceFileChange}
+            />
 
             {/* ---------------- header ---------------- */}
             <header className="w-full max-w-5xl flex items-center justify-between gap-3 mb-6 z-20">
@@ -1094,6 +1210,22 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
                 <button
                   onClick={() => setError(null)}
                   aria-label="Dismiss error"
+                  className="cursor-pointer hover:text-white"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {uploadNotice && (
+              <div
+                role="status"
+                className="w-full max-w-xl mb-4 p-3 bg-[#8A6B1E] text-[#FAF4EB] text-xs font-mono flex items-center gap-2 border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] z-20"
+              >
+                <span className="flex-1">{uploadNotice}</span>
+                <button
+                  onClick={() => setUploadNotice(null)}
+                  aria-label="Dismiss notice"
                   className="cursor-pointer hover:text-white"
                 >
                   <X className="w-3.5 h-3.5" />
@@ -1168,16 +1300,32 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
                         className={`absolute inset-0 ${glitching ? "digicam-glitch" : ""}`}
                       >
                         {currentItem.media_type === "video" ? (
-                          <video
-                            src={currentItem.url}
-                            controls={panel !== "adjust"}
-                            playsInline
-                            className="absolute inset-0 w-full h-full object-contain"
-                            style={{
-                              filter: filterCss(liveFilter),
-                              transform: frameTransform(liveFrame),
-                            }}
-                          />
+                          videoErrorId === currentItem.id ? (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-6 bg-[#131417]">
+                              <span className="text-2xl">🎞️</span>
+                              <p className="font-mono text-[9px] text-[#ECA8B8] uppercase tracking-wide leading-relaxed max-w-[28ch]">
+                                This browser can&apos;t play this clip&apos;s format
+                              </p>
+                              <p className="font-mono text-[8px] text-[#8faeaa] leading-relaxed max-w-[30ch]">
+                                Common with iPhone video (HEVC/.mov) on Chrome or Windows. Try opening
+                                it on an Apple device, or re-export it as a standard MP4 (H.264) before
+                                uploading.
+                              </p>
+                            </div>
+                          ) : (
+                            <video
+                              key={currentItem.id}
+                              src={currentItem.url}
+                              controls={panel !== "adjust"}
+                              playsInline
+                              onError={() => setVideoErrorId(currentItem.id)}
+                              className="absolute inset-0 w-full h-full object-contain"
+                              style={{
+                                filter: filterCss(liveFilter),
+                                transform: frameTransform(liveFrame),
+                              }}
+                            />
+                          )
                         ) : (
                           <img
                             src={currentItem.url}
@@ -1191,6 +1339,33 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
                           />
                         )}
                       </div>
+
+                      {/* Film-stock look: grain + vignette + colour tint,
+                          layered over the media itself so a "stock" reads as
+                          film rather than a plain CSS filter() tweak. */}
+                      {videoErrorId !== currentItem.id && (
+                        <div className="absolute inset-0 pointer-events-none" key={`stock-${currentItem.id}`}>
+                          <div
+                            className="digicam-filmgrain absolute inset-0"
+                            style={{ opacity: filterMeta(liveFilter).grain }}
+                          />
+                          <div
+                            className="digicam-vignette-media absolute inset-0"
+                            style={
+                              {
+                                "--vig-color": `rgba(0,0,0,${filterMeta(liveFilter).vignette})`,
+                              } as React.CSSProperties
+                            }
+                          />
+                          {filterMeta(liveFilter).tint && (
+                            <div
+                              className="absolute inset-0"
+                              style={{ background: filterMeta(liveFilter).tint!, mixBlendMode: "soft-light" }}
+                            />
+                          )}
+                        </div>
+                      )}
+
                       <div key={`sweep-${currentItem.id}`} className="absolute inset-0 pointer-events-none">
                         <div className="digicam-sweep absolute inset-x-0 h-1/3 bg-linear-to-b from-transparent via-[#ECA8B8]/25 to-transparent" />
                       </div>
@@ -1273,260 +1448,12 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
                     </>
                   )}
 
-                  {/* ---- on-screen panels ---- */}
-                  {currentItem && panel === "edit" && (
-                    <div className="digicam-panel absolute inset-x-1.5 bottom-1.5 bg-black/88 border border-[#8faeaa]/50 backdrop-blur-xs p-2 flex flex-col gap-1.5">
-                      <label className="font-mono text-[8px] font-black uppercase tracking-widest text-[#ECA8B8]">
-                        Caption
-                      </label>
-                      <input
-                        value={editCaption}
-                        onChange={(e) => setEditCaption(e.target.value)}
-                        maxLength={120}
-                        autoFocus
-                        className="w-full bg-black/50 border border-[#8faeaa]/60 px-1.5 py-1 font-mono text-[10px] text-[#F2E6D2] outline-none focus:border-[#ECA8B8]"
-                      />
-                      <label className="font-mono text-[8px] font-black uppercase tracking-widest text-[#ECA8B8]">
-                        Notes
-                      </label>
-                      <textarea
-                        value={editNotes}
-                        onChange={(e) => setEditNotes(e.target.value)}
-                        rows={2}
-                        maxLength={500}
-                        className="w-full bg-black/50 border border-[#8faeaa]/60 px-1.5 py-1 font-mono text-[10px] text-[#F2E6D2] outline-none resize-none focus:border-[#ECA8B8]"
-                      />
-                      <div className="flex items-center justify-end gap-2 pt-0.5">
-                        <button
-                          type="button"
-                          onClick={closePanel}
-                          className="font-mono text-[9px] font-black uppercase text-[#ECA8B8]/90 hover:text-[#ECA8B8] px-1.5 py-0.5 cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          disabled={savingEdit}
-                          onClick={() => runSaveEdit()}
-                          className="inline-flex items-center gap-1 font-mono text-[9px] font-black uppercase bg-[#781420] text-[#F2E6D2] px-2 py-1 border border-[#FAF4EB]/50 hover:bg-[#8f1a28] active:translate-y-px disabled:opacity-50 cursor-pointer"
-                        >
-                          {savingEdit ? (
-                            <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                          ) : (
-                            <Save className="w-2.5 h-2.5" />
-                          )}
-                          Save
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {currentItem && panel === "filter" && (
-                    <div className="digicam-panel absolute inset-x-1.5 bottom-1.5 bg-black/88 border border-[#8faeaa]/50 backdrop-blur-xs p-2">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="font-mono text-[8px] font-black uppercase tracking-widest text-[#ECA8B8]">
-                          Film stock
-                        </span>
-                        <span className="font-mono text-[8px] font-black uppercase text-[#F2E6D2]">
-                          {filterLabel(draftFilter)}
-                        </span>
-                      </div>
-                      <div className="flex gap-1.5 overflow-x-auto pb-1">
-                        {FILTERS.map((f) => (
-                          <button
-                            key={f.id}
-                            type="button"
-                            onClick={() => {
-                              setDraftFilter(f.id);
-                              pulseGlitch();
-                            }}
-                            aria-label={f.label}
-                            aria-pressed={draftFilter === f.id}
-                            title={f.label}
-                            className={`shrink-0 w-6 h-6 rounded-full border-2 cursor-pointer transition
-                              ${draftFilter === f.id
-                                ? "border-[#ECA8B8] scale-110 shadow-[0_0_10px_rgba(236,168,184,.8)]"
-                                : "border-[#17131A] hover:border-[#FAF4EB]"}`}
-                            style={{ background: f.chip }}
-                          />
-                        ))}
-                      </div>
-                      <div className="flex items-center justify-end gap-2 pt-1">
-                        <button
-                          type="button"
-                          onClick={closePanel}
-                          className="font-mono text-[9px] font-black uppercase text-[#ECA8B8]/90 hover:text-[#ECA8B8] px-1.5 py-0.5 cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          disabled={savingFilter}
-                          onClick={() => runSaveFilter()}
-                          className="inline-flex items-center gap-1 font-mono text-[9px] font-black uppercase bg-[#781420] text-[#F2E6D2] px-2 py-1 border border-[#FAF4EB]/50 hover:bg-[#8f1a28] active:translate-y-px disabled:opacity-50 cursor-pointer"
-                        >
-                          {savingFilter ? (
-                            <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                          ) : (
-                            <Check className="w-2.5 h-2.5" />
-                          )}
-                          Apply
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {currentItem && panel === "adjust" && (
-                    <div className="digicam-panel absolute inset-x-1.5 bottom-1.5 bg-black/88 border border-[#8faeaa]/50 backdrop-blur-xs p-2">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="font-mono text-[8px] font-black uppercase tracking-widest text-[#ECA8B8]">
-                          Drag the photo to crop
-                        </span>
-                        <span className="font-mono text-[8px] font-black text-[#F2E6D2]">
-                          {Math.round(draftFrame.scale * 100)}%
-                        </span>
-                      </div>
-                      <input
-                        type="range"
-                        min={0.5}
-                        max={3}
-                        step={0.01}
-                        value={draftFrame.scale}
-                        aria-label="Zoom"
-                        onChange={(e) =>
-                          setDraftFrame((f) => ({ ...f, scale: parseFloat(e.target.value) }))
-                        }
-                        className="w-full accent-[#D9889E] cursor-pointer"
-                      />
-                      <div className="flex items-center justify-between gap-1 pt-1">
-                        <div className="flex gap-1">
-                          {[
-                            {
-                              key: "rot",
-                              icon: <RotateCw className="w-3 h-3" />,
-                              label: "Rotate 90 degrees",
-                              on: draftFrame.rotation % 360 !== 0,
-                              act: () =>
-                                setDraftFrame((f) => ({ ...f, rotation: (f.rotation + 90) % 360 })),
-                            },
-                            {
-                              key: "fh",
-                              icon: <FlipHorizontal2 className="w-3 h-3" />,
-                              label: "Flip horizontally",
-                              on: draftFrame.flipH,
-                              act: () => setDraftFrame((f) => ({ ...f, flipH: !f.flipH })),
-                            },
-                            {
-                              key: "fv",
-                              icon: <FlipVertical2 className="w-3 h-3" />,
-                              label: "Flip vertically",
-                              on: draftFrame.flipV,
-                              act: () => setDraftFrame((f) => ({ ...f, flipV: !f.flipV })),
-                            },
-                            {
-                              key: "reset",
-                              icon: <span className="font-mono text-[9px] font-black">RESET</span>,
-                              label: "Reset framing",
-                              on: false,
-                              act: () => setDraftFrame(DEFAULT_FRAME),
-                            },
-                          ].map((b) => (
-                            <button
-                              key={b.key}
-                              type="button"
-                              onClick={b.act}
-                              aria-label={b.label}
-                              aria-pressed={b.on}
-                              title={b.label}
-                              className={`inline-flex items-center justify-center h-6 px-1.5 border cursor-pointer transition active:translate-y-px
-                                ${b.on
-                                  ? "bg-[#D9889E] text-[#17131A] border-[#17131A]"
-                                  : "bg-black/50 text-[#F2E6D2] border-[#8faeaa]/60 hover:border-[#ECA8B8]"}`}
-                            >
-                              {b.icon}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={closePanel}
-                            className="font-mono text-[9px] font-black uppercase text-[#ECA8B8]/90 hover:text-[#ECA8B8] px-1.5 py-0.5 cursor-pointer"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            disabled={savingFrame}
-                            onClick={() => runSaveFrame()}
-                            className="inline-flex items-center gap-1 font-mono text-[9px] font-black uppercase bg-[#781420] text-[#F2E6D2] px-2 py-1 border border-[#FAF4EB]/50 hover:bg-[#8f1a28] active:translate-y-px disabled:opacity-50 cursor-pointer"
-                          >
-                            {savingFrame ? (
-                              <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                            ) : (
-                              <Check className="w-2.5 h-2.5" />
-                            )}
-                            Keep crop
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {panel === "help" && (
-                    <div className="digicam-panel absolute inset-1.5 bg-black/92 border border-[#8faeaa]/50 backdrop-blur-xs p-3 overflow-y-auto">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-marker text-base text-[#ECA8B8]">Control map</span>
-                        <button
-                          type="button"
-                          onClick={closePanel}
-                          aria-label="Close control map"
-                          className="text-[#ECA8B8] hover:text-white cursor-pointer"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[9px] text-[#F2E6D2]">
-                        {[
-                          ["D-pad left / right", "Previous and next frame"],
-                          ["D-pad up / down", "Cycle film stock"],
-                          ["Heart (centre)", "Favourite this frame"],
-                          ["Pencil (MENU)", "Caption and notes"],
-                          ["Plus (top left)", "Load a new frame"],
-                          ["Crop", "Crop, rotate, flip"],
-                          ["Sliders", "Open the film stock picker"],
-                          ["W / T rocker", "Zoom the crop out and in"],
-                          ["Shuffle", "Jump to a random frame"],
-                          ["Bin", "Delete this frame"],
-                          ["Download", "Save this frame to your device"],
-                          ["Question mark", "This map"],
-                          ["Arrow keys", "Same as the D-pad"],
-                          ["Esc", "Close any panel"],
-                        ].map(([k, v]) => (
-                          <div key={k} className="flex flex-col leading-tight py-0.5">
-                            <dt className="font-black uppercase tracking-wide text-[#ECA8B8]">{k}</dt>
-                            <dd className="text-[#F2E6D2]/85">{v}</dd>
-                          </div>
-                        ))}
-                      </dl>
-                    </div>
-                  )}
-
-                  {/* caption resting state */}
-                  {currentItem && !panel && (currentItem.caption || currentItem.notes) && (
-                    <div className="digicam-panel absolute inset-x-1.5 bottom-1.5 bg-black/78 border border-[#8faeaa]/40 backdrop-blur-xs px-2 py-1.5 pointer-events-none">
-                      {currentItem.caption && (
-                        <p className="font-mono text-[9px] uppercase tracking-widest text-[#ECA8B8] truncate">
-                          {currentItem.caption}
-                        </p>
-                      )}
-                      {currentItem.notes && (
-                        <p className="font-handwriting text-sm text-[#F2E6D2]/90 leading-tight line-clamp-2">
-                          {currentItem.notes}
-                        </p>
-                      )}
-                    </div>
-                  )}
+                  {/* Every panel that used to live here (caption editor, film
+                      stock picker, crop/adjust, control map) covered the
+                      photo itself, which Nini flagged directly: "nothing
+                      should be covering the screen of the digicam." They now
+                      render in <PanelDrawer> below the whole camera instead -
+                      see where CamButton controls end for that block. */}
 
                   {flashing && (
                     <div className="digicam-flash absolute inset-0 bg-white pointer-events-none z-30" />
@@ -1681,6 +1608,281 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
                 </CamButton>
                 </div>
               </div>
+
+              {/* ---- PANEL DRAWER ----
+                  Everything that used to sit on top of the LCD (caption
+                  editor, film stock picker, crop/adjust, control map) lives
+                  here instead, below the whole camera, in normal document
+                  flow - it can never cover the photo, on any screen size. */}
+              {currentItem && !panel && (currentItem.caption || currentItem.notes) && (
+                <div className="digicam-panel mt-4 sm:mt-6 bg-[#17131A] border-2 border-[#8faeaa]/40 rounded-lg px-3 py-2.5 max-w-3xl mx-auto">
+                  {currentItem.caption && (
+                    <p className="font-mono text-[10px] uppercase tracking-widest text-[#ECA8B8] truncate">
+                      {currentItem.caption}
+                    </p>
+                  )}
+                  {currentItem.notes && (
+                    <p className="font-handwriting text-base text-[#F2E6D2]/90 leading-tight mt-0.5">
+                      {currentItem.notes}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {currentItem && panel === "edit" && (
+                <div className="digicam-panel mt-4 sm:mt-6 bg-[#17131A] border-2 border-[#8faeaa]/40 rounded-lg p-3 sm:p-4 max-w-3xl mx-auto flex flex-col gap-2">
+                  <label className="font-mono text-[9px] font-black uppercase tracking-widest text-[#ECA8B8]">
+                    Caption
+                  </label>
+                  <input
+                    value={editCaption}
+                    onChange={(e) => setEditCaption(e.target.value)}
+                    maxLength={120}
+                    autoFocus
+                    className="w-full bg-black/50 border border-[#8faeaa]/60 px-2 py-1.5 font-mono text-xs text-[#F2E6D2] outline-none focus:border-[#ECA8B8] rounded"
+                  />
+                  <label className="font-mono text-[9px] font-black uppercase tracking-widest text-[#ECA8B8]">
+                    Notes
+                  </label>
+                  <textarea
+                    value={editNotes}
+                    onChange={(e) => setEditNotes(e.target.value)}
+                    rows={2}
+                    maxLength={500}
+                    className="w-full bg-black/50 border border-[#8faeaa]/60 px-2 py-1.5 font-mono text-xs text-[#F2E6D2] outline-none resize-none focus:border-[#ECA8B8] rounded"
+                  />
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={replacing}
+                      onClick={openReplacePicker}
+                      title="Swap this slot's photo or clip for a different file"
+                      className="inline-flex items-center gap-1.5 font-mono text-[10px] font-black uppercase text-[#8faeaa] hover:text-[#ECA8B8] px-2 py-1 border border-[#8faeaa]/60 hover:border-[#ECA8B8] disabled:opacity-50 cursor-pointer rounded"
+                    >
+                      {replacing ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-3 h-3" />
+                      )}
+                      Replace
+                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={closePanel}
+                        className="font-mono text-[10px] font-black uppercase text-[#ECA8B8]/90 hover:text-[#ECA8B8] px-2 py-1 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={savingEdit}
+                        onClick={() => runSaveEdit()}
+                        className="inline-flex items-center gap-1.5 font-mono text-[10px] font-black uppercase bg-[#781420] text-[#F2E6D2] px-3 py-1.5 border border-[#FAF4EB]/50 hover:bg-[#8f1a28] active:translate-y-px disabled:opacity-50 cursor-pointer rounded"
+                      >
+                        {savingEdit ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Save className="w-3 h-3" />
+                        )}
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {currentItem && panel === "filter" && (
+                <div className="digicam-panel mt-4 sm:mt-6 bg-[#17131A] border-2 border-[#8faeaa]/40 rounded-lg p-3 sm:p-4 max-w-3xl mx-auto">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-mono text-[9px] font-black uppercase tracking-widest text-[#ECA8B8]">
+                      Film stock
+                    </span>
+                    <span className="font-mono text-[9px] font-black uppercase text-[#F2E6D2]">
+                      {filterLabel(draftFilter)}
+                    </span>
+                  </div>
+                  <div className="flex gap-2 overflow-x-auto pb-1.5">
+                    {FILTERS.map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => {
+                          setDraftFilter(f.id);
+                          pulseGlitch();
+                        }}
+                        aria-label={f.label}
+                        aria-pressed={draftFilter === f.id}
+                        title={f.label}
+                        className={`shrink-0 w-8 h-8 rounded-full border-2 cursor-pointer transition
+                          ${draftFilter === f.id
+                            ? "border-[#ECA8B8] scale-110 shadow-[0_0_10px_rgba(236,168,184,.8)]"
+                            : "border-[#17131A] hover:border-[#FAF4EB]"}`}
+                        style={{ background: f.chip }}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-end gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={closePanel}
+                      className="font-mono text-[10px] font-black uppercase text-[#ECA8B8]/90 hover:text-[#ECA8B8] px-2 py-1 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={savingFilter}
+                      onClick={() => runSaveFilter()}
+                      className="inline-flex items-center gap-1.5 font-mono text-[10px] font-black uppercase bg-[#781420] text-[#F2E6D2] px-3 py-1.5 border border-[#FAF4EB]/50 hover:bg-[#8f1a28] active:translate-y-px disabled:opacity-50 cursor-pointer rounded"
+                    >
+                      {savingFilter ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Check className="w-3 h-3" />
+                      )}
+                      Apply
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {currentItem && panel === "adjust" && (
+                <div className="digicam-panel mt-4 sm:mt-6 bg-[#17131A] border-2 border-[#8faeaa]/40 rounded-lg p-3 sm:p-4 max-w-3xl mx-auto">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-mono text-[9px] font-black uppercase tracking-widest text-[#ECA8B8]">
+                      Drag the photo to crop
+                    </span>
+                    <span className="font-mono text-[9px] font-black text-[#F2E6D2]">
+                      {Math.round(draftFrame.scale * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={3}
+                    step={0.01}
+                    value={draftFrame.scale}
+                    aria-label="Zoom"
+                    onChange={(e) =>
+                      setDraftFrame((f) => ({ ...f, scale: parseFloat(e.target.value) }))
+                    }
+                    className="w-full accent-[#D9889E] cursor-pointer"
+                  />
+                  <div className="flex items-center justify-between gap-1 pt-2">
+                    <div className="flex gap-1.5">
+                      {[
+                        {
+                          key: "rot",
+                          icon: <RotateCw className="w-3.5 h-3.5" />,
+                          label: "Rotate 90 degrees",
+                          on: draftFrame.rotation % 360 !== 0,
+                          act: () =>
+                            setDraftFrame((f) => ({ ...f, rotation: (f.rotation + 90) % 360 })),
+                        },
+                        {
+                          key: "fh",
+                          icon: <FlipHorizontal2 className="w-3.5 h-3.5" />,
+                          label: "Flip horizontally",
+                          on: draftFrame.flipH,
+                          act: () => setDraftFrame((f) => ({ ...f, flipH: !f.flipH })),
+                        },
+                        {
+                          key: "fv",
+                          icon: <FlipVertical2 className="w-3.5 h-3.5" />,
+                          label: "Flip vertically",
+                          on: draftFrame.flipV,
+                          act: () => setDraftFrame((f) => ({ ...f, flipV: !f.flipV })),
+                        },
+                        {
+                          key: "reset",
+                          icon: <span className="font-mono text-[10px] font-black">RESET</span>,
+                          label: "Reset framing",
+                          on: false,
+                          act: () => setDraftFrame(DEFAULT_FRAME),
+                        },
+                      ].map((b) => (
+                        <button
+                          key={b.key}
+                          type="button"
+                          onClick={b.act}
+                          aria-label={b.label}
+                          aria-pressed={b.on}
+                          title={b.label}
+                          className={`inline-flex items-center justify-center h-8 px-2 border cursor-pointer transition active:translate-y-px rounded
+                            ${b.on
+                              ? "bg-[#D9889E] text-[#17131A] border-[#17131A]"
+                              : "bg-black/50 text-[#F2E6D2] border-[#8faeaa]/60 hover:border-[#ECA8B8]"}`}
+                        >
+                          {b.icon}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={closePanel}
+                        className="font-mono text-[10px] font-black uppercase text-[#ECA8B8]/90 hover:text-[#ECA8B8] px-2 py-1 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={savingFrame}
+                        onClick={() => runSaveFrame()}
+                        className="inline-flex items-center gap-1.5 font-mono text-[10px] font-black uppercase bg-[#781420] text-[#F2E6D2] px-3 py-1.5 border border-[#FAF4EB]/50 hover:bg-[#8f1a28] active:translate-y-px disabled:opacity-50 cursor-pointer rounded"
+                      >
+                        {savingFrame ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Check className="w-3 h-3" />
+                        )}
+                        Keep crop
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {panel === "help" && (
+                <div className="digicam-panel mt-4 sm:mt-6 bg-[#17131A] border-2 border-[#8faeaa]/40 rounded-lg p-3 sm:p-4 max-w-3xl mx-auto max-h-[60vh] overflow-y-auto">
+                  <div className="flex items-center justify-between mb-2.5">
+                    <span className="font-marker text-lg text-[#ECA8B8]">Control map</span>
+                    <button
+                      type="button"
+                      onClick={closePanel}
+                      aria-label="Close control map"
+                      className="text-[#ECA8B8] hover:text-white cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5 font-mono text-[10px] text-[#F2E6D2]">
+                    {[
+                      ["D-pad left / right", "Previous and next frame"],
+                      ["D-pad up / down", "Cycle film stock"],
+                      ["Heart (centre)", "Favourite this frame"],
+                      ["Pencil (MENU)", "Caption, notes, and replace"],
+                      ["Plus (top left)", "Load a new frame"],
+                      ["Replace (in MENU)", "Swap this frame's photo/clip"],
+                      ["Crop", "Crop, rotate, flip"],
+                      ["Sliders", "Open the film stock picker"],
+                      ["W / T rocker", "Zoom the crop out and in"],
+                      ["Shuffle", "Jump to a random frame"],
+                      ["Bin", "Delete this frame"],
+                      ["Download", "Save this frame to your device"],
+                      ["Question mark", "This map"],
+                      ["Arrow keys", "Same as the D-pad"],
+                      ["Esc", "Close any panel"],
+                    ].map(([k, v]) => (
+                      <div key={k} className="flex flex-col leading-tight py-0.5">
+                        <dt className="font-black uppercase tracking-wide text-[#ECA8B8]">{k}</dt>
+                        <dd className="text-[#F2E6D2]/85">{v}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              )}
 
               {/* Desk furniture beside the page. Only from xl up, where the
                   margin is genuinely wide enough that it cannot crowd the

@@ -20,9 +20,18 @@ import {
   Undo2,
   Grid3x3,
   Layers,
+  Pin as PinIcon,
+  Atom,
+  NotebookText,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
+import { playThwip, playPaperRip, playScratch, type EntryMode, type Priority } from "@/lib/wishlistLab";
+import WishlistDuoInput from "@/components/WishlistDuoInput";
+import WishlistBoard from "@/components/WishlistBoard";
+import WishlistMatrix from "@/components/WishlistMatrix";
+import WishlistFundTracker from "@/components/WishlistFundTracker";
+import WishlistSnippets from "@/components/WishlistSnippets";
 
 /* ============================================================================
    CH.10 - SECRET WISHLIST ("CLASSIFIED R&D")
@@ -51,7 +60,7 @@ import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 type WishlistCategory = "unsorted" | "wants" | "needs" | "top_priority";
 type ClipType = "polaroid" | "clipping";
 
-interface WishlistItem {
+export interface WishlistItem {
   id: string;
   title: string;
   description: string;
@@ -66,6 +75,8 @@ interface WishlistItem {
   clipType: ClipType;
   image: string | null;
   createdAt: string;
+  entryMode: EntryMode;
+  priority: Priority;
 }
 
 interface WishlistScreenProps {
@@ -105,66 +116,10 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-/* ---------------------------------------------------------- sound synths
-   No audio files - everything here is generated on the fly with the Web
-   Audio API, so there's nothing that can ever 404 or need an asset drop. */
-
-let sharedCtx: AudioContext | null = null;
-function getAudioCtx(): AudioContext | null {
-  if (typeof window === "undefined") return null;
-  const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!Ctor) return null;
-  if (!sharedCtx) sharedCtx = new Ctor();
-  if (sharedCtx.state === "suspended") sharedCtx.resume().catch(() => {});
-  return sharedCtx;
-}
-
-function playThwip() {
-  const ctx = getAudioCtx();
-  if (!ctx) return;
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = "triangle";
-  osc.frequency.setValueAtTime(1400, ctx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(220, ctx.currentTime + 0.14);
-  gain.gain.setValueAtTime(0.16, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.16);
-  osc.connect(gain).connect(ctx.destination);
-  osc.start();
-  osc.stop(ctx.currentTime + 0.17);
-}
-
-function noiseBurst(ctx: AudioContext, duration: number, gainPeak: number, filterFreqStart: number, filterFreqEnd: number) {
-  const bufferSize = Math.floor(ctx.sampleRate * duration);
-  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-  const filter = ctx.createBiquadFilter();
-  filter.type = "bandpass";
-  filter.frequency.setValueAtTime(filterFreqStart, ctx.currentTime);
-  filter.frequency.exponentialRampToValueAtTime(filterFreqEnd, ctx.currentTime + duration);
-  filter.Q.value = 0.8;
-  const gain = ctx.createGain();
-  gain.gain.setValueAtTime(gainPeak, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
-  src.connect(filter).connect(gain).connect(ctx.destination);
-  src.start();
-}
-
-function playPaperRip() {
-  const ctx = getAudioCtx();
-  if (!ctx) return;
-  noiseBurst(ctx, 0.5, 0.28, 2200, 350);
-  setTimeout(() => noiseBurst(ctx, 0.22, 0.18, 1400, 200), 90);
-}
-
-function playScratch() {
-  const ctx = getAudioCtx();
-  if (!ctx) return;
-  noiseBurst(ctx, 0.08, 0.06, 3200, 2200);
-}
+/* Sound synths, insight/report templating, and the shared hash/typewriter
+   helpers used across this chapter's sibling components now live in
+   src/lib/wishlistLab.ts - see that file for why (shared AudioContext,
+   shared "brain" behind the Board/Matrix insight text). */
 
 /* --------------------------------------------------------- vault codec
    partner_vault is a generic owner-locked jsonb vault shared across future
@@ -192,6 +147,8 @@ function decodeRow(row: Record<string, unknown>): WishlistItem {
     clipType: c.clipType === "clipping" ? "clipping" : "polaroid",
     image: Array.isArray(media) && media[0] ? media[0] : null,
     createdAt: (row.created_at as string) || new Date().toISOString(),
+    entryMode: c.entryMode === "scientist" ? "scientist" : "snapshot",
+    priority: c.priority === "low" || c.priority === "high" ? c.priority : "medium",
   };
 }
 
@@ -208,10 +165,12 @@ function encodeContent(item: Partial<WishlistItem>) {
     purchasedAt: item.purchasedAt ?? null,
     tilt: item.tilt ?? 0,
     clipType: item.clipType ?? "polaroid",
+    entryMode: item.entryMode ?? "snapshot",
+    priority: item.priority ?? "medium",
   };
 }
 
-type Mode = "classifieds" | "compare" | "sorter" | "archive";
+type Mode = "classifieds" | "compare" | "sorter" | "board" | "matrix" | "snippets" | "archive";
 
 export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) {
   const supabase = useMemo(() => createClient(), []);
@@ -263,14 +222,20 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
     [items]
   );
 
+  /* "Partner Profile" score: a rough, cosmetic sense of how much dossier has
+     accumulated (items + logged snippets), not a real analytics score.
+     snippetCount is lifted from WishlistSnippets so this doesn't need its
+     own duplicate query against wishlist_snippets. */
+  const [snippetCount, setSnippetCount] = useState(0);
+  const profilePct = useMemo(
+    () => Math.max(2, Math.min(100, items.length * 8 + snippetCount * 4)),
+    [items.length, snippetCount]
+  );
+
   /* ------------------------------------------------------------- CRUD */
 
-  const openCreate = () => {
-    setEditingId(null);
-    setForm({ title: "", description: "", price: "", link: "", image: null });
-    setPhotoError(null);
-    setIsModalOpen(true);
-  };
+  const [isDuoOpen, setIsDuoOpen] = useState(false);
+  const openCreate = () => setIsDuoOpen(true);
 
   const openEdit = (item: WishlistItem) => {
     setEditingId(item.id);
@@ -314,6 +279,8 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
         purchasedAt: existing?.purchasedAt ?? null,
         tilt: existing?.tilt ?? Math.round((Math.random() * 8 - 4) * 10) / 10,
         clipType: existing?.clipType ?? (Math.random() > 0.5 ? "polaroid" : "clipping"),
+        entryMode: existing?.entryMode ?? "snapshot",
+        priority: existing?.priority ?? "medium",
       });
       const mediaUrls = form.image ? [form.image] : [];
 
@@ -341,6 +308,49 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
       setError(err instanceof Error ? err.message : "Could not save this file.");
     }
   }, 400);
+
+  const [runCreateFromDuo, creatingFromDuo] = useGuardedAction(
+    async (draft: {
+      title: string;
+      description: string;
+      price: string;
+      link: string;
+      image: string | null;
+      entryMode: EntryMode;
+      priority: Priority;
+    }) => {
+      try {
+        const contentJson = encodeContent({
+          title: draft.title.trim(),
+          description: draft.description.trim(),
+          price: draft.price.trim(),
+          link: draft.link.trim(),
+          category: "unsorted",
+          sortOrder: 0,
+          isPurchased: false,
+          purchasedNote: "",
+          purchasedAt: null,
+          tilt: Math.round((Math.random() * 8 - 4) * 10) / 10,
+          clipType: draft.entryMode === "scientist" ? "clipping" : "polaroid",
+          entryMode: draft.entryMode,
+          priority: draft.priority,
+        });
+        const { error: insertErr } = await supabase.from("partner_vault").insert({
+          owner_id: userId,
+          section_type: "wishlist",
+          key_name: `wishlist_${crypto.randomUUID()}`,
+          content_json: contentJson,
+          media_urls: draft.image ? [draft.image] : [],
+        });
+        if (insertErr) throw insertErr;
+        setIsDuoOpen(false);
+        await fetchItems();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not pin this find to the board.");
+      }
+    },
+    400
+  );
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [runDelete] = useGuardedAction(async (id: string) => {
@@ -554,6 +564,22 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
               Not shared with your other half, not visible to your linked universe — this page belongs to
               whoever is signed in, the way a web-slinger keeps their own secret identity file.
             </p>
+            <div className="mt-3 max-w-xs mx-auto text-left">
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="font-mono text-[8px] font-black uppercase tracking-[0.2em] text-[#7D2834]">
+                  Partner Profile
+                </span>
+                <span className="font-handwriting text-base text-[#5A2029] leading-none">
+                  {profilePct}%
+                </span>
+              </div>
+              <div className="h-2 rounded-full bg-[#e2d2ac] border border-[#261D24]/40 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-[#7D2834] to-[#5A7D8C] transition-all duration-500"
+                  style={{ width: `${profilePct}%` }}
+                />
+              </div>
+            </div>
           </div>
 
           {/* mode tabs */}
@@ -561,8 +587,11 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
             {(
               [
                 { id: "classifieds", label: "Classifieds", icon: Grid3x3 },
+                { id: "board", label: "Investigation Board", icon: PinIcon },
+                { id: "matrix", label: "Synergy Matrix", icon: Atom },
                 { id: "compare", label: "Comparison Tool", icon: Scale },
                 { id: "sorter", label: "Web-Sling Sorter", icon: Layers },
+                { id: "snippets", label: "Memory Snippets", icon: NotebookText },
                 { id: "archive", label: `Archive (${archivedItems.length})`, icon: Lock },
               ] as { id: Mode; label: string; icon: typeof Grid3x3 }[]
             ).map((t) => {
@@ -609,6 +638,10 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
                   ))}
                 </div>
               )
+            ) : mode === "board" ? (
+              <WishlistBoard userId={userId} />
+            ) : mode === "matrix" ? (
+              <WishlistMatrix items={activeItems} />
             ) : mode === "compare" ? (
               <CompareTray
                 items={activeItems}
@@ -628,12 +661,24 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
                 onPointerUp={endDrag}
                 onOpen={(id) => pressAndExpand(id)}
               />
+            ) : mode === "snippets" ? (
+              <WishlistSnippets userId={userId} onCountChange={setSnippetCount} />
             ) : (
               <ArchiveGrid items={archivedItems} onUnarchive={runUnarchive} />
             )}
           </div>
+
+          <WishlistFundTracker items={items} />
         </section>
       </div>
+
+      {isDuoOpen && (
+        <WishlistDuoInput
+          busy={creatingFromDuo}
+          onClose={() => setIsDuoOpen(false)}
+          onSubmit={(draft) => runCreateFromDuo(draft)}
+        />
+      )}
 
       {/* -------- floating drag ghost + web line (sorter mode) -------- */}
       {dragId && dragPos && dragOrigin && draggingItem && (
@@ -994,6 +1039,7 @@ function BlueprintViewer({
   const [trail, setTrail] = useState<{ id: number; x: number; y: number }[]>([]);
   const [pos, setPos] = useState({ x: 50, y: 40 });
   const draggingRef = useRef(false);
+  const trailIdRef = useRef(0);
 
   const onImgPointerDown = (e: React.PointerEvent) => {
     draggingRef.current = true;
@@ -1004,7 +1050,8 @@ function BlueprintViewer({
     const box = e.currentTarget.getBoundingClientRect();
     const x = Math.max(0, Math.min(100, ((e.clientX - box.left) / box.width) * 100));
     const y = Math.max(0, Math.min(100, ((e.clientY - box.top) / box.height) * 100));
-    setTrail((prev) => [...prev.slice(-4), { id: Date.now(), x: pos.x, y: pos.y }]);
+    trailIdRef.current += 1;
+    setTrail((prev) => [...prev.slice(-4), { id: trailIdRef.current, x: pos.x, y: pos.y }]);
     setPos({ x, y });
   };
   const onImgPointerUp = () => {
