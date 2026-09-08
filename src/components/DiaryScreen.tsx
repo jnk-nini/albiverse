@@ -1,20 +1,41 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Building2,
   Check,
   CornerDownLeft,
+  Eye,
+  EyeOff,
+  Film,
+  Image as ImageIcon,
   Keyboard,
+  Link as LinkIcon,
   MapPin as MapPinIcon,
+  Mic,
+  Paperclip,
   Pencil,
+  Plus,
+  RotateCcw,
   Search,
   Trash2,
   X,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
+import { useCachedDraft } from "@/lib/hooks/useCachedDraft";
+import {
+  canBrowserPlay,
+  compressImage,
+  dataUrlBytes,
+  formatBytes,
+  normaliseMediaMime,
+  playableMediaSrc,
+  readFileAsDataUrl,
+  relabelDataUrl,
+  transcodeVideo,
+} from "@/lib/media/mediaPrep";
 import {
   BugleMasthead,
   ComicPanel,
@@ -50,6 +71,22 @@ import {
    enforces the same thing server side, but the rule is expressed here too.
    ========================================================================== */
 
+/* Anything pinned to a log that is not the prose. Stored as one jsonb array on
+   the row (shared_diary.attachments); `url` is either a real link or, for a
+   file picked off the device, a base64 data URL - this project has no Storage
+   bucket, so that is the house pattern (see CLAUDE.md). */
+export type AttachmentKind = "link" | "image" | "video" | "audio" | "file";
+
+export interface DiaryAttachment {
+  id: string;
+  kind: AttachmentKind;
+  url: string;
+  title: string;
+  note?: string;
+  mime?: string;
+  size?: number;
+}
+
 interface DiaryEntry {
   id: string;
   couple_id: string;
@@ -60,12 +97,23 @@ interface DiaryEntry {
   location: string | null;
   weather: string | null;
   media_urls: string[] | null;
+  attachments: DiaryAttachment[] | null;
   card_style: string | null;
   pin_x: number | null;
   pin_y: number | null;
   pin_style: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/* A mood or a condition. Editable per couple - see the diary_tags table. */
+interface DiaryTag {
+  id: string;
+  kind: "mood" | "condition";
+  slug: string;
+  label: string;
+  mark: string | null;
+  sort_order: number;
 }
 
 interface DiaryScreenProps {
@@ -88,30 +136,63 @@ const CLIPPING_STYLES: { id: ClippingStyle; label: string; hint: string }[] = [
 
 const ALL_STYLES: readonly ClippingStyle[] = ["newspaper", "bugle", "sticky", "polaroid"];
 
-/* Moods are a fixed vocabulary rather than free text so the log feed can filter
-   and colour-code them. The wording is ours, not a generic emotion wheel. */
-const MOODS = [
-  { id: "wired", label: "Wired", mark: "⚡" },
-  { id: "soft", label: "Soft", mark: "\u{1F90D}" },
-  { id: "wrecked", label: "Wrecked", mark: "\u{1F573}️" },
-  { id: "giddy", label: "Giddy", mark: "✨" },
-  { id: "homesick", label: "Homesick", mark: "\u{1F5A4}" },
-  { id: "steady", label: "Steady", mark: "\u{1F578}️" },
-  { id: "restless", label: "Restless", mark: "\u{1F300}" },
-  { id: "smug", label: "Smug", mark: "\u{1F60F}" },
-] as const;
+/* Moods are still a vocabulary rather than free text - that is what lets the
+   log feed filter and colour-code them - but the vocabulary is now the
+   couple's own, kept in `diary_tags` and editable from the job ticket. These
+   are only the starting set, written once when a couple opens the chapter for
+   the first time; after that they are ordinary rows that can be renamed or
+   torn up like any other. */
+const SEED_MOODS: { slug: string; label: string; mark: string }[] = [
+  { slug: "wired", label: "Wired", mark: "⚡" },
+  { slug: "soft", label: "Soft", mark: "\u{1F90D}" },
+  { slug: "wrecked", label: "Wrecked", mark: "\u{1F573}️" },
+  { slug: "giddy", label: "Giddy", mark: "✨" },
+  { slug: "homesick", label: "Homesick", mark: "\u{1F5A4}" },
+  { slug: "steady", label: "Steady", mark: "\u{1F578}️" },
+  { slug: "restless", label: "Restless", mark: "\u{1F300}" },
+  { slug: "smug", label: "Smug", mark: "\u{1F60F}" },
+];
 
-const CONDITIONS = [
-  { id: "clear", label: "Clear skies" },
-  { id: "rain", label: "Rain on the mask" },
-  { id: "fog", label: "Fog over the river" },
-  { id: "snow", label: "Snow" },
-  { id: "heat", label: "Heatwave" },
-  { id: "night", label: "Dead of night" },
-] as const;
+const SEED_CONDITIONS: { slug: string; label: string }[] = [
+  { slug: "clear", label: "Clear skies" },
+  { slug: "rain", label: "Rain on the mask" },
+  { slug: "fog", label: "Fog over the river" },
+  { slug: "snow", label: "Snow" },
+  { slug: "heat", label: "Heatwave" },
+  { slug: "night", label: "Dead of night" },
+];
 
-const moodOf = (id: string | null) => MOODS.find((m) => m.id === id) ?? null;
-const conditionOf = (id: string | null) => CONDITIONS.find((c) => c.id === id) ?? null;
+/* Entries store the slug, not the tag's row id, so tearing up a mood never
+   rewrites or orphans a log - it just stops resolving. When that happens the
+   card shows the slug back, tidied up, rather than silently dropping the fact
+   that the entry was tagged at all. */
+function orphanTag(slug: string, kind: "mood" | "condition"): DiaryTag {
+  return {
+    id: "orphan:" + kind + ":" + slug,
+    kind,
+    slug,
+    label: slug.charAt(0).toUpperCase() + slug.slice(1).replace(/[-_]+/g, " "),
+    mark: kind === "mood" ? "•" : null,
+    sort_order: 9999,
+  };
+}
+
+function findTag(tags: DiaryTag[], kind: "mood" | "condition", slug: string | null) {
+  if (!slug) return null;
+  return tags.find((t) => t.kind === kind && t.slug === slug) ?? orphanTag(slug, kind);
+}
+
+/** "Rain on the mask" -> "rain-on-the-mask". Kept short enough for the column. */
+function slugify(label: string): string {
+  return (
+    label
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "tag"
+  );
+}
 
 const MONTHS = [
   "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
@@ -144,6 +225,43 @@ function editionLine(iso: string): string {
   return "NO. " + (1400 + (d.getDate() * 7 + d.getMonth() * 13)) + " / " + captionDate(iso);
 }
 
+/* Censor bars standing in for a log's prose on the board. Deliberately drawn
+   rather than a blur of the real text: a blur can be undone with a screenshot
+   and a filter, and more to the point it still shows the SHAPE of what was
+   written. These carry no information at all beyond roughly how long the entry
+   is, which is the point - the board should tell you a log exists without
+   telling you what happened.
+
+   Widths come off the entry's own seed, so a given log always wears the same
+   pattern and re-rendering the board never reshuffles the ink. */
+const RedactionBars = memo(function RedactionBars({
+  seed,
+  length,
+}: {
+  seed: number;
+  length: number;
+}) {
+  const lines = Math.max(3, Math.min(7, Math.round(length / 90) + 2));
+
+  return (
+    <span className="dy-redact-stack" aria-hidden>
+      {Array.from({ length: lines }).map((_, i) => {
+        const last = i === lines - 1;
+        const width = last
+          ? 28 + seeded(seed, 40 + i) * 30
+          : 74 + seeded(seed, 40 + i) * 26;
+        return (
+          <span
+            key={i}
+            className="dy-redact-bar"
+            style={{ width: Math.min(100, width).toFixed(1) + "%" }}
+          />
+        );
+      })}
+    </span>
+  );
+});
+
 /* ==========================================================================
    COMPOSER
    The write view owns its own state so a keystroke re-renders the sheet and
@@ -162,6 +280,7 @@ interface DraftValues {
   pinX: number | null;
   pinY: number | null;
   pinStyle: PinStyle;
+  attachments: DiaryAttachment[];
 }
 
 const EMPTY_DRAFT: DraftValues = {
@@ -174,13 +293,74 @@ const EMPTY_DRAFT: DraftValues = {
   pinX: null,
   pinY: null,
   pinStyle: "spider",
+  attachments: [],
 };
+
+/* Picked-file ceilings, before preparation. Images are downscaled and clips are
+   re-encoded on the way in (see mediaPrep), so these bound what gets read into
+   memory rather than what lands in the row - the row itself is bounded by the
+   shared_diary_attachments_size_guardrail CHECK. */
+const MAX_PICK_IMAGE_BYTES = 25 * 1024 * 1024;
+const MAX_PICK_VIDEO_BYTES = 60 * 1024 * 1024;
+const MAX_PICK_AUDIO_BYTES = 20 * 1024 * 1024;
+
+/* What one log is allowed to carry once everything is prepared. Deliberately
+   well under the 30MB database guardrail so a save never bounces off Postgres
+   with a constraint error the writer cannot act on. */
+const MAX_ATTACHMENT_BYTES_TOTAL = 22 * 1024 * 1024;
+const MAX_ATTACHMENTS = 12;
+
+function attachmentBytes(list: DiaryAttachment[]): number {
+  return list.reduce((sum, a) => sum + (a.size ?? a.url.length), 0);
+}
+
+/** A pasted link only counts as one if it is http(s) - no javascript: hrefs. */
+function normaliseLink(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : "https://" + trimmed;
+  try {
+    const parsed = new URL(withScheme);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+/** "youtube.com/watch?v=..." -> "youtube.com", for the link chip's label. */
+function linkHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "link";
+  }
+}
+
+const newAttachmentId = () =>
+  "att_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+/** The photo a clipping shows: first image attachment, else the legacy column. */
+function coverPhotoOf(entry: {
+  attachments: DiaryAttachment[] | null;
+  media_urls: string[] | null;
+}): string | null {
+  const img = (entry.attachments ?? []).find((a) => a.kind === "image");
+  if (img) return img.url;
+  return entry.media_urls && entry.media_urls.length > 0 ? entry.media_urls[0] : null;
+}
 
 function Composer({
   initial,
   editing,
   saving,
   errorText,
+  draftScope,
+  moods,
+  conditions,
+  onAddTag,
+  onDeleteTag,
+  tagError,
   onSubmit,
   onCancelEdit,
 }: {
@@ -188,12 +368,49 @@ function Composer({
   editing: boolean;
   saving: boolean;
   errorText: string | null;
+  /* localStorage key for the crash-proof draft. Null disables caching. */
+  draftScope: string | null;
+  moods: DiaryTag[];
+  conditions: DiaryTag[];
+  onAddTag: (kind: "mood" | "condition", label: string, mark: string) => Promise<void>;
+  onDeleteTag: (tag: DiaryTag) => Promise<void>;
+  tagError: string | null;
   onSubmit: (draft: DraftValues) => void;
   onCancelEdit: () => void;
 }) {
-  const [draft, setDraft] = useState<DraftValues>(initial);
+  /* Was plain useState. A half-written log now survives a refresh, an
+     accidental swipe-back, or the PWA shell reloading a backgrounded tab -
+     which on a phone is the most common way writing gets lost. Attachments are
+     dropped from the cached copy if the draft is too big for localStorage;
+     `restoredPruned` is how the writer gets told that happened. */
+  const {
+    draft,
+    setDraft,
+    restored,
+    restoredPruned,
+    discard: discardCachedDraft,
+    commit: commitCachedDraft,
+    dismissRestored,
+  } = useCachedDraft<DraftValues>(draftScope, initial, {
+    isEmpty: (d) =>
+      !d.title.trim() && !d.content.trim() && !d.location.trim() && d.attachments.length === 0,
+    prune: (d) => ({ ...d, attachments: d.attachments.filter((a) => a.kind === "link") }),
+  });
+
   const [showPinMap, setShowPinMap] = useState(initial.pinX !== null);
   const [touched, setTouched] = useState(false);
+
+  /* Tag composer + attachment tray state */
+  const [tagKindOpen, setTagKindOpen] = useState<"mood" | "condition" | null>(null);
+  const [newTagLabel, setNewTagLabel] = useState("");
+  const [newTagMark, setNewTagMark] = useState("");
+  const [addingTag, setAddingTag] = useState(false);
+
+  const [linkValue, setLinkValue] = useState("");
+  const [linkTitle, setLinkTitle] = useState("");
+  const [attachBusy, setAttachBusy] = useState<string | null>(null);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const machineRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
@@ -242,8 +459,170 @@ function Composer({
     event.preventDefault();
     setTouched(true);
     if (!draft.title.trim() || !draft.content.trim()) return;
+    /* Drop the localStorage copy on the way out. If the write itself fails the
+       parent keeps the composer mounted with the same values on screen, so
+       nothing is lost - and the next keystroke starts caching again. */
+    commitCachedDraft();
     onSubmit(draft);
   };
+
+  /* ------------------------------ vocabulary ------------------------------ */
+
+  const submitNewTag = async () => {
+    if (!tagKindOpen) return;
+    const label = newTagLabel.trim();
+    if (!label) return;
+    setAddingTag(true);
+    try {
+      await onAddTag(tagKindOpen, label, newTagMark.trim());
+      setNewTagLabel("");
+      setNewTagMark("");
+      setTagKindOpen(null);
+    } finally {
+      setAddingTag(false);
+    }
+  };
+
+  /* Tearing up a tag that this draft is currently wearing would leave the draft
+     pointing at a slug nothing resolves, so clear the selection too. */
+  const removeTag = async (tag: DiaryTag) => {
+    await onDeleteTag(tag);
+    setDraft((d) => {
+      if (tag.kind === "mood" && d.mood === tag.slug) return { ...d, mood: null };
+      if (tag.kind === "condition" && d.weather === tag.slug) return { ...d, weather: null };
+      return d;
+    });
+  };
+
+  /* ------------------------------ attachments ------------------------------ */
+
+  const addAttachment = (att: DiaryAttachment): boolean => {
+    if (draft.attachments.length >= MAX_ATTACHMENTS) {
+      setAttachError("A log holds " + MAX_ATTACHMENTS + " pieces of evidence at most.");
+      return false;
+    }
+    const nextBytes = attachmentBytes(draft.attachments) + (att.size ?? att.url.length);
+    if (nextBytes > MAX_ATTACHMENT_BYTES_TOTAL) {
+      setAttachError(
+        "That would push this log past " +
+          formatBytes(MAX_ATTACHMENT_BYTES_TOTAL) +
+          " of evidence. Remove something first, or file it as a link."
+      );
+      return false;
+    }
+    setAttachError(null);
+    setDraft((d) => ({ ...d, attachments: [...d.attachments, att] }));
+    return true;
+  };
+
+  const addLink = () => {
+    const url = normaliseLink(linkValue);
+    if (!url) {
+      setAttachError("That does not look like a web address.");
+      return;
+    }
+    const ok = addAttachment({
+      id: newAttachmentId(),
+      kind: "link",
+      url,
+      title: linkTitle.trim() || linkHost(url),
+      size: url.length,
+    });
+    if (ok) {
+      setLinkValue("");
+      setLinkTitle("");
+    }
+  };
+
+  /* Files are prepared in the browser before they are ever stored: photos are
+     downscaled and re-encoded, clips are re-labelled (and re-encoded only when
+     they are genuinely too big or undecodable). All of it is local work on a
+     file the writer picked - no API route, no metered service, nothing new to
+     rate-limit. */
+  const handleFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setAttachError(null);
+
+    for (const file of Array.from(files)) {
+      setAttachBusy(file.name);
+      try {
+        if (file.type.startsWith("image/")) {
+          if (file.size > MAX_PICK_IMAGE_BYTES) {
+            setAttachError(file.name + " is over " + formatBytes(MAX_PICK_IMAGE_BYTES) + ".");
+            continue;
+          }
+          const prepared = await compressImage(file, { maxEdge: 1800, targetBytes: 1_200_000 });
+          addAttachment({
+            id: newAttachmentId(),
+            kind: "image",
+            url: prepared.dataUrl,
+            title: file.name,
+            mime: "image/jpeg",
+            size: dataUrlBytes(prepared.dataUrl),
+          });
+        } else if (file.type.startsWith("video/")) {
+          if (file.size > MAX_PICK_VIDEO_BYTES) {
+            setAttachError(file.name + " is over " + formatBytes(MAX_PICK_VIDEO_BYTES) + ".");
+            continue;
+          }
+          const raw = await readFileAsDataUrl(file);
+          const { dataUrl } = relabelDataUrl(raw, file.type);
+          let finalUrl = dataUrl;
+
+          /* Only re-encode when it has to be done: transcoding runs in real
+             time, so a 60s clip costs 60s of the writer's life. */
+          const tooBig = dataUrlBytes(dataUrl) > MAX_ATTACHMENT_BYTES_TOTAL / 2;
+          const playable = await canBrowserPlay(file);
+          if (tooBig || !playable) {
+            const out = await transcodeVideo(file, { maxEdge: 960 });
+            finalUrl = out.dataUrl;
+          }
+
+          addAttachment({
+            id: newAttachmentId(),
+            kind: "video",
+            url: finalUrl,
+            title: file.name,
+            mime: normaliseMediaMime(file.type),
+            size: dataUrlBytes(finalUrl),
+          });
+        } else if (file.type.startsWith("audio/")) {
+          if (file.size > MAX_PICK_AUDIO_BYTES) {
+            setAttachError(file.name + " is over " + formatBytes(MAX_PICK_AUDIO_BYTES) + ".");
+            continue;
+          }
+          const dataUrl = await readFileAsDataUrl(file);
+          addAttachment({
+            id: newAttachmentId(),
+            kind: "audio",
+            url: dataUrl,
+            title: file.name,
+            mime: file.type,
+            size: dataUrlBytes(dataUrl),
+          });
+        } else {
+          setAttachError(
+            "Photos, clips and audio can be pinned to a log. Anything else, paste a link to it."
+          );
+        }
+      } catch (err) {
+        setAttachError(
+          err instanceof Error ? err.message : "That file could not be pinned to the log."
+        );
+      } finally {
+        setAttachBusy(null);
+      }
+    }
+
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachError(null);
+    setDraft((d) => ({ ...d, attachments: d.attachments.filter((a) => a.id !== id) }));
+  };
+
+  const usedBytes = attachmentBytes(draft.attachments);
 
   const placePin = (event: React.MouseEvent<HTMLDivElement>) => {
     const box = event.currentTarget.getBoundingClientRect();
@@ -314,40 +693,265 @@ function Composer({
 
         <h2 className="dy-ticket-title">Filing details</h2>
 
+        {restored && (
+          <div className="dy-restored" role="status">
+            <span className="dy-restored-mark" aria-hidden>
+              <RotateCcw className="w-3.5 h-3.5" />
+            </span>
+            <div className="dy-restored-body">
+              <strong>Picked up where you left off.</strong>
+              {restoredPruned
+                ? " Your words came back, but the attachments were too heavy to keep on the desk — pin them again."
+                : " This log was still on the roller from last time."}
+            </div>
+            <div className="dy-restored-actions">
+              <button type="button" className="dy-mini-btn" onClick={dismissRestored}>
+                Keep it
+              </button>
+              <button type="button" className="dy-mini-btn" onClick={discardCachedDraft}>
+                Start fresh
+              </button>
+            </div>
+          </div>
+        )}
+
         <fieldset className="dy-set">
           <legend className="dy-field-label">Mood</legend>
           <div className="dy-chips">
-            {MOODS.map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => set("mood", draft.mood === m.id ? null : m.id)}
-                className="dy-chip"
-                data-on={draft.mood === m.id}
-              >
-                <span aria-hidden>{m.mark}</span>
-                {m.label}
-              </button>
+            {moods.map((m) => (
+              <span key={m.id} className="dy-chip-wrap">
+                <button
+                  type="button"
+                  onClick={() => set("mood", draft.mood === m.slug ? null : m.slug)}
+                  className="dy-chip"
+                  data-on={draft.mood === m.slug}
+                >
+                  {m.mark && <span aria-hidden>{m.mark}</span>}
+                  {m.label}
+                </button>
+                <button
+                  type="button"
+                  className="dy-chip-x"
+                  onClick={() => removeTag(m)}
+                  aria-label={"Tear up the " + m.label + " mood"}
+                  title={"Tear up “" + m.label + "”"}
+                >
+                  <X className="w-2.5 h-2.5" aria-hidden />
+                </button>
+              </span>
             ))}
+
+            <button
+              type="button"
+              className="dy-chip dy-chip-add"
+              onClick={() => setTagKindOpen(tagKindOpen === "mood" ? null : "mood")}
+              aria-expanded={tagKindOpen === "mood"}
+            >
+              <Plus className="w-3 h-3" aria-hidden />
+              New mood
+            </button>
           </div>
+
+          {tagKindOpen === "mood" && (
+            <div className="dy-tag-new">
+              <input
+                value={newTagMark}
+                onChange={(e) => setNewTagMark(e.target.value.slice(0, 4))}
+                className="dy-text-input dy-tag-mark"
+                placeholder="🕸"
+                aria-label="Mood symbol"
+              />
+              <input
+                value={newTagLabel}
+                onChange={(e) => setNewTagLabel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void submitNewTag();
+                  }
+                }}
+                className="dy-text-input"
+                placeholder="Name it. Seasick, maybe."
+                maxLength={40}
+                aria-label="Mood name"
+              />
+              <button
+                type="button"
+                className="dy-mini-btn"
+                onClick={() => void submitNewTag()}
+                disabled={addingTag || !newTagLabel.trim()}
+              >
+                {addingTag ? "Adding..." : "Add"}
+              </button>
+            </div>
+          )}
         </fieldset>
 
         <fieldset className="dy-set">
           <legend className="dy-field-label">Conditions</legend>
           <div className="dy-chips">
-            {CONDITIONS.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => set("weather", draft.weather === c.id ? null : c.id)}
-                className="dy-chip"
-                data-on={draft.weather === c.id}
-              >
-                {c.label}
-              </button>
+            {conditions.map((c) => (
+              <span key={c.id} className="dy-chip-wrap">
+                <button
+                  type="button"
+                  onClick={() => set("weather", draft.weather === c.slug ? null : c.slug)}
+                  className="dy-chip"
+                  data-on={draft.weather === c.slug}
+                >
+                  {c.label}
+                </button>
+                <button
+                  type="button"
+                  className="dy-chip-x"
+                  onClick={() => removeTag(c)}
+                  aria-label={"Tear up the " + c.label + " condition"}
+                  title={"Tear up “" + c.label + "”"}
+                >
+                  <X className="w-2.5 h-2.5" aria-hidden />
+                </button>
+              </span>
             ))}
+
+            <button
+              type="button"
+              className="dy-chip dy-chip-add"
+              onClick={() => setTagKindOpen(tagKindOpen === "condition" ? null : "condition")}
+              aria-expanded={tagKindOpen === "condition"}
+            >
+              <Plus className="w-3 h-3" aria-hidden />
+              New condition
+            </button>
           </div>
+
+          {tagKindOpen === "condition" && (
+            <div className="dy-tag-new">
+              <input
+                value={newTagLabel}
+                onChange={(e) => setNewTagLabel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void submitNewTag();
+                  }
+                }}
+                className="dy-text-input"
+                placeholder="Thunder over the bay"
+                maxLength={40}
+                aria-label="Condition name"
+              />
+              <button
+                type="button"
+                className="dy-mini-btn"
+                onClick={() => void submitNewTag()}
+                disabled={addingTag || !newTagLabel.trim()}
+              >
+                {addingTag ? "Adding..." : "Add"}
+              </button>
+            </div>
+          )}
         </fieldset>
+
+        {tagError && <p className="dy-form-error">{tagError}</p>}
+
+        {/* ------------------------------ evidence ------------------------------ */}
+        <div className="dy-set">
+          <div className="dy-set-row">
+            <span className="dy-field-label">Evidence</span>
+            <span className="dy-set-meter">
+              {draft.attachments.length}/{MAX_ATTACHMENTS} &middot; {formatBytes(usedBytes)}
+            </span>
+          </div>
+
+          {draft.attachments.length > 0 && (
+            <ul className="dy-evidence">
+              {draft.attachments.map((a) => (
+                <li key={a.id} className="dy-evidence-item" data-kind={a.kind}>
+                  <span className="dy-evidence-mark" aria-hidden>
+                    {a.kind === "link" ? (
+                      <LinkIcon className="w-3.5 h-3.5" />
+                    ) : a.kind === "image" ? (
+                      <ImageIcon className="w-3.5 h-3.5" />
+                    ) : a.kind === "video" ? (
+                      <Film className="w-3.5 h-3.5" />
+                    ) : (
+                      <Mic className="w-3.5 h-3.5" />
+                    )}
+                  </span>
+
+                  {a.kind === "image" ? (
+                    <img src={a.url} alt="" className="dy-evidence-thumb" />
+                  ) : null}
+
+                  <span className="dy-evidence-name" title={a.title}>
+                    {a.title}
+                  </span>
+                  <span className="dy-evidence-size">
+                    {a.kind === "link" ? linkHost(a.url) : formatBytes(a.size ?? a.url.length)}
+                  </span>
+
+                  <button
+                    type="button"
+                    className="dy-chip-x"
+                    onClick={() => removeAttachment(a.id)}
+                    aria-label={"Unpin " + a.title}
+                  >
+                    <X className="w-2.5 h-2.5" aria-hidden />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="dy-attach-link">
+            <input
+              value={linkValue}
+              onChange={(e) => setLinkValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addLink();
+                }
+              }}
+              className="dy-text-input"
+              placeholder="Paste a link — a song, a map, a photo album"
+              inputMode="url"
+              aria-label="Link address"
+            />
+            <input
+              value={linkTitle}
+              onChange={(e) => setLinkTitle(e.target.value)}
+              className="dy-text-input dy-attach-caption"
+              placeholder="Call it something"
+              maxLength={60}
+              aria-label="Link label"
+            />
+            <button type="button" className="dy-mini-btn" onClick={addLink} disabled={!linkValue.trim()}>
+              Pin link
+            </button>
+          </div>
+
+          <div className="dy-attach-file">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,video/*,audio/*"
+              multiple
+              className="sr-only"
+              onChange={(e) => void handleFiles(e.target.files)}
+            />
+            <button
+              type="button"
+              className="dy-mini-btn"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={attachBusy !== null}
+            >
+              <Paperclip className="w-3.5 h-3.5" aria-hidden />
+              {attachBusy ? "Preparing " + attachBusy + "…" : "Attach a photo, clip or voice note"}
+            </button>
+          </div>
+
+          {attachError && <p className="dy-inline-error">{attachError}</p>}
+        </div>
 
         <div className="dy-set">
           <label className="dy-field-label" htmlFor="dy-where">
@@ -488,13 +1092,22 @@ export default function DiaryScreen({
   const [activePinId, setActivePinId] = useState<string | null>(null);
   const [placingId, setPlacingId] = useState<string | null>(null);
 
+  /* Which clippings the reader has chosen to un-redact on the board. A log is
+     covered by default so walking past the board never spoils what is in it -
+     see the redaction bars in renderClipping. */
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  const [revealAll, setRevealAll] = useState(false);
+
+  const [tags, setTags] = useState<DiaryTag[]>([]);
+  const [tagError, setTagError] = useState<string | null>(null);
+
   /* -------------------------------- data -------------------------------- */
 
   const loadEntries = useCallback(async () => {
     const { data, error } = await supabase
       .from("shared_diary")
       .select(
-        "id, couple_id, author_id, title, content, mood, location, weather, media_urls, card_style, pin_x, pin_y, pin_style, created_at, updated_at"
+        "id, couple_id, author_id, title, content, mood, location, weather, media_urls, attachments, card_style, pin_x, pin_y, pin_style, created_at, updated_at"
       )
       .eq("couple_id", coupleId)
       .order("created_at", { ascending: false });
@@ -507,9 +1120,135 @@ export default function DiaryScreen({
     setLoading(false);
   }, [coupleId, supabase]);
 
+  /* The mood/condition vocabulary. Seeded once per couple from SEED_MOODS /
+     SEED_CONDITIONS the first time the chapter is opened; after that these are
+     ordinary rows the couple owns and can rewrite. The seed insert is
+     `upsert ... ignoreDuplicates` against the (couple_id, kind, slug) unique
+     key, so both partners opening the chapter at the same moment cannot
+     produce a doubled vocabulary. */
+  const loadTags = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("diary_tags")
+      .select("id, kind, slug, label, mark, sort_order")
+      .eq("couple_id", coupleId)
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      setTagError(error.message);
+      return;
+    }
+
+    if ((data ?? []).length > 0) {
+      setTags(data as DiaryTag[]);
+      setTagError(null);
+      return;
+    }
+
+    const seed = [
+      ...SEED_MOODS.map((m, i) => ({
+        couple_id: coupleId,
+        kind: "mood",
+        slug: m.slug,
+        label: m.label,
+        mark: m.mark,
+        sort_order: i,
+        created_by: userId,
+      })),
+      ...SEED_CONDITIONS.map((c, i) => ({
+        couple_id: coupleId,
+        kind: "condition",
+        slug: c.slug,
+        label: c.label,
+        mark: null,
+        sort_order: i,
+        created_by: userId,
+      })),
+    ];
+
+    const { error: seedErr } = await supabase
+      .from("diary_tags")
+      .upsert(seed, { onConflict: "couple_id,kind,slug", ignoreDuplicates: true });
+
+    if (seedErr) {
+      setTagError(seedErr.message);
+      return;
+    }
+
+    const { data: seeded } = await supabase
+      .from("diary_tags")
+      .select("id, kind, slug, label, mark, sort_order")
+      .eq("couple_id", coupleId)
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    setTags((seeded ?? []) as DiaryTag[]);
+    setTagError(null);
+  }, [coupleId, supabase, userId]);
+
+  const addTag = useCallback(
+    async (kind: "mood" | "condition", label: string, mark: string) => {
+      const slug = slugify(label);
+      if (tags.some((t) => t.kind === kind && t.slug === slug)) {
+        setTagError("There is already a " + kind + " called that.");
+        return;
+      }
+      const highest = tags
+        .filter((t) => t.kind === kind)
+        .reduce((max, t) => Math.max(max, t.sort_order), -1);
+
+      const { data, error } = await supabase
+        .from("diary_tags")
+        .insert({
+          couple_id: coupleId,
+          kind,
+          slug,
+          label: label.trim().slice(0, 40),
+          mark: kind === "mood" ? mark.slice(0, 8) || "•" : null,
+          sort_order: highest + 1,
+          created_by: userId,
+        })
+        .select("id, kind, slug, label, mark, sort_order")
+        .single();
+
+      if (error) {
+        setTagError(error.message);
+        return;
+      }
+      setTagError(null);
+      setTags((list) => [...list, data as DiaryTag]);
+    },
+    [coupleId, supabase, tags, userId]
+  );
+
+  const deleteTag = useCallback(
+    async (tag: DiaryTag) => {
+      /* An orphan is a slug on an entry with no row behind it - there is
+         nothing to delete, and no row id to delete it by. */
+      if (tag.id.startsWith("orphan:")) return;
+
+      setTags((list) => list.filter((t) => t.id !== tag.id));
+      const { error } = await supabase
+        .from("diary_tags")
+        .delete()
+        .eq("id", tag.id)
+        .eq("couple_id", coupleId);
+
+      if (error) {
+        setTagError(error.message);
+        await loadTags();
+      }
+    },
+    [coupleId, loadTags, supabase]
+  );
+
   useEffect(() => {
     loadEntries();
   }, [loadEntries]);
+
+  useEffect(() => {
+    loadTags();
+  }, [loadTags]);
 
   /* Live board. shared_diary was added to the supabase_realtime publication for
      this chapter, so a log written on one phone lands on the other board without
@@ -529,12 +1268,26 @@ export default function DiaryScreen({
           loadEntries();
         }
       )
+      /* Same channel carries the vocabulary, so a mood added on one phone
+         appears as a chip on the other without a refresh. */
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "diary_tags",
+          filter: "couple_id=eq." + coupleId,
+        },
+        () => {
+          loadTags();
+        }
+      )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [coupleId, loadEntries, supabase]);
+  }, [coupleId, loadEntries, loadTags, supabase]);
 
   const saveDraft = async (draft: DraftValues) => {
     setSaving(true);
@@ -552,8 +1305,23 @@ export default function DiaryScreen({
       pin_x: draft.pinX,
       pin_y: draft.pinY,
       pin_style: draft.pinX === null ? null : draft.pinStyle,
+      attachments: draft.attachments,
       updated_at: new Date().toISOString(),
     };
+
+    /* Belt and braces against the shared_diary_attachments_size_guardrail
+       CHECK: the composer already bounds this, but a draft restored from an
+       older localStorage copy could in principle arrive over the line, and a
+       raw Postgres constraint error is not something a writer can act on. */
+    if (attachmentBytes(draft.attachments) > MAX_ATTACHMENT_BYTES_TOTAL) {
+      setFormError(
+        "This log is carrying more than " +
+          formatBytes(MAX_ATTACHMENT_BYTES_TOTAL) +
+          " of evidence. Unpin something and file it again."
+      );
+      setSaving(false);
+      return;
+    }
 
     const result = editingId
       ? await supabase.from("shared_diary").update(values).eq("id", editingId).eq("couple_id", coupleId)
@@ -627,6 +1395,19 @@ export default function DiaryScreen({
       pinX: entry.pin_x,
       pinY: entry.pin_y,
       pinStyle: (entry.pin_style as PinStyle) ?? "spider",
+      /* Legacy rows written before attachments existed carry their photo in
+         media_urls; surface it as a real attachment so editing one does not
+         quietly drop the picture. */
+      attachments:
+        entry.attachments && entry.attachments.length > 0
+          ? entry.attachments
+          : (entry.media_urls ?? []).map((url, i) => ({
+              id: "legacy_" + entry.id + "_" + i,
+              kind: "image" as const,
+              url,
+              title: "Photo " + (i + 1),
+              size: url.length,
+            })),
     });
     setEditingId(entry.id);
     setFormError(null);
@@ -714,19 +1495,58 @@ export default function DiaryScreen({
   const nameOf = (authorId: string) => (authorId === userId ? myName : partnerName);
   const filtersOn = query.trim() !== "" || author !== "all" || moodFilter !== null;
 
+  const moods = useMemo(() => tags.filter((t) => t.kind === "mood"), [tags]);
+  const conditions = useMemo(() => tags.filter((t) => t.kind === "condition"), [tags]);
+  const moodOf = useCallback((slug: string | null) => findTag(tags, "mood", slug), [tags]);
+  const conditionOf = useCallback(
+    (slug: string | null) => findTag(tags, "condition", slug),
+    [tags]
+  );
+
+  const isRevealed = (id: string) => revealAll || revealed[id] === true;
+
   /* -------------------------------- clippings -------------------------------- */
 
   const renderClipping = (item: (typeof decorated)[number]) => {
     const { entry, seed, tilt, fastener, pinTilt, tapeShift, style, torn } = item;
     const mood = moodOf(entry.mood);
-    const photo = entry.media_urls && entry.media_urls.length > 0 ? entry.media_urls[0] : null;
+    const photo = coverPhotoOf(entry);
+    const attachCount = (entry.attachments ?? []).length;
+
+    /* A board full of legible logs spoils every one of them from across the
+       room. Clippings are censored by default - the headline, the date and the
+       mood still read, but the prose is under ink bars and any photo is behind
+       frosted evidence tape until someone actually asks for it. */
+    const open = isRevealed(entry.id);
+
+    const prose = (cls: string) =>
+      open ? (
+        <p className={cls}>{entry.content}</p>
+      ) : (
+        <p className={cls + " dy-redacted"} title="Redacted. Reveal or open the log to read it.">
+          <span className="sr-only">This log is redacted. Open it to read it.</span>
+          <RedactionBars seed={seed} length={entry.content.length} />
+        </p>
+      );
+
+    const plate = (node: React.ReactNode) =>
+      open ? (
+        node
+      ) : (
+        <span className="dy-classified">
+          {node}
+          <span className="dy-classified-stamp" aria-hidden>
+            CLASSIFIED
+          </span>
+        </span>
+      );
 
     const captions = (
       <div className="dy-captions">
         <span className="dy-caption">{captionDate(entry.created_at)}</span>
         {mood && (
           <span className="dy-caption dy-caption-mood">
-            <span aria-hidden>{mood.mark}</span>
+            {mood.mark && <span aria-hidden>{mood.mark}</span>}
             {mood.label}
           </span>
         )}
@@ -745,7 +1565,38 @@ export default function DiaryScreen({
             {entry.location || "Plotted"}
           </span>
         )}
+        {attachCount > 0 && (
+          <span className="dy-clip-geo" title={attachCount + " attached"}>
+            <Paperclip className="w-3 h-3" aria-hidden />
+            {attachCount}
+          </span>
+        )}
         <span className="dy-clip-tools">
+          <button
+            type="button"
+            className="dy-tool dy-tool-peek"
+            data-on={open}
+            onClick={(e) => {
+              e.stopPropagation();
+              setRevealed((r) => ({ ...r, [entry.id]: !isRevealed(entry.id) }));
+              /* Un-redacting one card while "reveal all" is on has to turn the
+                 blanket switch off, or the toggle silently does nothing. */
+              if (revealAll) {
+                setRevealAll(false);
+                setRevealed((r) => {
+                  const next: Record<string, boolean> = {};
+                  entries.forEach((row) => {
+                    next[row.id] = row.id === entry.id ? false : true;
+                  });
+                  return { ...r, ...next };
+                });
+              }
+            }}
+            aria-label={open ? "Redact " + entry.title : "Reveal " + entry.title}
+            aria-pressed={open}
+          >
+            {open ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+          </button>
           <button
             type="button"
             className="dy-tool"
@@ -780,12 +1631,14 @@ export default function DiaryScreen({
           <div className="dy-news-kicker">FIELD REPORT</div>
           <h3 className="dy-news-head">{entry.title}</h3>
           <div className="dy-news-rule" />
-          {photo ? (
-            <img src={photo} alt="" className="dy-news-photo" loading="lazy" decoding="async" />
-          ) : (
-            <ComicPanel seed={seed} label={entry.location || "On patrol"} />
+          {plate(
+            photo ? (
+              <img src={photo} alt="" className="dy-news-photo" loading="lazy" decoding="async" />
+            ) : (
+              <ComicPanel seed={seed} label={entry.location || "On patrol"} />
+            )
           )}
-          <p className="dy-news-body">{entry.content}</p>
+          {prose("dy-news-body")}
         </div>
       );
     } else if (style === "bugle") {
@@ -793,28 +1646,36 @@ export default function DiaryScreen({
         <div className="dy-bugle" style={{ clipPath: torn }}>
           <BugleMasthead edition={editionLine(entry.created_at)} />
           <h3 className="dy-bugle-head">{entry.title}</h3>
-          <p className="dy-bugle-body">{entry.content}</p>
+          {prose("dy-bugle-body")}
         </div>
       );
     } else if (style === "sticky") {
       body = (
         <div className="dy-sticky" data-hue={Math.floor(seeded(seed, 9) * 3)}>
           <h3 className="dy-sticky-head">{entry.title}</h3>
-          <p className="dy-sticky-body">{entry.content}</p>
+          {prose("dy-sticky-body")}
         </div>
       );
     } else {
       body = (
         <div className="dy-polaroid">
           <div className="dy-polaroid-window">
-            {photo ? (
-              <img src={photo} alt="" className="dy-polaroid-photo" loading="lazy" decoding="async" />
-            ) : (
-              <ComicPanel seed={seed} label={entry.location || "Undeveloped"} />
+            {plate(
+              photo ? (
+                <img
+                  src={photo}
+                  alt=""
+                  className="dy-polaroid-photo"
+                  loading="lazy"
+                  decoding="async"
+                />
+              ) : (
+                <ComicPanel seed={seed} label={entry.location || "Undeveloped"} />
+              )
             )}
           </div>
           <h3 className="dy-polaroid-head">{entry.title}</h3>
-          <p className="dy-polaroid-body">{entry.content}</p>
+          {prose("dy-polaroid-body")}
         </div>
       );
     }
@@ -824,6 +1685,7 @@ export default function DiaryScreen({
         key={entry.id}
         className="dy-clip"
         data-style={style}
+        data-open={open}
         style={{ "--tilt": tilt.toFixed(2) + "deg" } as React.CSSProperties}
       >
         {fastener === "pin" ? (
@@ -896,6 +1758,16 @@ export default function DiaryScreen({
               editing={editingId !== null}
               saving={saving}
               errorText={formError}
+              /* Scoped to the person AND the thing being written, so a
+                 half-written new log and a half-finished edit of an old one
+                 never overwrite each other, and two accounts sharing a browser
+                 never see each other's drafts. */
+              draftScope={userId + ":diary:" + (editingId ?? "new")}
+              moods={moods}
+              conditions={conditions}
+              onAddTag={addTag}
+              onDeleteTag={deleteTag}
+              tagError={tagError}
               onSubmit={runSave}
               onCancelEdit={() => {
                 setEditingId(null);
@@ -946,18 +1818,38 @@ export default function DiaryScreen({
                 </div>
 
                 <div className="dy-mood-rail">
-                  {MOODS.map((m) => (
+                  {moods.map((m) => (
                     <button
                       key={m.id}
                       type="button"
                       className="dy-chip"
-                      data-on={moodFilter === m.id}
-                      onClick={() => setMoodFilter(moodFilter === m.id ? null : m.id)}
+                      data-on={moodFilter === m.slug}
+                      onClick={() => setMoodFilter(moodFilter === m.slug ? null : m.slug)}
                     >
-                      <span aria-hidden>{m.mark}</span>
+                      {m.mark && <span aria-hidden>{m.mark}</span>}
                       {m.label}
                     </button>
                   ))}
+
+                  {/* The board is redacted by default so glancing at it never
+                      spoils a log. This lifts every bar at once. */}
+                  <button
+                    type="button"
+                    className="dy-chip dy-chip-reveal"
+                    data-on={revealAll}
+                    onClick={() => {
+                      setRevealAll((v) => !v);
+                      if (revealAll) setRevealed({});
+                    }}
+                    aria-pressed={revealAll}
+                  >
+                    {revealAll ? (
+                      <EyeOff className="w-3 h-3" aria-hidden />
+                    ) : (
+                      <Eye className="w-3 h-3" aria-hidden />
+                    )}
+                    {revealAll ? "Redact all" : "Reveal all"}
+                  </button>
                 </div>
               </div>
 
@@ -1230,7 +2122,19 @@ export default function DiaryScreen({
 
       {/* ------------------------------ CASE FILE ------------------------------ */}
       {openEntry && (
-        <div className="dy-overlay" role="dialog" aria-modal="true" aria-label={openEntry.title}>
+        <div
+          className="dy-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label={openEntry.title}
+          /* Clicking any empty space around the folder closes it. The scrim
+             below catches most of that, but the overlay is also the scrolling
+             box - on a long log its padding column sits outside the scrim's
+             stacking position, and those clicks used to land on nothing. */
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setOpenId(null);
+          }}
+        >
           <button type="button" className="dy-overlay-scrim" onClick={() => setOpenId(null)}>
             <span className="sr-only">Close the log</span>
           </button>
@@ -1255,7 +2159,9 @@ export default function DiaryScreen({
                 <span className="dy-stamp dy-stamp-wide">{nameOf(openEntry.author_id)}</span>
                 {moodOf(openEntry.mood) && (
                   <span className="dy-caption dy-caption-mood">
-                    <span aria-hidden>{moodOf(openEntry.mood)?.mark}</span>
+                    {moodOf(openEntry.mood)?.mark && (
+                      <span aria-hidden>{moodOf(openEntry.mood)?.mark}</span>
+                    )}
                     {moodOf(openEntry.mood)?.label}
                   </span>
                 )}
@@ -1271,6 +2177,75 @@ export default function DiaryScreen({
               </div>
 
               <p className="dy-folder-body">{openEntry.content}</p>
+
+              {(() => {
+                /* Legacy rows kept their single photo in media_urls; show it
+                   here as evidence so nothing written before attachments
+                   existed silently disappears from the file. */
+                const attached: DiaryAttachment[] =
+                  openEntry.attachments && openEntry.attachments.length > 0
+                    ? openEntry.attachments
+                    : (openEntry.media_urls ?? []).map((url, i) => ({
+                        id: "legacy_" + openEntry.id + "_" + i,
+                        kind: "image" as const,
+                        url,
+                        title: "Photo " + (i + 1),
+                      }));
+
+                if (attached.length === 0) return null;
+
+                return (
+                  <section className="dy-exhibits">
+                    <h3 className="dy-exhibits-head">Evidence attached</h3>
+                    <ul className="dy-exhibit-list">
+                      {attached.map((a) => (
+                        <li key={a.id} className="dy-exhibit" data-kind={a.kind}>
+                          {a.kind === "image" && (
+                            <img
+                              src={a.url}
+                              alt={a.title}
+                              className="dy-exhibit-img"
+                              loading="lazy"
+                              decoding="async"
+                            />
+                          )}
+
+                          {a.kind === "video" && (
+                            /* playableMediaSrc rewrites the MIME label of an
+                               iPhone clip on the way out - see mediaPrep. */
+                            <video
+                              src={playableMediaSrc(a.url)}
+                              className="dy-exhibit-video"
+                              controls
+                              preload="metadata"
+                              playsInline
+                            />
+                          )}
+
+                          {a.kind === "audio" && (
+                            <audio src={a.url} className="dy-exhibit-audio" controls preload="none" />
+                          )}
+
+                          {a.kind === "link" ? (
+                            <a
+                              href={a.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="dy-exhibit-link"
+                            >
+                              <LinkIcon className="w-3.5 h-3.5 shrink-0" aria-hidden />
+                              <span className="dy-exhibit-name">{a.title}</span>
+                              <span className="dy-exhibit-host">{linkHost(a.url)}</span>
+                            </a>
+                          ) : (
+                            <span className="dy-exhibit-cap">{a.title}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                );
+              })()}
 
               {openEntry.pin_x !== null && openEntry.pin_y !== null && (
                 <div className="dy-folder-map">
@@ -1308,7 +2283,15 @@ export default function DiaryScreen({
 
       {/* ------------------------- DELETE CONFIRMATION ------------------------- */}
       {confirmDeleteId && (
-        <div className="dy-overlay" role="dialog" aria-modal="true" aria-label="Delete this log">
+        <div
+          className="dy-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Delete this log"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setConfirmDeleteId(null);
+          }}
+        >
           <button type="button" className="dy-overlay-scrim" onClick={() => setConfirmDeleteId(null)}>
             <span className="sr-only">Keep the log</span>
           </button>
@@ -1796,6 +2779,246 @@ const DIARY_CSS = `
   color: var(--dy-sticker);
   box-shadow: 2px 2px 0 #0B0709;
 }
+
+/* ------------------------------------------- editable vocabulary chips --- */
+
+/* The tear-off X rides on the chip's own corner rather than sitting beside it,
+   so a rail of eight moods does not double in width just to be editable. */
+.dy-chip-wrap { position: relative; display: inline-flex; }
+.dy-chip-wrap .dy-chip { padding-right: 16px; }
+
+.dy-chip-x {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  background: var(--dy-ink);
+  color: #F6EEDF;
+  border: 2px solid #F6EEDF;
+  border-radius: 50%;
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease;
+}
+
+.dy-chip-wrap:hover .dy-chip-x,
+.dy-chip-wrap:focus-within .dy-chip-x,
+.dy-evidence-item:hover .dy-chip-x,
+.dy-evidence-item:focus-within .dy-chip-x { opacity: 1; transform: scale(1); }
+
+/* Touch has no hover, so on a phone the tear-off would never appear at all. */
+@media (hover: none) {
+  .dy-chip-wrap .dy-chip-x,
+  .dy-evidence-item .dy-chip-x { opacity: 1; transform: scale(1); }
+}
+
+.dy-chip-x:hover { background: var(--dy-crimson); }
+.dy-chip-x:focus-visible { outline: 2px solid var(--dy-caption); outline-offset: 1px; }
+
+.dy-chip-add {
+  border-style: dashed;
+  background: transparent;
+  color: #F1E2C6;
+}
+.dy-chip-add:hover { background: rgba(246, 238, 223, 0.14); }
+
+.dy-tag-new {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.dy-tag-new .dy-text-input { flex: 1 1 140px; min-width: 0; }
+.dy-tag-mark { flex: 0 0 56px; text-align: center; }
+
+.dy-chip-reveal { margin-left: auto; border-style: dashed; }
+
+/* --------------------------------------------- restored-draft notice ---- */
+
+.dy-restored {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 10px;
+  margin-bottom: 12px;
+  padding: 9px 11px;
+  background: #F0DBA8;
+  border: 2px solid var(--dy-ink);
+  box-shadow: 3px 3px 0 #0B0709;
+  color: #33210F;
+  font-family: var(--dy-type);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.dy-restored-mark { display: grid; place-items: center; color: var(--dy-crimson); }
+.dy-restored-body strong { display: block; font-size: 11px; letter-spacing: 0.04em; }
+.dy-restored-actions { grid-column: 2; display: flex; gap: 6px; }
+
+/* ------------------------------------------------ the evidence tray ----- */
+
+.dy-set-meter {
+  font-family: var(--dy-type);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  color: #C9B190;
+}
+
+.dy-evidence { display: grid; gap: 6px; margin: 8px 0; padding: 0; list-style: none; }
+
+.dy-evidence-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
+  background: #F6EEDF;
+  border: 2px solid var(--dy-ink);
+  color: #33210F;
+  font-family: var(--dy-type);
+  font-size: 10px;
+}
+.dy-evidence-item[data-kind="link"] { background: #E7EEF3; }
+
+.dy-evidence-mark { display: grid; place-items: center; color: var(--dy-crimson); }
+.dy-evidence-thumb { width: 26px; height: 26px; object-fit: cover; border: 1.5px solid var(--dy-ink); }
+.dy-evidence-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dy-evidence-size { flex: 0 0 auto; opacity: 0.7; font-size: 9px; }
+
+.dy-attach-link { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.dy-attach-link .dy-text-input { flex: 1 1 100%; min-width: 0; }
+.dy-attach-link .dy-attach-caption { flex: 1 1 120px; }
+.dy-attach-file { margin-top: 6px; }
+
+/* ------------------------------------------------------- redaction ------ */
+
+/* A clipping keeps its full height when censored - the bars occupy the same
+   run of lines the prose would - so revealing one does not make the whole
+   masonry column jump and re-flow under the reader's cursor. */
+.dy-redacted { display: block; }
+
+.dy-redact-stack { display: block; padding: 2px 0; }
+
+.dy-redact-bar {
+  display: block;
+  height: 0.72em;
+  margin: 0 0 0.42em;
+  background: #14100F;
+  /* Slightly ragged ends, like a marker pen rather than a filled rectangle. */
+  clip-path: polygon(0.6% 8%, 99.4% 0%, 100% 92%, 0% 100%);
+  opacity: 0.88;
+}
+
+.dy-clip[data-open="false"] .dy-redact-bar { animation: dy-ink-in 240ms ease-out both; }
+.dy-clip[data-open="false"] .dy-redact-bar:nth-child(2) { animation-delay: 30ms; }
+.dy-clip[data-open="false"] .dy-redact-bar:nth-child(3) { animation-delay: 60ms; }
+.dy-clip[data-open="false"] .dy-redact-bar:nth-child(4) { animation-delay: 90ms; }
+.dy-clip[data-open="false"] .dy-redact-bar:nth-child(5) { animation-delay: 120ms; }
+
+@keyframes dy-ink-in {
+  0%   { transform: scaleX(0); transform-origin: left center; opacity: 0.5; }
+  100% { transform: scaleX(1); transform-origin: left center; opacity: 0.88; }
+}
+
+/* Photos are spoilers too. Frosted rather than removed, so the card still
+   reads as "there is a picture in here" without showing what it is. */
+.dy-classified { position: relative; display: block; overflow: hidden; }
+.dy-classified > img,
+.dy-classified > svg { filter: blur(13px) saturate(0.45) contrast(1.1); transform: scale(1.12); }
+
+.dy-classified-stamp {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  rotate: -8deg;
+  padding: 3px 10px;
+  border: 2.5px solid var(--dy-crimson);
+  color: var(--dy-crimson);
+  background: rgba(20, 16, 15, 0.42);
+  font-family: var(--dy-type);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.22em;
+  white-space: nowrap;
+}
+
+.dy-tool-peek[data-on="true"] { background: var(--dy-crimson); color: var(--dy-sticker); }
+
+@media (prefers-reduced-motion: reduce) {
+  .dy-clip[data-open="false"] .dy-redact-bar { animation: none; }
+}
+
+/* ------------------------------------------- exhibits in the case file --- */
+
+.dy-exhibits { margin-top: 16px; }
+
+.dy-exhibits-head {
+  margin: 0 0 8px;
+  font-family: var(--dy-type);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #5A3A1C;
+  border-bottom: 2px solid rgba(51, 33, 15, 0.35);
+  padding-bottom: 4px;
+}
+
+.dy-exhibit-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dy-exhibit {
+  padding: 6px 6px 8px;
+  background: #F6EEDF;
+  border: 2px solid var(--dy-ink);
+  box-shadow: 3px 3px 0 rgba(3, 2, 2, 0.55);
+  rotate: -0.5deg;
+}
+.dy-exhibit:nth-child(even) { rotate: 0.7deg; }
+.dy-exhibit[data-kind="link"] { grid-column: 1 / -1; rotate: 0deg; }
+
+.dy-exhibit-img,
+.dy-exhibit-video { display: block; width: 100%; height: auto; border: 1.5px solid var(--dy-ink); }
+.dy-exhibit-audio { display: block; width: 100%; }
+
+.dy-exhibit-cap {
+  display: block;
+  margin-top: 5px;
+  font-family: 'Caveat', cursive;
+  font-size: 13px;
+  line-height: 1.25;
+  color: #33210F;
+  overflow-wrap: anywhere;
+}
+
+.dy-exhibit-link {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #22384A;
+  font-family: var(--dy-type);
+  font-size: 11px;
+  text-decoration: none;
+}
+.dy-exhibit-link:hover { text-decoration: underline; }
+.dy-exhibit-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.dy-exhibit-host { flex: 0 0 auto; opacity: 0.65; font-size: 9.5px; }
 
 .dy-text-input {
   padding: 8px 10px;
@@ -2805,10 +4028,18 @@ const DIARY_CSS = `
   place-items: center;
   padding: 18px;
   overflow-y: auto;
+  /* No transform/filter/perspective anywhere on this element or the scrim
+     below will stop being viewport-fixed and the bug returns. */
 }
 
+/* Was position:absolute. Inside .dy-overlay, which is the scrolling box,
+   an absolutely positioned child is laid out against the padding box and then
+   SCROLLS WITH THE CONTENT - so on a long log the dark backdrop slid up out of
+   view after a few hundred pixels and the page showed through behind the
+   folder. Fixed positioning pins it to the viewport instead, which is what it
+   always looked like it was doing at short lengths. */
 .dy-overlay-scrim {
-  position: absolute;
+  position: fixed;
   inset: 0;
   background: rgba(9, 5, 7, 0.82);
   border: none;
