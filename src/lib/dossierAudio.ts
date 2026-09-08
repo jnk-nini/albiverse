@@ -238,6 +238,12 @@ export function webSnap() {
 
 /** Something going wrong across dimensions - a short torn-signal stutter. */
 export function glitch() {
+  /* Every burst here is scheduled through setTimeout, including the i=0 one -
+     that's a macrotask, which is no longer "in response to a user gesture" as
+     far as mobile Safari is concerned. Priming the context synchronously,
+     before any timeout is queued, is what lets the delayed bursts actually
+     produce sound instead of running against a still-suspended context. */
+  ac();
   for (let i = 0; i < 4; i++) {
     window.setTimeout(
       () => burst({ duration: 0.035, from: 900 + i * 1400, to: 300, gain: 0.13, q: 3 }),
@@ -259,6 +265,15 @@ export function bloom() {
     tone({ freq: f, duration: 1.5, gain: 0.09, type: "sine", delay: i * 0.09 })
   );
   burst({ duration: 1.1, from: 400, to: 4800, gain: 0.09, q: 0.7 });
+}
+
+/** Primes/resumes the shared AudioContext synchronously. Call this at the
+    top of any pointer/click handler whose own sound is actually scheduled
+    for later (e.g. behind a hold-timer) - browsers only treat context
+    creation/resume as gesture-backed while it happens inside the gesture's
+    own synchronous call stack, not inside a setTimeout queued from it. */
+export function primeAudio() {
+  ac();
 }
 
 /** Rushing wind for the upside-down flip. */

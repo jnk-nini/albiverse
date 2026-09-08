@@ -16,6 +16,7 @@ import {
   Image as ImageIcon,
   Link2,
   Plus,
+  StickyNote,
   Trash2,
   Volume2,
   VolumeX,
@@ -27,12 +28,15 @@ import { compressImage, dataUrlBytes, formatBytes, readFileAsDataUrl } from "@/l
 import {
   DossierDefs,
   EvidencePin,
+  HazardStripe,
   Notepad,
+  RadarFace,
   RubberStamp,
   SafetyPin,
   SpiderMark,
   STAMPS,
   ThumbScanner,
+  VectorFigure,
   hashString,
   seeded,
   type StampId,
@@ -77,40 +81,88 @@ const SECTION_TYPE = "dossier";
 
 /* --------------------------------------------------------------- types ---- */
 
-interface Identity {
-  legalName: string;
-  codename: string;
-  bloodType: string;
-  height: string;
-  coffeeRatio: string;
-  mbti: string;
-  sun: string;
-  moon: string;
-  rising: string;
-  affiliation: string;
-  portrait: string | null;
-  /* The classified backside. */
-  nicknames: string;
-  insideJokes: string;
-  emergencyContact: string;
+/* A field is a label+value pair the reader can add, rename or delete -
+   nothing about identity is a fixed set of keys anymore. `id` is stable
+   across renames so a saved value never gets orphaned by a relabel. */
+interface IdentityField {
+  id: string;
+  label: string;
+  value: string;
+  placeholder?: string;
 }
 
+interface Identity {
+  portrait: string | null;
+  frontFields: IdentityField[];
+  /* The classified backside. */
+  backFields: IdentityField[];
+}
+
+/* Seeded defaults, not a schema - every id below is also an add/rename/
+   delete-able row like any field a reader creates themselves. Ids match the
+   old fixed keys on purpose: migrateIdentity() below uses them to carry a
+   pre-existing saved dossier's values into the new shape untouched. */
+const DEFAULT_FRONT_FIELDS: IdentityField[] = [
+  { id: "legalName", label: "Legal name", value: "", placeholder: "The one on the paperwork" },
+  { id: "codename", label: "Multiversal codename", value: "", placeholder: "Spider-Something" },
+  { id: "bloodType", label: "Blood type", value: "", placeholder: "O+" },
+  { id: "height", label: "Height", value: "", placeholder: "5'7\"" },
+  { id: "coffeeRatio", label: "Coffee : milk", value: "", placeholder: "Exactly 1 : 3, no negotiation" },
+  { id: "mbti", label: "MBTI", value: "", placeholder: "INFP" },
+  { id: "sun", label: "Sun", value: "", placeholder: "Virgo" },
+  { id: "moon", label: "Moon", value: "", placeholder: "Pisces" },
+  { id: "rising", label: "Rising", value: "", placeholder: "Scorpio" },
+  { id: "affiliation", label: "Current affiliation", value: "", placeholder: "Mine, mostly" },
+];
+
+const DEFAULT_BACK_FIELDS: IdentityField[] = [
+  { id: "nicknames", label: "Secret nicknames", value: "", placeholder: "The ones nobody else is allowed to use" },
+  {
+    id: "insideJokes",
+    label: "Inside jokes, in shorthand",
+    value: "",
+    placeholder: "Two words that would make no sense to anyone else",
+  },
+  {
+    id: "emergencyContact",
+    label: "Emergency contact frequency",
+    value: "",
+    placeholder: "Who to call, and what to say first",
+  },
+];
+
 const EMPTY_IDENTITY: Identity = {
-  legalName: "",
-  codename: "",
-  bloodType: "",
-  height: "",
-  coffeeRatio: "",
-  mbti: "",
-  sun: "",
-  moon: "",
-  rising: "",
-  affiliation: "",
   portrait: null,
-  nicknames: "",
-  insideJokes: "",
-  emergencyContact: "",
+  frontFields: DEFAULT_FRONT_FIELDS,
+  backFields: DEFAULT_BACK_FIELDS,
 };
+
+/* A dossier saved before this rewrite has the old flat shape
+   ({legalName: "...", codename: "...", ...}) instead of frontFields/
+   backFields arrays - reading it with a plain fallback-merge would silently
+   drop every value the reader already typed in. Detect the old shape and
+   carry each value into the matching seeded field instead. */
+function migrateIdentity(raw: unknown, fallback: Identity): Identity {
+  if (!raw || typeof raw !== "object") return fallback;
+  const r = raw as Record<string, unknown>;
+
+  if (Array.isArray(r.frontFields)) {
+    return {
+      portrait: typeof r.portrait === "string" ? r.portrait : null,
+      frontFields: r.frontFields as IdentityField[],
+      backFields: Array.isArray(r.backFields) ? (r.backFields as IdentityField[]) : DEFAULT_BACK_FIELDS,
+    };
+  }
+
+  const carryOver = (fields: IdentityField[]) =>
+    fields.map((f) => ({ ...f, value: typeof r[f.id] === "string" ? (r[f.id] as string) : "" }));
+
+  return {
+    portrait: typeof r.portrait === "string" ? r.portrait : null,
+    frontFields: carryOver(DEFAULT_FRONT_FIELDS),
+    backFields: carryOver(DEFAULT_BACK_FIELDS),
+  };
+}
 
 interface Vibe {
   battery: number;
@@ -148,6 +200,9 @@ interface Artifact {
   url: string | null;
   title: string;
   note: string;
+  /* Freeform categorisation - the 5 pin kinds stay closed (they're real
+     drawn art), but tags let a pin carry any label the reader wants. */
+  tags: string[];
   x: number;
   y: number;
   rot: number;
@@ -173,6 +228,8 @@ interface Quirk {
   hue: number;
 }
 
+/* Suggestions, not a fixed list - same free-text-plus-datalist pattern as
+   VIBE_TAGS, so a custom category is a first-class option, not a fallback. */
 const QUIRK_CATEGORIES = ["Food law", "Morning ritual", "Tell", "Obsession", "Rule"];
 
 interface Quirks {
@@ -261,6 +318,88 @@ const MAX_PICK_BYTES = 25 * 1024 * 1024;
 const PANEL_SOFT_LIMIT = 9 * 1024 * 1024;
 
 /* ============================================================================
+   SECTIONS 6-10 — TYPES
+   ========================================================================== */
+
+interface Quote {
+  id: string;
+  text: string;
+  source: string;
+  date: string;
+}
+
+interface QuoteStripData {
+  items: Quote[];
+}
+
+const EMPTY_QUOTE_STRIP: QuoteStripData = { items: [] };
+
+interface TravelPin {
+  id: string;
+  place: string;
+  date: string;
+  note: string;
+  photo: string | null;
+}
+
+interface Travelogue {
+  items: TravelPin[];
+}
+
+const EMPTY_TRAVELOGUE: Travelogue = { items: [] };
+
+interface SizingField {
+  id: string;
+  part: string;
+  value: string;
+  unit: string;
+}
+
+/* Ids matching VectorFigure's `data-part` highlight names light the figure up
+   when a field is focused - a custom field added later just won't match one,
+   which is a harmless no-op, not an error. */
+const DEFAULT_SIZING_FIELDS: SizingField[] = [
+  { id: "jacket", part: "jacket", value: "", unit: "" },
+  { id: "wrist", part: "wrist", value: "", unit: "" },
+  { id: "ring", part: "ring", value: "", unit: "" },
+  { id: "shoe", part: "shoe", value: "", unit: "" },
+];
+
+interface SizingBlueprintData {
+  items: SizingField[];
+}
+
+const EMPTY_SIZING: SizingBlueprintData = { items: DEFAULT_SIZING_FIELDS };
+
+type PeeveSeverity = "peeve" | "redflag" | "greenflag";
+
+interface PeeveItem {
+  id: string;
+  text: string;
+  severity: PeeveSeverity;
+}
+
+interface PeeveIndexData {
+  items: PeeveItem[];
+}
+
+const EMPTY_PEEVE_INDEX: PeeveIndexData = { items: [] };
+
+interface CapsuleEntry {
+  id: string;
+  message: string;
+  photo: string | null;
+  sealedUntil: string;
+  opened: boolean;
+}
+
+interface TimeCapsuleData {
+  items: CapsuleEntry[];
+}
+
+const EMPTY_TIME_CAPSULE: TimeCapsuleData = { items: [] };
+
+/* ============================================================================
    PANEL PERSISTENCE
    ========================================================================== */
 
@@ -287,7 +426,11 @@ function usePanel<T extends object>(
   userId: string,
   key: string,
   fallback: T,
-  debounceMs = 900
+  debounceMs = 900,
+  /* Only needed when a panel's saved shape can predate a later schema change
+     (see migrateIdentity) - everything else can leave this undefined and
+     keep the plain fallback-merge below. */
+  migrate?: (raw: unknown, fallback: T) => T
 ): PanelState<T> {
   const supabase = useMemo(() => createClient(), []);
   const [value, setValue] = useState<T>(fallback);
@@ -316,7 +459,7 @@ function usePanel<T extends object>(
 
       if (readErr) setError(readErr.message);
       else if (data?.content_json) {
-        setValue({ ...fallback, ...(data.content_json as T) });
+        setValue(migrate ? migrate(data.content_json, fallback) : { ...fallback, ...(data.content_json as T) });
       }
       ready.current = true;
       setLoading(false);
@@ -419,19 +562,6 @@ function usePanel<T extends object>(
    1. HERO IDENTIFICATION CARD
    ========================================================================== */
 
-const IDENTITY_FIELDS: { key: keyof Identity; label: string; placeholder: string }[] = [
-  { key: "legalName", label: "Legal name", placeholder: "The one on the paperwork" },
-  { key: "codename", label: "Multiversal codename", placeholder: "Spider-Something" },
-  { key: "bloodType", label: "Blood type", placeholder: "O+" },
-  { key: "height", label: "Height", placeholder: "5'7\"" },
-  { key: "coffeeRatio", label: "Coffee : milk", placeholder: "Exactly 1 : 3, no negotiation" },
-  { key: "mbti", label: "MBTI", placeholder: "INFP" },
-  { key: "sun", label: "Sun", placeholder: "Virgo" },
-  { key: "moon", label: "Moon", placeholder: "Pisces" },
-  { key: "rising", label: "Rising", placeholder: "Scorpio" },
-  { key: "affiliation", label: "Current affiliation", placeholder: "Mine, mostly" },
-];
-
 const HeroBadge = memo(function HeroBadge({
   identity,
   onChange,
@@ -484,8 +614,35 @@ const HeroBadge = memo(function HeroBadge({
     }
   };
 
-  const set = <K extends keyof Identity>(key: K, v: Identity[K]) =>
-    onChange((prev) => ({ ...prev, [key]: v }));
+  /* Shared add/rename/remove/edit ops for whichever field list (front or
+     back) is being rendered - the two panels are identical apart from which
+     key of Identity they touch. */
+  const makeFieldOps = (listKey: "frontFields" | "backFields") => ({
+    setValue: (id: string, value: string) =>
+      onChange((prev) => ({
+        ...prev,
+        [listKey]: prev[listKey].map((f) => (f.id === id ? { ...f, value } : f)),
+      })),
+    rename: (id: string, label: string) =>
+      onChange((prev) => ({
+        ...prev,
+        [listKey]: prev[listKey].map((f) => (f.id === id ? { ...f, label } : f)),
+      })),
+    add: () => {
+      onChange((prev) => ({
+        ...prev,
+        [listKey]: [...prev[listKey], { id: uid("field"), label: "New field", value: "" }],
+      }));
+      onFlush();
+    },
+    remove: (id: string) => {
+      onChange((prev) => ({ ...prev, [listKey]: prev[listKey].filter((f) => f.id !== id) }));
+      onFlush();
+      sfx.glitch();
+    },
+  });
+  const frontOps = makeFieldOps("frontFields");
+  const backOps = makeFieldOps("backFields");
 
   return (
     <section className="dsr-panel dsr-badge-panel" aria-labelledby="dsr-badge-head">
@@ -546,23 +703,41 @@ const HeroBadge = memo(function HeroBadge({
               </button>
             </div>
 
-            <dl className="dsr-fields">
-              {IDENTITY_FIELDS.map((f) => (
-                <div key={String(f.key)} className="dsr-field">
-                  <dt className="dsr-field-label">{f.label}</dt>
-                  <dd>
+            <div className="dsr-fields">
+              {identity.frontFields.map((f) => (
+                <div key={f.id} className="dsr-field">
+                  <div className="dsr-field-headrow">
                     <input
-                      className="dsr-input"
-                      value={(identity[f.key] as string) ?? ""}
-                      onChange={(e) => set(f.key, e.target.value as Identity[typeof f.key])}
+                      className="dsr-field-label-input"
+                      value={f.label}
+                      onChange={(e) => frontOps.rename(f.id, e.target.value)}
                       onBlur={onFlush}
-                      placeholder={f.placeholder}
-                      maxLength={80}
+                      placeholder="Field name"
+                      maxLength={40}
                     />
-                  </dd>
+                    <button
+                      type="button"
+                      className="dsr-field-x"
+                      onClick={() => frontOps.remove(f.id)}
+                      aria-label={"Remove " + (f.label || "field")}
+                    >
+                      <X className="w-3 h-3" aria-hidden />
+                    </button>
+                  </div>
+                  <input
+                    className="dsr-input"
+                    value={f.value}
+                    onChange={(e) => frontOps.setValue(f.id, e.target.value)}
+                    onBlur={onFlush}
+                    placeholder={f.placeholder ?? "Type it in"}
+                    maxLength={200}
+                  />
                 </div>
               ))}
-            </dl>
+              <button type="button" className="dsr-field-add" onClick={frontOps.add}>
+                <Plus className="w-3.5 h-3.5" aria-hidden /> Add field
+              </button>
+            </div>
           </div>
 
           {photoError && <p className="dsr-error">{photoError}</p>}
@@ -578,44 +753,39 @@ const HeroBadge = memo(function HeroBadge({
           </header>
 
           <div className="dsr-back-fields">
-            <label className="dsr-field-label" htmlFor="dsr-nicknames">
-              Secret nicknames
-            </label>
-            <textarea
-              id="dsr-nicknames"
-              className="dsr-textarea"
-              rows={2}
-              value={identity.nicknames}
-              onChange={(e) => set("nicknames", e.target.value)}
-              onBlur={onFlush}
-              placeholder="The ones nobody else is allowed to use"
-            />
-
-            <label className="dsr-field-label" htmlFor="dsr-jokes">
-              Inside jokes, in shorthand
-            </label>
-            <textarea
-              id="dsr-jokes"
-              className="dsr-textarea"
-              rows={3}
-              value={identity.insideJokes}
-              onChange={(e) => set("insideJokes", e.target.value)}
-              onBlur={onFlush}
-              placeholder="Two words that would make no sense to anyone else"
-            />
-
-            <label className="dsr-field-label" htmlFor="dsr-emergency">
-              Emergency contact frequency
-            </label>
-            <textarea
-              id="dsr-emergency"
-              className="dsr-textarea"
-              rows={2}
-              value={identity.emergencyContact}
-              onChange={(e) => set("emergencyContact", e.target.value)}
-              onBlur={onFlush}
-              placeholder="Who to call, and what to say first"
-            />
+            {identity.backFields.map((f) => (
+              <div key={f.id} className="dsr-back-field">
+                <div className="dsr-field-headrow">
+                  <input
+                    className="dsr-field-label-input"
+                    value={f.label}
+                    onChange={(e) => backOps.rename(f.id, e.target.value)}
+                    onBlur={onFlush}
+                    placeholder="Field name"
+                    maxLength={40}
+                  />
+                  <button
+                    type="button"
+                    className="dsr-field-x"
+                    onClick={() => backOps.remove(f.id)}
+                    aria-label={"Remove " + (f.label || "field")}
+                  >
+                    <X className="w-3 h-3" aria-hidden />
+                  </button>
+                </div>
+                <textarea
+                  className="dsr-textarea"
+                  rows={2}
+                  value={f.value}
+                  onChange={(e) => backOps.setValue(f.id, e.target.value)}
+                  onBlur={onFlush}
+                  placeholder={f.placeholder ?? "Type it in"}
+                />
+              </div>
+            ))}
+            <button type="button" className="dsr-field-add" onClick={backOps.add}>
+              <Plus className="w-3.5 h-3.5" aria-hidden /> Add field
+            </button>
           </div>
 
           <button type="button" className="dsr-flip-back" onClick={runScan}>
@@ -835,6 +1005,8 @@ function Corkboard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [notesForId, setNotesForId] = useState<string | null>(null);
+  const [tagDrafts, setTagDrafts] = useState<Record<string, string>>({});
 
   /* Spring left over from the last drag, per link. Lives in a ref and is
      rendered through a version counter, so sixty frames of settling never
@@ -956,6 +1128,7 @@ function Corkboard({
           url,
           title,
           note: "",
+          tags: [],
           /* Dropped into the middle third rather than a corner, so a new pin
              is never hidden behind the toolbar or off the short edge. */
           x: 26 + seeded(seed, 1) * 44,
@@ -1013,6 +1186,38 @@ function Corkboard({
     }));
     onFlush();
     if (lightboxId === id) setLightboxId(null);
+  };
+
+  const setNote = (id: string, note: string) => {
+    onChange((prev) => ({
+      ...prev,
+      items: prev.items.map((it) => (it.id === id ? { ...it, note } : it)),
+    }));
+  };
+
+  const addTag = (id: string) => {
+    const draft = (tagDrafts[id] ?? "").trim();
+    if (!draft) return;
+    onChange((prev) => ({
+      ...prev,
+      items: prev.items.map((it) =>
+        it.id === id && !(it.tags ?? []).includes(draft)
+          ? { ...it, tags: [...(it.tags ?? []), draft] }
+          : it
+      ),
+    }));
+    onFlush();
+    setTagDrafts((prev) => ({ ...prev, [id]: "" }));
+  };
+
+  const removeTag = (id: string, tag: string) => {
+    onChange((prev) => ({
+      ...prev,
+      items: prev.items.map((it) =>
+        it.id === id ? { ...it, tags: (it.tags ?? []).filter((t) => t !== tag) } : it
+      ),
+    }));
+    onFlush();
   };
 
   /* ---------------------------------------------------------- web strands -- */
@@ -1234,6 +1439,34 @@ function Corkboard({
               onBlur={onFlush}
             />
 
+            {(a.tags ?? []).length > 0 && (
+              <div className="dsr-artifact-tags" onPointerDown={(e) => e.stopPropagation()}>
+                {(a.tags ?? []).map((t) => (
+                  <span key={t} className="dsr-artifact-tag">
+                    {t}
+                    <button
+                      type="button"
+                      onClick={() => removeTag(a.id, t)}
+                      aria-label={"Remove tag " + t}
+                    >
+                      <X className="w-2.5 h-2.5" aria-hidden />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            <button
+              type="button"
+              className={"dsr-artifact-notes-btn" + (notesForId === a.id ? " is-open" : "")}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => setNotesForId((cur) => (cur === a.id ? null : a.id))}
+              aria-label={notesForId === a.id ? "Close notes" : "Add notes and tags"}
+              aria-expanded={notesForId === a.id}
+            >
+              <StickyNote className="w-3 h-3" aria-hidden />
+            </button>
+
             <button
               type="button"
               className="dsr-artifact-x"
@@ -1243,6 +1476,41 @@ function Corkboard({
             >
               <Trash2 className="w-3 h-3" aria-hidden />
             </button>
+
+            {notesForId === a.id && (
+              <div
+                className="dsr-artifact-notes"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <textarea
+                  className="dsr-artifact-notes-text"
+                  value={a.note}
+                  onChange={(e) => setNote(a.id, e.target.value)}
+                  onBlur={onFlush}
+                  placeholder="Everything else about this one..."
+                  rows={3}
+                />
+                <div className="dsr-artifact-tag-row">
+                  <input
+                    className="dsr-artifact-tag-input"
+                    value={tagDrafts[a.id] ?? ""}
+                    onChange={(e) => setTagDrafts((prev) => ({ ...prev, [a.id]: e.target.value }))}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addTag(a.id);
+                      }
+                    }}
+                    placeholder="Add a tag, press Enter"
+                    maxLength={24}
+                  />
+                  <button type="button" className="dsr-artifact-tag-add" onClick={() => addTag(a.id)}>
+                    <Plus className="w-3 h-3" aria-hidden />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ))}
 
@@ -1374,18 +1642,20 @@ function QuirkMatrix({
             maxLength={180}
           />
           <div className="dsr-pad-actions">
-            <select
-              className="dsr-select"
+            <input
+              className="dsr-input dsr-select"
               value={category}
               onChange={(e) => setCategory(e.target.value)}
               aria-label="What kind of quirk"
-            >
+              placeholder="Category"
+              maxLength={30}
+              list="dsr-quirk-categories"
+            />
+            <datalist id="dsr-quirk-categories">
               {QUIRK_CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
+                <option key={c} value={c} />
               ))}
-            </select>
+            </datalist>
             <button
               type="button"
               className="dsr-tool-btn"
@@ -1442,6 +1712,11 @@ function ProtocolFolder({
   const [activeId, setActiveId] = useState(protocols.items[0]?.id ?? "");
   const [heldStamp, setHeldStamp] = useState<StampId | null>(null);
   const [splatter, setSplatter] = useState<{ x: number; y: number; key: number } | null>(null);
+  /* A protocol holds several steps and stamps - deleting one is heavier than
+     deleting a step, so it arms on the first tap and only fires on a second
+     tap within 3s, rather than either an instant delete or a blocking modal
+     (nothing else in this chapter uses a modal confirm). */
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
 
   const active =
@@ -1469,6 +1744,43 @@ function ProtocolFolder({
     onChange((prev) => ({
       items: prev.items.map((p) =>
         p.id === protoId ? { ...p, steps: p.steps.filter((_, i) => i !== index) } : p
+      ),
+    }));
+    onFlush();
+  };
+
+  const addProtocol = () => {
+    const id = uid("protocol");
+    const fresh: Protocol = {
+      id,
+      tab: "NEW",
+      title: "New protocol",
+      steps: [{ prompt: "", answer: "" }],
+      stamps: [],
+    };
+    onChange((prev) => ({ items: [...prev.items, fresh] }));
+    onFlush();
+    setActiveId(id);
+    sfx.dialClick();
+  };
+
+  const removeProtocol = (id: string) => {
+    sfx.glitch();
+    const next = protocols.items.filter((p) => p.id !== id);
+    onChange({ items: next });
+    onFlush();
+    setActiveId(next[0]?.id ?? "");
+  };
+
+  const renameProtocol = (protoId: string, patch: Partial<Pick<Protocol, "tab" | "title">>) =>
+    onChange((prev) => ({
+      items: prev.items.map((p) => (p.id === protoId ? { ...p, ...patch } : p)),
+    }));
+
+  const removeStamp = (protoId: string, stampId: string) => {
+    onChange((prev) => ({
+      items: prev.items.map((p) =>
+        p.id === protoId ? { ...p, stamps: p.stamps.filter((s) => s.id !== stampId) } : p
       ),
     }));
     onFlush();
@@ -1503,8 +1815,6 @@ function ProtocolFolder({
     setHeldStamp(null);
   };
 
-  if (!active) return null;
-
   return (
     <section className="dsr-panel dsr-protocols" aria-labelledby="dsr-proto-head">
       <div className="dsr-panel-head">
@@ -1521,26 +1831,83 @@ function ProtocolFolder({
               key={p.id}
               type="button"
               role="tab"
-              aria-selected={p.id === active.id}
+              aria-selected={p.id === active?.id}
               className="dsr-tab"
-              data-on={p.id === active.id}
+              data-on={p.id === active?.id}
               onClick={() => {
                 setActiveId(p.id);
                 sfx.dialClick();
               }}
             >
-              {p.tab}
+              {p.tab || "UNTITLED"}
             </button>
           ))}
+          <button
+            type="button"
+            className="dsr-tab dsr-tab-add"
+            onClick={addProtocol}
+            aria-label="Add a new protocol"
+          >
+            <Plus className="w-3.5 h-3.5" aria-hidden />
+          </button>
         </div>
 
+        {!active ? (
+          <div className="dsr-sheet dsr-sheet-empty">
+            <p>No protocols yet. Add one for whatever situation needs a plan.</p>
+            <button type="button" className="dsr-tool-btn" onClick={addProtocol}>
+              <Plus className="w-3.5 h-3.5" aria-hidden />
+              New protocol
+            </button>
+          </div>
+        ) : (
         <div
           ref={sheetRef}
           className={"dsr-sheet" + (heldStamp ? " is-stamping" : "")}
           onClick={dropStamp}
           role="tabpanel"
         >
-          <h3 className="dsr-sheet-title">{active.title}</h3>
+          <div className="dsr-sheet-headrow" onClick={(e) => e.stopPropagation()}>
+            <div className="dsr-sheet-heading">
+              <input
+                className="dsr-tab-label-input"
+                value={active.tab}
+                onChange={(e) => renameProtocol(active.id, { tab: e.target.value.toUpperCase().slice(0, 12) })}
+                onBlur={onFlush}
+                placeholder="TAB"
+                maxLength={12}
+                aria-label="Tab label"
+              />
+              <input
+                className="dsr-sheet-title-input"
+                value={active.title}
+                onChange={(e) => renameProtocol(active.id, { title: e.target.value })}
+                onBlur={onFlush}
+                placeholder="Protocol title"
+                maxLength={80}
+                aria-label="Protocol title"
+              />
+            </div>
+            <button
+              type="button"
+              className={"dsr-tool-btn dsr-proto-delete" + (confirmDeleteId === active.id ? " is-armed" : "")}
+              onClick={() => {
+                if (confirmDeleteId === active.id) {
+                  removeProtocol(active.id);
+                  setConfirmDeleteId(null);
+                } else {
+                  setConfirmDeleteId(active.id);
+                  window.setTimeout(
+                    () => setConfirmDeleteId((cur) => (cur === active.id ? null : cur)),
+                    3000
+                  );
+                }
+              }}
+            >
+              <Trash2 className="w-3.5 h-3.5" aria-hidden />
+              {confirmDeleteId === active.id ? "Sure? Tap again" : "Delete"}
+            </button>
+          </div>
 
           <ol className="dsr-steps">
             {active.steps.map((s, i) => (
@@ -1602,6 +1969,17 @@ function ProtocolFolder({
                 style={{ left: `${s.x}%`, top: `${s.y}%` }}
               >
                 <RubberStamp label={def.label} color={def.color} rotate={s.rot} scale={0.62} />
+                <button
+                  type="button"
+                  className="dsr-stamp-remove"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeStamp(active.id, s.id);
+                  }}
+                  aria-label={"Remove " + def.label + " stamp"}
+                >
+                  <X className="w-2.5 h-2.5" aria-hidden />
+                </button>
               </span>
             );
           })}
@@ -1628,6 +2006,7 @@ function ProtocolFolder({
             </span>
           )}
         </div>
+        )}
       </div>
 
       <div className="dsr-stamp-tray">
@@ -1657,6 +2036,694 @@ function ProtocolFolder({
 }
 
 /* ============================================================================
+   6. QUOTE STRIP
+   ========================================================================== */
+
+function QuoteStrip({
+  quotes,
+  onChange,
+  onFlush,
+  onGlitch,
+}: {
+  quotes: QuoteStripData;
+  onChange: (next: QuoteStripData | ((p: QuoteStripData) => QuoteStripData)) => void;
+  onFlush: () => void;
+  onGlitch: () => void;
+}) {
+  const addQuote = () => {
+    onChange((prev) => ({
+      items: [...prev.items, { id: uid("quote"), text: "", source: "", date: "" }],
+    }));
+    onFlush();
+  };
+
+  const setField = (id: string, patch: Partial<Quote>) =>
+    onChange((prev) => ({ items: prev.items.map((q) => (q.id === id ? { ...q, ...patch } : q)) }));
+
+  const remove = (id: string) => {
+    onGlitch();
+    onChange((prev) => ({ items: prev.items.filter((q) => q.id !== id) }));
+    onFlush();
+  };
+
+  return (
+    <section className="dsr-panel dsr-quotes" aria-labelledby="dsr-quotes-head">
+      <div className="dsr-panel-head">
+        <h2 id="dsr-quotes-head" className="dsr-panel-title">
+          Things They Actually Said
+        </h2>
+        <span className="dsr-panel-kicker">QUOTE STRIP • VERBATIM</span>
+      </div>
+
+      <div className="dsr-quote-strip">
+        {quotes.items.map((q) => (
+          <div key={q.id} className="dsr-quote-card">
+            <span className="dsr-quote-mark" aria-hidden>
+              &ldquo;
+            </span>
+            <textarea
+              className="dsr-quote-text"
+              rows={3}
+              value={q.text}
+              onChange={(e) => setField(q.id, { text: e.target.value })}
+              onBlur={onFlush}
+              placeholder="What they said, word for word"
+              maxLength={240}
+            />
+            <div className="dsr-quote-meta">
+              <input
+                className="dsr-quote-source"
+                value={q.source}
+                onChange={(e) => setField(q.id, { source: e.target.value })}
+                onBlur={onFlush}
+                placeholder="Where / when"
+                maxLength={60}
+              />
+              <input
+                className="dsr-quote-date"
+                type="date"
+                value={q.date}
+                onChange={(e) => setField(q.id, { date: e.target.value })}
+                onBlur={onFlush}
+              />
+            </div>
+            <button
+              type="button"
+              className="dsr-quote-x"
+              onClick={() => remove(q.id)}
+              aria-label="Remove this quote"
+            >
+              <X className="w-3 h-3" aria-hidden />
+            </button>
+          </div>
+        ))}
+
+        <button type="button" className="dsr-quote-add" onClick={addQuote}>
+          <Plus className="w-4 h-4" aria-hidden />
+          Pin a quote
+        </button>
+      </div>
+
+      {quotes.items.length === 0 && (
+        <p className="dsr-note">Nothing pinned yet. The first one is always the best one.</p>
+      )}
+    </section>
+  );
+}
+
+/* ============================================================================
+   7. DIMENSIONAL TRAVELOGUE
+   ========================================================================== */
+
+function Travelogue({
+  travelogue,
+  onChange,
+  onFlush,
+  onGlitch,
+}: {
+  travelogue: Travelogue;
+  onChange: (next: Travelogue | ((p: Travelogue) => Travelogue)) => void;
+  onFlush: () => void;
+  onGlitch: () => void;
+}) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const pendingPinId = useRef<string | null>(null);
+
+  const addPin = () => {
+    const id = uid("pin");
+    onChange((prev) => ({
+      items: [...prev.items, { id, place: "New place", date: "", note: "", photo: null }],
+    }));
+    onFlush();
+    setOpenId(id);
+    sfx.dialClick();
+  };
+
+  const setField = (id: string, patch: Partial<TravelPin>) =>
+    onChange((prev) => ({ items: prev.items.map((p) => (p.id === id ? { ...p, ...patch } : p)) }));
+
+  const removePin = (id: string) => {
+    onGlitch();
+    onChange((prev) => ({ items: prev.items.filter((p) => p.id !== id) }));
+    onFlush();
+    if (openId === id) setOpenId(null);
+  };
+
+  const pickPhoto = async (file: File | undefined) => {
+    const id = pendingPinId.current;
+    if (!file || !id) return;
+    setError(null);
+    if (!file.type.startsWith("image/")) {
+      setError("That needs to be an image.");
+      return;
+    }
+    if (file.size > MAX_PICK_BYTES) {
+      setError("Under " + formatBytes(MAX_PICK_BYTES) + ", please.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const prepared = await compressImage(file, { maxEdge: 900, targetBytes: 320_000 });
+      setField(id, { photo: prepared.dataUrl });
+      onFlush();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "That photo could not be filed.");
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  /* Scattered, not draggable - a stable position derived from the pin's own
+     id, same seeded technique the corkboard uses for a freshly-added
+     artifact's drop point. */
+  const posFor = (id: string) => {
+    const seed = hashString(id);
+    const angle = seeded(seed, 1) * Math.PI * 2;
+    const radius = 18 + seeded(seed, 2) * 74;
+    return { x: 50 + Math.cos(angle) * radius, y: 50 + Math.sin(angle) * radius };
+  };
+
+  const active = travelogue.items.find((p) => p.id === openId) ?? null;
+
+  return (
+    <section className="dsr-panel dsr-travelogue" aria-labelledby="dsr-travel-head">
+      <div className="dsr-panel-head">
+        <h2 id="dsr-travel-head" className="dsr-panel-title">
+          Dimensional Travelogue
+        </h2>
+        <span className="dsr-panel-kicker">EVERYWHERE WE&apos;VE BEEN</span>
+      </div>
+
+      <div className="dsr-radar-wrap">
+        <RadarFace className="dsr-radar-face" />
+        {travelogue.items.map((p) => {
+          const pos = posFor(p.id);
+          return (
+            <button
+              key={p.id}
+              type="button"
+              className={"dsr-radar-blip" + (openId === p.id ? " is-open" : "")}
+              style={{ left: pos.x + "%", top: pos.y + "%" }}
+              onClick={() => setOpenId((cur) => (cur === p.id ? null : p.id))}
+              aria-label={p.place || "Unnamed place"}
+            >
+              <span className="dsr-radar-blip-dot" aria-hidden />
+              <span className="dsr-radar-blip-label">{p.place || "Unnamed"}</span>
+            </button>
+          );
+        })}
+        <button type="button" className="dsr-radar-add" onClick={addPin} aria-label="Add a place">
+          <Plus className="w-4 h-4" aria-hidden />
+        </button>
+      </div>
+
+      {active && (
+        <div className="dsr-travel-detail">
+          <div className="dsr-travel-detail-row">
+            <input
+              className="dsr-input"
+              value={active.place}
+              onChange={(e) => setField(active.id, { place: e.target.value })}
+              onBlur={onFlush}
+              placeholder="Where"
+              maxLength={60}
+            />
+            <input
+              className="dsr-input"
+              type="date"
+              value={active.date}
+              onChange={(e) => setField(active.id, { date: e.target.value })}
+              onBlur={onFlush}
+            />
+          </div>
+          <textarea
+            className="dsr-textarea"
+            rows={3}
+            value={active.note}
+            onChange={(e) => setField(active.id, { note: e.target.value })}
+            onBlur={onFlush}
+            placeholder="What happened there"
+            maxLength={400}
+          />
+          <div className="dsr-travel-photo-row">
+            <button
+              type="button"
+              className="dsr-tool-btn"
+              onClick={() => {
+                pendingPinId.current = active.id;
+                fileRef.current?.click();
+              }}
+              disabled={busy}
+            >
+              <ImageIcon className="w-3.5 h-3.5" aria-hidden />
+              {active.photo ? "Replace photo" : busy ? "Developing…" : "Add photo"}
+            </button>
+            {active.photo && <img src={active.photo} alt="" className="dsr-travel-photo" />}
+            <button
+              type="button"
+              className="dsr-tool-btn dsr-travel-remove"
+              onClick={() => removePin(active.id)}
+            >
+              <Trash2 className="w-3.5 h-3.5" aria-hidden />
+              Remove
+            </button>
+          </div>
+          {error && <p className="dsr-error">{error}</p>}
+        </div>
+      )}
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        className="sr-only"
+        onChange={(e) => void pickPhoto(e.target.files?.[0])}
+      />
+
+      {travelogue.items.length === 0 && (
+        <p className="dsr-note">No pins on the dish yet. Add the first place.</p>
+      )}
+    </section>
+  );
+}
+
+/* ============================================================================
+   8. WEB-SHOOTER SIZING BLUEPRINT
+   ========================================================================== */
+
+function SizingBlueprint({
+  sizing,
+  onChange,
+  onFlush,
+}: {
+  sizing: SizingBlueprintData;
+  onChange: (next: SizingBlueprintData | ((p: SizingBlueprintData) => SizingBlueprintData)) => void;
+  onFlush: () => void;
+}) {
+  const [highlight, setHighlight] = useState<string | null>(null);
+
+  const setField = (id: string, patch: Partial<SizingField>) =>
+    onChange((prev) => ({ items: prev.items.map((f) => (f.id === id ? { ...f, ...patch } : f)) }));
+
+  const addField = () => {
+    onChange((prev) => ({ items: [...prev.items, { id: uid("size"), part: "", value: "", unit: "" }] }));
+    onFlush();
+  };
+
+  const removeField = (id: string) => {
+    onChange((prev) => ({ items: prev.items.filter((f) => f.id !== id) }));
+    onFlush();
+  };
+
+  return (
+    <section className="dsr-panel dsr-sizing" aria-labelledby="dsr-sizing-head">
+      <div className="dsr-panel-head">
+        <h2 id="dsr-sizing-head" className="dsr-panel-title">
+          Web-Shooter Sizing Blueprint
+        </h2>
+        <span className="dsr-panel-kicker">FOR WHEN YOU&apos;RE BUYING SOMETHING</span>
+      </div>
+
+      <div className="dsr-sizing-body">
+        <VectorFigure highlight={highlight} className="dsr-sizing-figure" />
+
+        <div className="dsr-sizing-fields">
+          {sizing.items.map((f) => (
+            <div
+              key={f.id}
+              className="dsr-sizing-field"
+              onFocus={() => setHighlight(f.part)}
+              onBlur={(e) => {
+                onFlush();
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) setHighlight(null);
+              }}
+            >
+              <input
+                className="dsr-field-label-input"
+                value={f.part}
+                onChange={(e) => setField(f.id, { part: e.target.value })}
+                placeholder="Measurement"
+                maxLength={30}
+              />
+              <div className="dsr-sizing-value-row">
+                <input
+                  className="dsr-input"
+                  value={f.value}
+                  onChange={(e) => setField(f.id, { value: e.target.value })}
+                  placeholder="Size"
+                  maxLength={20}
+                />
+                <input
+                  className="dsr-input dsr-sizing-unit"
+                  value={f.unit}
+                  onChange={(e) => setField(f.id, { unit: e.target.value })}
+                  placeholder="Unit"
+                  maxLength={12}
+                />
+                <button
+                  type="button"
+                  className="dsr-field-x"
+                  onClick={() => removeField(f.id)}
+                  aria-label={"Remove " + (f.part || "measurement")}
+                >
+                  <X className="w-3 h-3" aria-hidden />
+                </button>
+              </div>
+            </div>
+          ))}
+          <button type="button" className="dsr-field-add" onClick={addField}>
+            <Plus className="w-3.5 h-3.5" aria-hidden /> Add measurement
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ============================================================================
+   9. PET PEEVE / RED-FLAG INDEX
+   ========================================================================== */
+
+const PEEVE_SEVERITIES: { id: PeeveSeverity; label: string }[] = [
+  { id: "peeve", label: "Pet peeve" },
+  { id: "redflag", label: "Red flag" },
+  { id: "greenflag", label: "Green flag" },
+];
+
+function PeeveIndex({
+  peeves,
+  onChange,
+  onFlush,
+  onGlitch,
+}: {
+  peeves: PeeveIndexData;
+  onChange: (next: PeeveIndexData | ((p: PeeveIndexData) => PeeveIndexData)) => void;
+  onFlush: () => void;
+  onGlitch: () => void;
+}) {
+  const addItem = (severity: PeeveSeverity) => {
+    onChange((prev) => ({ items: [...prev.items, { id: uid("peeve"), text: "", severity }] }));
+    onFlush();
+  };
+
+  const setText = (id: string, text: string) =>
+    onChange((prev) => ({ items: prev.items.map((p) => (p.id === id ? { ...p, text } : p)) }));
+
+  const remove = (id: string) => {
+    onGlitch();
+    onChange((prev) => ({ items: prev.items.filter((p) => p.id !== id) }));
+    onFlush();
+  };
+
+  return (
+    <section className="dsr-panel dsr-peeves" aria-labelledby="dsr-peeve-head">
+      <div className="dsr-panel-head">
+        <h2 id="dsr-peeve-head" className="dsr-panel-title">
+          Pet Peeve &amp; Flag Index
+        </h2>
+        <span className="dsr-panel-kicker">READ BEFORE YOU STEP ON ONE</span>
+      </div>
+
+      <div className="dsr-peeve-add-row">
+        {PEEVE_SEVERITIES.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            className={"dsr-tool-btn dsr-peeve-add dsr-peeve-add-" + s.id}
+            onClick={() => addItem(s.id)}
+          >
+            <Plus className="w-3.5 h-3.5" aria-hidden />
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      <ul className="dsr-peeve-list">
+        {peeves.items.map((p) => (
+          <li key={p.id} className={"dsr-peeve-item dsr-peeve-" + p.severity}>
+            {p.severity === "redflag" && <HazardStripe className="dsr-peeve-hazard" />}
+            <span className="dsr-peeve-tag">{PEEVE_SEVERITIES.find((s) => s.id === p.severity)?.label}</span>
+            <textarea
+              className="dsr-peeve-text"
+              rows={2}
+              value={p.text}
+              onChange={(e) => setText(p.id, e.target.value)}
+              onBlur={onFlush}
+              placeholder="What it is, exactly"
+              maxLength={200}
+            />
+            <button
+              type="button"
+              className="dsr-field-x"
+              onClick={() => remove(p.id)}
+              aria-label="Remove this item"
+            >
+              <X className="w-3 h-3" aria-hidden />
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {peeves.items.length === 0 && (
+        <p className="dsr-note">Nothing catalogued yet. Add a peeve, a red flag, or a green one.</p>
+      )}
+    </section>
+  );
+}
+
+/* ============================================================================
+   10. "IN ANY UNIVERSE" TIME CAPSULE
+   ========================================================================== */
+
+function TimeCapsule({
+  capsule,
+  onChange,
+  onFlush,
+  onGlitch,
+}: {
+  capsule: TimeCapsuleData;
+  onChange: (next: TimeCapsuleData | ((p: TimeCapsuleData) => TimeCapsuleData)) => void;
+  onFlush: () => void;
+  onGlitch: () => void;
+}) {
+  const [composing, setComposing] = useState(false);
+  const [draftMessage, setDraftMessage] = useState("");
+  const [draftDate, setDraftDate] = useState("");
+  const [draftPhoto, setDraftPhoto] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [breaking, setBreaking] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  /* `Date.now()` cannot be called during render (react-hooks/purity) - a
+     ticking "now" kept in state, same shape as ClockScreen/CountdownsScreen's
+     live counters, is what lets a capsule flip from sealed to unlockable
+     while the page is open without reading the clock mid-render. A capsule
+     unlocking a few seconds late is invisible; 30s is coarse on purpose. */
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  /* sealedUntil is a bare "YYYY-MM-DD" from <input type="date">. A date-only
+     string parses as UTC midnight, not local midnight - appending a bare
+     time makes the Date constructor read it as local instead, so the seal
+     lifts at local midnight on the chosen day regardless of timezone. */
+  const isSealed = (entry: CapsuleEntry) =>
+    !!entry.sealedUntil && new Date(entry.sealedUntil + "T00:00:00").getTime() > now;
+
+  const pickPhoto = async (file: File | undefined) => {
+    if (!file) return;
+    setError(null);
+    if (!file.type.startsWith("image/")) {
+      setError("That needs to be an image.");
+      return;
+    }
+    if (file.size > MAX_PICK_BYTES) {
+      setError("Under " + formatBytes(MAX_PICK_BYTES) + ", please.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const prepared = await compressImage(file, { maxEdge: 900, targetBytes: 320_000 });
+      setDraftPhoto(prepared.dataUrl);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "That photo could not be filed.");
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const commitCapsule = () => {
+    if (!draftMessage.trim()) return;
+    onChange((prev) => ({
+      items: [
+        ...prev.items,
+        {
+          id: uid("capsule"),
+          message: draftMessage.trim(),
+          photo: draftPhoto,
+          sealedUntil: draftDate,
+          opened: !draftDate,
+        },
+      ],
+    }));
+    onFlush();
+    sfx.stamp();
+    setComposing(false);
+    setDraftMessage("");
+    setDraftDate("");
+    setDraftPhoto(null);
+  };
+
+  /* The "web-slice ritual" - breaking a seal snaps a web strand (the same
+     sound the corkboard uses for exactly that) and clip-path tears the sealed
+     face away before the message is committed as opened. */
+  const breakSeal = (id: string) => {
+    sfx.webSnap();
+    setBreaking(id);
+    window.setTimeout(() => {
+      onChange((prev) => ({ items: prev.items.map((c) => (c.id === id ? { ...c, opened: true } : c)) }));
+      onFlush();
+      setBreaking(null);
+    }, 500);
+  };
+
+  const removeCapsule = (id: string) => {
+    onGlitch();
+    onChange((prev) => ({ items: prev.items.filter((c) => c.id !== id) }));
+    onFlush();
+  };
+
+  return (
+    <section className="dsr-panel dsr-capsule" aria-labelledby="dsr-capsule-head">
+      <div className="dsr-panel-head">
+        <h2 id="dsr-capsule-head" className="dsr-panel-title">
+          In Any Universe
+        </h2>
+        <span className="dsr-panel-kicker">TIME CAPSULE • SEAL IT SHUT</span>
+      </div>
+
+      <div className="dsr-capsule-grid">
+        {capsule.items.map((c) => {
+          const sealed = isSealed(c);
+          return (
+            <div
+              key={c.id}
+              className={"dsr-capsule-card" + (sealed ? " is-sealed" : "") + (breaking === c.id ? " is-breaking" : "")}
+            >
+              {sealed ? (
+                <button
+                  type="button"
+                  className="dsr-capsule-sealed-face"
+                  disabled
+                  aria-label={"Sealed until " + c.sealedUntil}
+                >
+                  <SpiderMark className="dsr-capsule-web" size={30} />
+                  <span>Sealed until {c.sealedUntil}</span>
+                </button>
+              ) : !c.opened ? (
+                <button type="button" className="dsr-capsule-sealed-face dsr-capsule-ready" onClick={() => breakSeal(c.id)}>
+                  <SpiderMark className="dsr-capsule-web" size={30} />
+                  <span>Ready. Tap to break the seal.</span>
+                </button>
+              ) : (
+                <div className="dsr-capsule-open">
+                  {c.photo && <img src={c.photo} alt="" className="dsr-capsule-photo" />}
+                  <p className="dsr-capsule-message">{c.message}</p>
+                  {c.sealedUntil && <span className="dsr-capsule-unsealed-note">Opened after {c.sealedUntil}</span>}
+                </div>
+              )}
+              <button
+                type="button"
+                className="dsr-capsule-x"
+                onClick={() => removeCapsule(c.id)}
+                aria-label="Discard this capsule"
+              >
+                <Trash2 className="w-3 h-3" aria-hidden />
+              </button>
+            </div>
+          );
+        })}
+
+        {!composing ? (
+          <button type="button" className="dsr-capsule-new" onClick={() => setComposing(true)}>
+            <Plus className="w-4 h-4" aria-hidden />
+            Seal something away
+          </button>
+        ) : (
+          <div className="dsr-capsule-composer">
+            <textarea
+              className="dsr-textarea"
+              rows={3}
+              value={draftMessage}
+              onChange={(e) => setDraftMessage(e.target.value)}
+              placeholder="Something for whoever opens this"
+              maxLength={500}
+              autoFocus
+            />
+            <div className="dsr-capsule-composer-row">
+              <label className="dsr-field-label" htmlFor="dsr-capsule-date">
+                Open on / after
+              </label>
+              <input
+                id="dsr-capsule-date"
+                className="dsr-input"
+                type="date"
+                value={draftDate}
+                onChange={(e) => setDraftDate(e.target.value)}
+              />
+            </div>
+            <div className="dsr-capsule-composer-row">
+              <button type="button" className="dsr-tool-btn" onClick={() => fileRef.current?.click()} disabled={busy}>
+                <ImageIcon className="w-3.5 h-3.5" aria-hidden />
+                {draftPhoto ? "Replace photo" : busy ? "Developing…" : "Add a photo"}
+              </button>
+              {draftPhoto && <img src={draftPhoto} alt="" className="dsr-travel-photo" />}
+            </div>
+            {error && <p className="dsr-error">{error}</p>}
+            <div className="dsr-capsule-composer-actions">
+              <button type="button" className="dsr-tool-btn" onClick={commitCapsule} disabled={!draftMessage.trim()}>
+                Seal it
+              </button>
+              <button
+                type="button"
+                className="dsr-tool-btn"
+                onClick={() => {
+                  setComposing(false);
+                  setDraftMessage("");
+                  setDraftDate("");
+                  setDraftPhoto(null);
+                  setError(null);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        className="sr-only"
+        onChange={(e) => void pickPhoto(e.target.files?.[0])}
+      />
+    </section>
+  );
+}
+
+/* ============================================================================
    THE CHAPTER
    ========================================================================== */
 
@@ -1666,11 +2733,16 @@ interface DossierScreenProps {
 }
 
 export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
-  const identity = usePanel<Identity>(userId, "identity", EMPTY_IDENTITY);
+  const identity = usePanel<Identity>(userId, "identity", EMPTY_IDENTITY, 900, migrateIdentity);
   const vibe = usePanel<Vibe>(userId, "vibe", EMPTY_VIBE);
   const corkboard = usePanel<Corkboard>(userId, "corkboard", EMPTY_CORKBOARD, 700);
   const quirks = usePanel<Quirks>(userId, "quirks", EMPTY_QUIRKS);
   const protocols = usePanel<Protocols>(userId, "protocols", EMPTY_PROTOCOLS);
+  const quoteStrip = usePanel<QuoteStripData>(userId, "quotes", EMPTY_QUOTE_STRIP);
+  const travelogue = usePanel<Travelogue>(userId, "travelogue", EMPTY_TRAVELOGUE, 700);
+  const sizing = usePanel<SizingBlueprintData>(userId, "sizing", EMPTY_SIZING);
+  const peeveIndex = usePanel<PeeveIndexData>(userId, "peeves", EMPTY_PEEVE_INDEX);
+  const timeCapsule = usePanel<TimeCapsuleData>(userId, "capsule", EMPTY_TIME_CAPSULE);
 
   const rootRef = useRef<HTMLElement>(null);
   const [muted, setMutedState] = useState(false);
@@ -1760,6 +2832,10 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
   }, []);
 
   const beginHold = () => {
+    /* whoosh() only fires 3s from now, inside the timeout below - priming the
+       context synchronously here, inside the real pointerdown gesture, is
+       what lets that delayed sound actually play on mobile Safari. */
+    sfx.primeAudio();
     const started = performance.now();
     const tick = () => {
       const p = Math.min(1, (performance.now() - started) / 3000);
@@ -1857,18 +2933,50 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
     corkboard.flush();
     quirks.flush();
     protocols.flush();
+    quoteStrip.flush();
+    travelogue.flush();
+    sizing.flush();
+    peeveIndex.flush();
+    timeCapsule.flush();
     sfx.stopAmbient();
     onBack();
   };
 
   const loading =
-    identity.loading || vibe.loading || corkboard.loading || quirks.loading || protocols.loading;
+    identity.loading ||
+    vibe.loading ||
+    corkboard.loading ||
+    quirks.loading ||
+    protocols.loading ||
+    quoteStrip.loading ||
+    travelogue.loading ||
+    sizing.loading ||
+    peeveIndex.loading ||
+    timeCapsule.loading;
 
   const panelError =
-    identity.error ?? vibe.error ?? corkboard.error ?? quirks.error ?? protocols.error;
+    identity.error ??
+    vibe.error ??
+    corkboard.error ??
+    quirks.error ??
+    protocols.error ??
+    quoteStrip.error ??
+    travelogue.error ??
+    sizing.error ??
+    peeveIndex.error ??
+    timeCapsule.error;
 
   const busySaving =
-    identity.saving || vibe.saving || corkboard.saving || quirks.saving || protocols.saving;
+    identity.saving ||
+    vibe.saving ||
+    corkboard.saving ||
+    quirks.saving ||
+    protocols.saving ||
+    quoteStrip.saving ||
+    travelogue.saving ||
+    sizing.saving ||
+    peeveIndex.saving ||
+    timeCapsule.saving;
 
   return (
     <main
@@ -1960,10 +3068,35 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
             onFlush={protocols.flush}
           />
 
-          <p className="dsr-more">
-            Sections 6&ndash;10 &mdash; the quote strip, the travelogue, the sizing schematic, the
-            threat index and the time capsule &mdash; are still being written up.
-          </p>
+          <QuoteStrip
+            quotes={quoteStrip.value}
+            onChange={quoteStrip.update}
+            onFlush={quoteStrip.flush}
+            onGlitch={glitch}
+          />
+
+          <Travelogue
+            travelogue={travelogue.value}
+            onChange={travelogue.update}
+            onFlush={travelogue.flush}
+            onGlitch={glitch}
+          />
+
+          <SizingBlueprint sizing={sizing.value} onChange={sizing.update} onFlush={sizing.flush} />
+
+          <PeeveIndex
+            peeves={peeveIndex.value}
+            onChange={peeveIndex.update}
+            onFlush={peeveIndex.flush}
+            onGlitch={glitch}
+          />
+
+          <TimeCapsule
+            capsule={timeCapsule.value}
+            onChange={timeCapsule.update}
+            onFlush={timeCapsule.flush}
+            onGlitch={glitch}
+          />
         </div>
       )}
 
@@ -2170,7 +3303,7 @@ const DOSSIER_CSS = `
   color: var(--dsr-dim);
 }
 
-.dsr-loading, .dsr-more {
+.dsr-loading {
   position: relative;
   z-index: 10;
   text-align: center;
@@ -2465,12 +3598,63 @@ const DOSSIER_CSS = `
   animation: dsr-scanline 430ms linear both;
 }
 
-.dsr-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 0; }
+.dsr-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 0; }
 .dsr-field { margin: 0; }
-.dsr-field dd { margin: 0; }
 
-.dsr-back-fields { display: grid; gap: 4px; }
-.dsr-back-fields .dsr-field-label { margin-top: 8px; }
+.dsr-field-headrow { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.dsr-field-label-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed var(--dsr-line);
+  padding: 0 0 2px;
+  font-family: var(--dsr-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--dsr-dim);
+  outline: none;
+}
+.dsr-field-label-input:focus { color: var(--dsr-text); border-bottom-color: var(--dsr-accent); }
+.dsr-field-x {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 5px;
+  border: 1px solid var(--dsr-line);
+  background: rgba(21, 27, 35, .7);
+  color: var(--dsr-dim);
+  cursor: pointer;
+}
+.dsr-field-x:hover { color: var(--dsr-accent); border-color: var(--dsr-accent); }
+@media (hover: none) { .dsr-field-x { opacity: .9; } }
+
+.dsr-field-add {
+  grid-column: 1 / -1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: rgba(21, 27, 35, .55);
+  border: 1.5px dashed var(--dsr-line);
+  border-radius: 8px;
+  color: var(--dsr-dim);
+  font-family: var(--dsr-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  cursor: pointer;
+}
+.dsr-field-add:hover { color: var(--dsr-accent); border-color: var(--dsr-accent); }
+
+.dsr-back-fields { display: grid; gap: 10px; }
+.dsr-back-field { display: grid; }
 .dsr-flip-back { margin-top: 12px; }
 
 /* ==================================================== 2. SPIDEY-SENSE ==== */
@@ -2693,6 +3877,95 @@ const DOSSIER_CSS = `
 .dsr-artifact:focus-within .dsr-artifact-x { opacity: 1; }
 @media (hover: none) { .dsr-artifact-x { opacity: 1; } }
 
+.dsr-artifact-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.dsr-artifact-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 5px 1px 7px;
+  background: rgba(0, 0, 0, .08);
+  border: 1px solid rgba(0, 0, 0, .2);
+  border-radius: 999px;
+  color: #2A2119;
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+.dsr-artifact-tag button { display: inline-flex; color: rgba(0, 0, 0, .45); cursor: pointer; }
+.dsr-artifact-tag button:hover { color: var(--dsr-magenta); }
+
+.dsr-artifact-notes-btn {
+  position: absolute;
+  top: -9px;
+  left: -9px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  background: #14100F;
+  border: 1.5px solid var(--dsr-paper);
+  border-radius: 50%;
+  color: #9AD1FF;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 130ms ease;
+}
+.dsr-artifact:focus-within .dsr-artifact-notes-btn,
+.dsr-artifact-notes-btn.is-open { opacity: 1; }
+@media (hover: none) { .dsr-artifact-notes-btn { opacity: 1; } }
+
+.dsr-artifact-notes {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px dashed rgba(0, 0, 0, .25);
+  display: grid;
+  gap: 6px;
+  cursor: default;
+}
+.dsr-artifact-notes-text {
+  width: 100%;
+  resize: vertical;
+  padding: 4px 5px;
+  background: rgba(255, 255, 255, .55);
+  border: 1px solid rgba(0, 0, 0, .2);
+  border-radius: 4px;
+  color: #2A2119;
+  font-family: var(--dsr-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  outline: none;
+}
+.dsr-artifact-notes-text:focus { border-color: var(--dsr-magenta); }
+.dsr-artifact-tag-row { display: flex; gap: 4px; }
+.dsr-artifact-tag-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 5px;
+  background: rgba(255, 255, 255, .55);
+  border: 1px solid rgba(0, 0, 0, .2);
+  border-radius: 4px;
+  color: #2A2119;
+  font-family: var(--dsr-mono);
+  font-size: 10px;
+  outline: none;
+}
+.dsr-artifact-tag-input:focus { border-color: var(--dsr-magenta); }
+.dsr-artifact-tag-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  background: rgba(0, 0, 0, .08);
+  border: 1px solid rgba(0, 0, 0, .2);
+  border-radius: 4px;
+  color: #2A2119;
+  cursor: pointer;
+}
+.dsr-artifact-tag-add:hover { color: var(--dsr-magenta); border-color: var(--dsr-magenta); }
+
 .dsr-cork-empty {
   position: absolute;
   left: 50%;
@@ -2780,7 +4053,7 @@ const DOSSIER_CSS = `
 .dsr-pad-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .dsr-select { width: auto; min-width: 140px; }
 
-.dsr-notes { display: grid; grid-template-columns: repeat(auto-fill, minmax(178px, 1fr)); gap: 16px; margin: 0; padding: 0; list-style: none; }
+.dsr-notes { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 16px; margin: 0; padding: 0; list-style: none; }
 
 .dsr-note-sheet {
   position: relative;
@@ -2873,6 +4146,7 @@ const DOSSIER_CSS = `
   translate: 0 2px;
 }
 .dsr-tab[data-on="true"] { background: var(--dsr-manila); color: #1C1712; translate: 0 0; }
+.dsr-tab-add { padding: 7px 10px; }
 
 .dsr-sheet {
   position: relative;
@@ -2892,6 +4166,56 @@ const DOSSIER_CSS = `
   font-size: 1.25rem;
   color: #1C1712;
 }
+
+.dsr-sheet-empty {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 32px 16px;
+  text-align: center;
+  color: rgba(28, 23, 18, .72);
+  font-family: var(--dsr-mono);
+  font-size: 12px;
+}
+
+.dsr-sheet-headrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+.dsr-sheet-heading { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.dsr-tab-label-input {
+  width: fit-content;
+  max-width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed rgba(28, 23, 18, .3);
+  padding: 0 0 2px;
+  font-family: var(--dsr-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  color: rgba(28, 23, 18, .6);
+  outline: none;
+}
+.dsr-tab-label-input:focus { border-bottom-color: var(--dsr-magenta); color: #1C1712; }
+.dsr-sheet-title-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed rgba(28, 23, 18, 0);
+  padding: 0 0 2px;
+  font-family: 'Permanent Marker', cursive;
+  font-size: 1.25rem;
+  color: #1C1712;
+  outline: none;
+}
+.dsr-sheet-title-input:focus { border-bottom-color: rgba(28, 23, 18, .3); }
+.dsr-proto-delete { flex-shrink: 0; background: rgba(28, 23, 18, .86); color: var(--dsr-manila); border-color: #6B5A38; }
+.dsr-proto-delete.is-armed { background: var(--dsr-magenta); border-color: var(--dsr-magenta); color: #1C1712; }
 
 .dsr-steps { display: grid; gap: 14px; margin: 0 0 12px; padding-left: 20px; }
 .dsr-step { position: relative; }
@@ -2953,6 +4277,23 @@ const DOSSIER_CSS = `
 .dsr-step-add { background: rgba(28,23,18,.86); color: var(--dsr-manila); border-color: #6B5A38; }
 
 .dsr-stamp-mark { position: absolute; translate: -50% -50%; pointer-events: none; mix-blend-mode: multiply; }
+.dsr-stamp-remove {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  background: #1C1712;
+  border: 1.5px solid var(--dsr-manila);
+  border-radius: 50%;
+  color: #FF9AA2;
+  pointer-events: auto;
+  mix-blend-mode: normal;
+  cursor: pointer;
+}
+.dsr-stamp-remove:hover { color: #FF5C6C; }
 
 .dsr-splatter { position: absolute; translate: -50% -50%; pointer-events: none; }
 .dsr-splat-dot {
@@ -2980,6 +4321,291 @@ const DOSSIER_CSS = `
 }
 .dsr-stamp-pick:hover { transform: translateY(-2px) rotate(-1.5deg); border-color: var(--dsr-accent); }
 .dsr-stamp-pick[data-on="true"] { border-color: var(--dsr-magenta); box-shadow: 0 0 18px -4px var(--dsr-magenta); }
+
+/* =================================================== 6. QUOTE STRIP ====== */
+
+.dsr-quote-strip { display: flex; gap: 16px; overflow-x: auto; padding: 6px 4px 16px; scroll-snap-type: x proximity; }
+.dsr-quote-card {
+  position: relative;
+  flex: 0 0 220px;
+  scroll-snap-align: start;
+  padding: 20px 14px 14px;
+  background: var(--dsr-paper);
+  border: 1px solid rgba(0, 0, 0, .35);
+  border-radius: 4px;
+  box-shadow: 3px 5px 10px rgba(0, 0, 0, .4);
+  color: #2A2119;
+  rotate: -1deg;
+}
+.dsr-quote-card:nth-child(even) { rotate: 1deg; }
+.dsr-quote-mark {
+  position: absolute;
+  top: -8px;
+  left: 8px;
+  font-family: 'Permanent Marker', cursive;
+  font-size: 2.4rem;
+  color: rgba(0, 0, 0, .18);
+  line-height: 1;
+}
+.dsr-quote-text {
+  width: 100%;
+  min-height: 70px;
+  resize: vertical;
+  background: transparent;
+  border: none;
+  color: #2A2119;
+  font-family: 'Caveat', cursive;
+  font-size: 17px;
+  line-height: 1.3;
+  outline: none;
+}
+.dsr-quote-meta { display: grid; gap: 4px; margin-top: 6px; }
+.dsr-quote-source, .dsr-quote-date {
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed rgba(0, 0, 0, .25);
+  padding: 2px 0;
+  color: #5A4A3A;
+  font-family: var(--dsr-mono);
+  font-size: 10px;
+  outline: none;
+}
+.dsr-quote-source:focus, .dsr-quote-date:focus { border-bottom-color: var(--dsr-magenta); }
+.dsr-quote-x {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  background: #14100F;
+  border: 1.5px solid var(--dsr-paper);
+  border-radius: 50%;
+  color: #FF9AA2;
+  cursor: pointer;
+}
+.dsr-quote-x:hover { color: #FF5C6C; }
+.dsr-quote-add {
+  flex: 0 0 140px;
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  border: 1.5px dashed var(--dsr-line);
+  border-radius: 6px;
+  background: rgba(21, 27, 35, .55);
+  color: var(--dsr-dim);
+  font-family: var(--dsr-mono);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dsr-quote-add:hover { color: var(--dsr-accent); border-color: var(--dsr-accent); }
+
+/* ============================================ 7. DIMENSIONAL TRAVELOGUE == */
+
+.dsr-radar-wrap { position: relative; width: min(100%, 420px); aspect-ratio: 1; margin: 0 auto 18px; }
+.dsr-radar-face { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 50%; }
+.dsr-radar-blip {
+  position: absolute;
+  translate: -50% -50%;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+}
+.dsr-radar-blip-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #5FE7D8;
+  box-shadow: 0 0 0 4px rgba(95, 231, 216, .22), 0 0 10px rgba(95, 231, 216, .7);
+}
+.dsr-radar-blip.is-open .dsr-radar-blip-dot {
+  background: var(--dsr-accent);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--dsr-accent) 30%, transparent);
+}
+.dsr-radar-blip-label {
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  color: #B7EFE9;
+  background: rgba(6, 20, 24, .75);
+  padding: 1px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dsr-radar-add {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(6, 20, 24, .85);
+  border: 1.5px solid #2E8B8F;
+  color: #5FE7D8;
+  cursor: pointer;
+}
+.dsr-radar-add:hover { border-color: #5FE7D8; }
+
+.dsr-travel-detail { display: grid; gap: 10px; padding-top: 14px; border-top: 1px dashed var(--dsr-line); }
+.dsr-travel-detail-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.dsr-travel-photo-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dsr-travel-photo { width: 54px; height: 54px; object-fit: cover; border-radius: 6px; border: 1.5px solid var(--dsr-line); }
+.dsr-travel-remove { margin-left: auto; }
+
+/* ======================================= 8. WEB-SHOOTER SIZING BLUEPRINT = */
+
+.dsr-sizing-body { display: grid; grid-template-columns: 1fr; gap: 20px; align-items: start; }
+@media (min-width: 640px) { .dsr-sizing-body { grid-template-columns: 140px 1fr; } }
+.dsr-sizing-figure { width: 100%; max-width: 140px; margin: 0 auto; }
+.dsr-sizing-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; align-content: start; }
+.dsr-sizing-field { display: grid; gap: 4px; }
+.dsr-sizing-value-row { display: flex; gap: 6px; align-items: center; }
+.dsr-sizing-value-row .dsr-input { min-width: 0; }
+.dsr-sizing-unit { max-width: 64px; flex-shrink: 0; }
+
+/* =========================================== 9. PET PEEVE / FLAG INDEX == */
+
+.dsr-peeve-add-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.dsr-peeve-add-peeve { border-color: #E8B71A; color: #E8B71A; }
+.dsr-peeve-add-redflag { border-color: #E23B4E; color: #FF8A97; }
+.dsr-peeve-add-greenflag { border-color: #35B37E; color: #8CE8C0; }
+
+.dsr-peeve-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.dsr-peeve-item {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px 10px;
+  padding: 10px 32px 10px 14px;
+  background: rgba(21, 27, 35, .75);
+  border: 1.5px solid var(--dsr-line);
+  border-left-width: 5px;
+  border-radius: 8px;
+}
+.dsr-peeve-peeve { border-left-color: #E8B71A; }
+.dsr-peeve-redflag { border-left-color: #E23B4E; }
+.dsr-peeve-greenflag { border-left-color: #35B37E; }
+.dsr-peeve-hazard { position: absolute; inset: 0; opacity: .08; border-radius: 7px; pointer-events: none; }
+.dsr-peeve-tag {
+  flex: 0 0 100%;
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--dsr-dim);
+}
+.dsr-peeve-text {
+  flex: 1;
+  min-width: 140px;
+  resize: vertical;
+  background: transparent;
+  border: none;
+  color: var(--dsr-text);
+  font-family: var(--dsr-mono);
+  font-size: 12px;
+  line-height: 1.4;
+  outline: none;
+}
+.dsr-peeve-item .dsr-field-x { position: absolute; top: 8px; right: 8px; }
+
+/* ======================================= 10. "IN ANY UNIVERSE" CAPSULE == */
+
+.dsr-capsule-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; }
+.dsr-capsule-card {
+  position: relative;
+  min-height: 150px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1.5px solid var(--dsr-line);
+  background: rgba(21, 27, 35, .8);
+}
+.dsr-capsule-sealed-face {
+  width: 100%;
+  height: 100%;
+  min-height: 150px;
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  padding: 14px;
+  background: radial-gradient(circle at 50% 30%, rgba(63, 224, 240, .14), transparent 70%);
+  border: none;
+  color: var(--dsr-dim);
+  font-family: var(--dsr-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-align: center;
+  cursor: default;
+}
+.dsr-capsule-ready { cursor: pointer; color: var(--dsr-accent); }
+.dsr-capsule-ready:hover { background: radial-gradient(circle at 50% 30%, rgba(63, 224, 240, .24), transparent 70%); }
+.dsr-capsule-web { opacity: .8; }
+.dsr-capsule-card.is-breaking .dsr-capsule-sealed-face { animation: dsr-capsule-tear 500ms ease forwards; }
+@keyframes dsr-capsule-tear {
+  0% { clip-path: inset(0 0 0 0); opacity: 1; }
+  100% { clip-path: inset(0 0 100% 0); opacity: 0; }
+}
+.dsr-capsule-open { padding: 12px; display: grid; gap: 8px; }
+.dsr-capsule-photo { width: 100%; height: 90px; object-fit: cover; border-radius: 6px; }
+.dsr-capsule-message { margin: 0; font-family: 'Caveat', cursive; font-size: 16px; line-height: 1.35; color: var(--dsr-text); }
+.dsr-capsule-unsealed-note { font-family: var(--dsr-mono); font-size: 8.5px; color: var(--dsr-dim); }
+.dsr-capsule-x {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  background: rgba(0, 0, 0, .5);
+  border: 1px solid var(--dsr-line);
+  border-radius: 50%;
+  color: var(--dsr-dim);
+  cursor: pointer;
+}
+.dsr-capsule-x:hover { color: var(--dsr-accent); }
+@media (hover: none) { .dsr-capsule-x { opacity: 1; } }
+
+.dsr-capsule-new {
+  min-height: 150px;
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  border: 1.5px dashed var(--dsr-line);
+  border-radius: 10px;
+  background: rgba(21, 27, 35, .4);
+  color: var(--dsr-dim);
+  font-family: var(--dsr-mono);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dsr-capsule-new:hover { color: var(--dsr-accent); border-color: var(--dsr-accent); }
+
+.dsr-capsule-composer {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 10px;
+  background: rgba(21, 27, 35, .85);
+}
+.dsr-capsule-composer-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dsr-capsule-composer-actions { display: flex; gap: 8px; }
 
 /* ================================================ ATMOSPHERE / EGGS ====== */
 

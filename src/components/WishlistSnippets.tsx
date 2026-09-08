@@ -108,6 +108,11 @@ export default function WishlistSnippets({
           100% { transform: scale(1) rotate(-8deg); opacity: 0; }
         }
         .wsn-bam-flash { animation: wsn-bam-flash 0.35s ease-out forwards; }
+        .wl-snippet-delete { opacity: 0; }
+        .group:hover .wl-snippet-delete { opacity: 1; }
+        @media (hover: none) {
+          .wl-snippet-delete { opacity: 1; }
+        }
       `}</style>
 
       <p className="font-marker text-2xl text-[#7D2834] text-center mb-1">Field Notes</p>
@@ -115,15 +120,19 @@ export default function WishlistSnippets({
         Log a clue the moment you notice it
       </p>
 
-      <div className="relative flex items-center gap-2 mb-6">
-        <input
+      <div className="relative flex items-start gap-2 mb-6">
+        <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder="They mentioned their charger keeps dying…"
           maxLength={200}
-          className="flex-1 bg-white border-2 border-[#261D24]/30 focus:border-[#261D24] outline-none px-3 py-2 font-handwriting text-lg text-[#1A0D10] rounded"
+          rows={2}
+          className="flex-1 bg-white border-2 border-[#261D24]/30 focus:border-[#261D24] focus:outline-none px-3 py-2 font-handwriting text-lg text-[#1A0D10] rounded resize-none"
           onKeyDown={(e) => {
-            if (e.key === "Enter") runLog("web");
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              runLog("web");
+            }
           }}
         />
         <button
@@ -198,7 +207,7 @@ export default function WishlistSnippets({
                 type="button"
                 onClick={() => runDelete(s.id)}
                 aria-label="Delete note"
-                className="opacity-0 group-hover:opacity-100 text-stone-400 hover:text-[#7D2834] transition cursor-pointer shrink-0"
+                className="wl-snippet-delete text-stone-400 hover:text-[#7D2834] transition cursor-pointer shrink-0"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>

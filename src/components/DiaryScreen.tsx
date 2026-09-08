@@ -2525,7 +2525,16 @@ const DIARY_CSS = `
 }
 
 @media (min-width: 1080px) {
-  .dy-write { grid-template-columns: minmax(0, 1fr) 340px; gap: 34px; }
+  /* Pin the desk in place: the write view gets a viewport-tied height (170px
+     covers .dy-shell's top padding plus the .dy-header block above it) and
+     clips at that box, so only .dy-ticket's own overflow scrolls, never the
+     typewriter itself. */
+  .dy-write {
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 34px;
+    height: calc(100svh - 170px);
+    overflow: hidden;
+  }
 }
 
 .dy-desk { position: relative; padding-bottom: 8px; }
@@ -2656,6 +2665,16 @@ const DIARY_CSS = `
   padding: 12px 14px;
 }
 
+@media (min-width: 1080px) {
+  /* A long entry (or a manual vertical resize-drag) should scroll within the
+     writing surface itself, not grow .dy-desk past the pinned .dy-write
+     height above and push the typewriter art out of its clipped box. */
+  .dy-body-input {
+    max-height: 320px;
+    overflow-y: auto;
+  }
+}
+
 .dy-inline-error {
   margin: 6px 0 14px;
   font-family: var(--dy-type);
@@ -2710,6 +2729,15 @@ const DIARY_CSS = `
   box-shadow: 8px 9px 0 rgba(6, 3, 4, 0.75);
   padding: 30px 20px 22px;
   transform: rotate(0.7deg);
+}
+
+@media (min-width: 1080px) {
+  /* The one pane allowed to scroll: bounded to the same height .dy-write is
+     clipped to, so the desk/typewriter beside it never moves. */
+  .dy-ticket {
+    height: calc(100svh - 170px);
+    overflow-y: auto;
+  }
 }
 
 .dy-clip-bar {

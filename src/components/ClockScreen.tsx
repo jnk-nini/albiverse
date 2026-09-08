@@ -31,6 +31,7 @@ interface TimeBreakdown {
   hours: number;
   minutes: number;
   seconds: number;
+  isUpcoming: boolean;
 }
 
 export default function ClockScreen({
@@ -53,6 +54,7 @@ export default function ClockScreen({
     hours: 0,
     minutes: 0,
     seconds: 0,
+    isUpcoming: false,
   });
 
   const [isEditing, setIsEditing] = useState(false);
@@ -96,12 +98,22 @@ export default function ClockScreen({
       const start = new Date(fullTimestamp);
       const now = new Date();
 
-      let years = now.getFullYear() - start.getFullYear();
-      let months = now.getMonth() - start.getMonth();
-      let days = now.getDate() - start.getDate();
-      let hours = now.getHours() - start.getHours();
-      let minutes = now.getMinutes() - start.getMinutes();
-      let seconds = now.getSeconds() - start.getSeconds();
+      // The anniversary can be set in the future (not canon yet). Diffing
+      // start-now unconditionally assumes start is always in the past, which
+      // sends days/months negative and makes the borrow-a-month-below wrap
+      // around into a bogus "11 months" instead of counting down to it - so
+      // always diff the earlier date from the later one, and remember which
+      // direction it went.
+      const isUpcoming = start.getTime() > now.getTime();
+      const earlier = isUpcoming ? now : start;
+      const later = isUpcoming ? start : now;
+
+      let years = later.getFullYear() - earlier.getFullYear();
+      let months = later.getMonth() - earlier.getMonth();
+      let days = later.getDate() - earlier.getDate();
+      let hours = later.getHours() - earlier.getHours();
+      let minutes = later.getMinutes() - earlier.getMinutes();
+      let seconds = later.getSeconds() - earlier.getSeconds();
 
       if (seconds < 0) {
         seconds += 60;
@@ -116,7 +128,7 @@ export default function ClockScreen({
         days -= 1;
       }
       if (days < 0) {
-        const prevMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+        const prevMonth = new Date(later.getFullYear(), later.getMonth(), 0);
         days += prevMonth.getDate();
         months -= 1;
       }
@@ -132,6 +144,7 @@ export default function ClockScreen({
         hours: Math.max(0, hours),
         minutes: Math.max(0, minutes),
         seconds: Math.max(0, seconds),
+        isUpcoming,
       });
     };
 
@@ -160,7 +173,11 @@ export default function ClockScreen({
     setError(null);
 
     try {
-      const isoTimestamp = new Date(anniversaryDate).toISOString();
+      // anniversaryDate is a plain "YYYY-MM-DD" from <input type="date">.
+      // new Date("YYYY-MM-DD") parses that as UTC midnight, not local midnight -
+      // appending a bare time makes the Date constructor treat it as local
+      // instead, so the picked calendar day survives regardless of timezone.
+      const isoTimestamp = new Date(`${anniversaryDate}T00:00:00`).toISOString();
       const { error: updateErr } = await supabase
         .from("couples")
         .update({ anniversary_timestamp: isoTimestamp })
@@ -310,6 +327,12 @@ export default function ClockScreen({
               <div className="my-4 p-3 rounded-lg bg-[#5A2029] text-[#F2E6D2] text-xs font-mono flex items-center gap-2 border-2 border-[#261D24] shadow-[3px_3px_0_#261D24]">
                 <AlertCircle className="w-4 h-4 shrink-0" />
                 <span>{error}</span>
+              </div>
+            )}
+
+            {timeUnits.isUpcoming && (
+              <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#EAD9A9] border-2 border-[#261D24] font-mono text-[10px] font-black uppercase tracking-widest text-[#5A4A1F] shadow-[2px_2px_0_#261D24]">
+                <Sparkles className="w-3 h-3" /> Not canon yet — counting down
               </div>
             )}
 

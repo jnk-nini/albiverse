@@ -117,6 +117,14 @@ interface MixtapePlayerApi {
   /* SoundtrackScreen calls this with a ref while its player view is mounted,
      and with null on unmount. See file header. */
   registerVisualSlot: (node: HTMLDivElement | null) => void;
+  /* Builds the YouTube iframe player eagerly, before any track is actually
+     picked. Safe to call repeatedly - ensureYtPlayer itself no-ops once a
+     player exists or is already building. SoundtrackScreen calls this as
+     soon as the board mounts with a YouTube track in view, so the player is
+     already `ytReady` by the time the user's first tap needs a synchronous
+     `loadVideoById`/`playVideo` call (mobile autoplay-gesture requirement -
+     see Chapter 9 memory notes). */
+  warmUp: () => void;
 }
 
 /* ------------------------------------------------------------- YT loader */
@@ -826,9 +834,11 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
     const ro = new ResizeObserver(sync);
     ro.observe(visualSlot);
     window.addEventListener("resize", sync);
+    window.addEventListener("scroll", sync, { capture: true, passive: true });
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", sync);
+      window.removeEventListener("scroll", sync, { capture: true });
     };
   }, [mediaHostEl, visualSlot]);
 
@@ -932,6 +942,7 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
       forgetTrack,
       stopPlaybackForTape,
       registerVisualSlot,
+      warmUp: ensureYtPlayer,
     }),
     [
       currentTrack,
@@ -953,6 +964,7 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
       forgetTrack,
       stopPlaybackForTape,
       registerVisualSlot,
+      ensureYtPlayer,
     ]
   );
 

@@ -19,6 +19,31 @@ import {
   Bookmark,
 } from "lucide-react";
 
+// Shared, lazily-created context (never rebuilt per call) so it can actually
+// reach the "running" state - a fresh AudioContext starts "suspended" under
+// mobile autoplay policy and a never-resumed one plays nothing, silently.
+let sharedCountdownCtx: AudioContext | null = null;
+function getCountdownAudioCtx(): AudioContext | null {
+  if (typeof window === "undefined") return null;
+  const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Ctor) return null;
+  if (!sharedCountdownCtx) sharedCountdownCtx = new Ctor();
+  if (sharedCountdownCtx.state === "suspended") void sharedCountdownCtx.resume();
+  return sharedCountdownCtx;
+}
+
+// <input type="datetime-local"> wants "YYYY-MM-DDTHH:mm" in LOCAL time, with
+// no timezone marker. Slicing a stored UTC ISO string's characters instead
+// hands it the UTC calendar date/time, which reads as local and shifts the
+// prefilled value by the UTC offset - crossing midnight for the right offset
+// and time-of-day. Build it from the Date object's local getters instead.
+function toLocalDatetimeInputValue(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export interface CalendarEvent {
   id: string;
   title: string;
@@ -66,7 +91,8 @@ export default function CountdownsScreen({
 
   const playPopSound = () => {
     try {
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const audioCtx = getCountdownAudioCtx();
+      if (!audioCtx) return;
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.type = "sine";
@@ -181,7 +207,7 @@ export default function CountdownsScreen({
     playPopSound();
     setEditingId(ev.id);
     setTitle(ev.title);
-    setDate(ev.date ? ev.date.substring(0, 16) : "");
+    setDate(ev.date ? toLocalDatetimeInputValue(ev.date) : "");
     setNotes(ev.notes || "");
     setCategory(ev.category || "date");
     setCustomSticker(ev.custom_sticker || "🕸️");

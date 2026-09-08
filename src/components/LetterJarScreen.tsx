@@ -1076,6 +1076,20 @@ export default function LetterJarScreen({
     return () => window.removeEventListener("keydown", onKey);
   }, [activeId, closeLetter, composerOpen, confirmDelete]);
 
+  /* The composer is a fixed full-viewport overlay, but nothing stops the page
+     underneath from scrolling too — on iOS the internal scroll region can
+     rubber-band at its limits and hand the gesture through. Lock body scroll
+     for as long as the composer is up, restoring whatever it was before. */
+  const prevBodyOverflowRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!composerOpen) return;
+    prevBodyOverflowRef.current = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevBodyOverflowRef.current ?? "";
+    };
+  }, [composerOpen]);
+
   /* Single-key shortcuts for the things worth reaching for without the mouse.
      They stay out of the way of any field being typed into, and of the reader
      and composer while either is up. */
@@ -3690,9 +3704,9 @@ function ScopedStyles() {
          it. The low, wide ones stay; the standing bunches step out. */
       @media (max-width: 1023px) {
         .lj-bunch { display: none; }
-        .lj-prop-envelope { width: 128px; left: -2%; }
-        .lj-prop-bundle { width: 118px; right: -3%; }
-        .lj-prop-candle { width: 66px; right: 6%; }
+        .lj-prop-envelope { width: clamp(72px, 22vw, 128px); left: 1%; }
+        .lj-prop-bundle { width: clamp(66px, 20vw, 118px); right: 1%; }
+        .lj-prop-candle { width: clamp(40px, 11vw, 66px); right: 8%; }
         .lj-loose-1, .lj-loose-2, .lj-loose-3 { display: none; }
       }
 
@@ -4871,15 +4885,16 @@ function ScopedStyles() {
       .lj-composer-body {
         flex: 1; min-height: 0; display: grid; gap: 1rem;
         grid-template-columns: 1fr; padding: 1rem; overflow-y: auto;
+        overscroll-behavior: contain;
       }
       @media (min-width: 1024px) {
         .lj-composer-body { grid-template-columns: minmax(0,1fr) 392px; overflow: hidden; }
       }
 
-      .lj-preview-stage { min-height: 0; display: flex; flex-direction: column; }
-      .lj-preview-frame { position: relative; flex: 1; min-height: 0; display: flex; }
+      .lj-preview-stage { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+      .lj-preview-frame { position: relative; flex: 1; min-height: 0; min-width: 0; display: flex; }
       .lj-preview {
-        flex: 1; min-height: 300px;
+        flex: 1; min-height: 300px; min-width: 0;
         box-shadow: 14px 16px 0 rgba(9,6,8,.66), inset 0 0 70px rgba(120,80,40,.14);
         rotate: -.5deg;
       }
@@ -4891,6 +4906,15 @@ function ScopedStyles() {
       .lj-roll-preview-svg {
         display: block; width: 172px; height: 50px;
         filter: drop-shadow(0 6px 10px rgba(0,0,0,.6));
+      }
+      @media (max-width: 640px) {
+        .lj-roll-preview {
+          right: 10px; bottom: auto; top: 10px;
+          width: 96px;
+        }
+        .lj-roll-preview-svg {
+          width: 96px; height: 28px;
+        }
       }
 
       .lj-sticker-tools {
