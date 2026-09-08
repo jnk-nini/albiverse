@@ -340,6 +340,32 @@ interface TravelPin {
   date: string;
   note: string;
   photo: string | null;
+  /* Percent coordinates within the radar's square wrapper, always clamped to
+     land inside the dish - a stored position, not derived, since a
+     press-and-hold on the dish drops the pin exactly where pressed. */
+  x: number;
+  y: number;
+}
+
+/* Half the dish's radius, in percent of the square wrap - a point further
+   than this from centre would render outside the circular RadarFace, or a
+   blip's label would clip past its rim. */
+const RADAR_MAX_R = 42;
+
+function clampToRadar(px: number, py: number) {
+  const dx = px - 50;
+  const dy = py - 50;
+  const dist = Math.hypot(dx, dy);
+  if (dist <= RADAR_MAX_R || dist === 0) return { x: px, y: py };
+  const scale = RADAR_MAX_R / dist;
+  return { x: 50 + dx * scale, y: 50 + dy * scale };
+}
+
+function randomRadarPoint(seedKey: string) {
+  const seed = hashString(seedKey);
+  const angle = seeded(seed, 1) * Math.PI * 2;
+  const r = 10 + seeded(seed, 2) * (RADAR_MAX_R - 10);
+  return { x: 50 + Math.cos(angle) * r, y: 50 + Math.sin(angle) * r };
 }
 
 interface Travelogue {
@@ -1006,6 +1032,10 @@ function Corkboard({
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [notesForId, setNotesForId] = useState<string | null>(null);
+  /* The board's one micro-interaction: hovering a pin lights up every strand
+     running to it (and dims the rest), so the web actually reads as a case
+     map instead of decoration - the whole point of a detective corkboard. */
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [tagDrafts, setTagDrafts] = useState<Record<string, string>>({});
 
   /* Spring left over from the last drag, per link. Lives in a ref and is
@@ -1349,12 +1379,16 @@ function Corkboard({
             if (!a || !b) return null;
             const settle = settleMap[l.id] ?? 0;
             const { d, width } = strandPath(a.x, a.y, b.x, b.y, settle);
+            const touches = hoveredId !== null && (l.a === hoveredId || l.b === hoveredId);
             return (
               <path
                 key={l.id}
                 d={d}
-                className="dsr-strand"
-                strokeWidth={width}
+                className={
+                  "dsr-strand" +
+                  (touches ? " is-lit" : hoveredId !== null ? " is-dimmed" : "")
+                }
+                strokeWidth={touches ? width * 1.6 : width}
                 /* Percentage space is distorted by preserveAspectRatio=none;
                    this keeps the stroke an even weight anyway. */
                 vectorEffect="non-scaling-stroke"
@@ -1391,7 +1425,8 @@ function Corkboard({
               "dsr-artifact dsr-artifact-" +
               a.kind +
               (dragId === a.id ? " is-dragging" : "") +
-              (linkFrom === a.id ? " is-linking" : "")
+              (linkFrom === a.id ? " is-linking" : "") +
+              (hoveredId === a.id ? " is-hovered" : "")
             }
             style={
               {
@@ -1401,6 +1436,8 @@ function Corkboard({
               } as CSSProperties
             }
             onPointerDown={(e) => startDrag(e, a.id)}
+            onPointerEnter={() => setHoveredId(a.id)}
+            onPointerLeave={() => setHoveredId((cur) => (cur === a.id ? null : cur))}
             onClick={() => tapArtifact(a.id)}
             onDoubleClick={() => {
               if (a.kind === "polaroid" && a.url) {
@@ -2149,17 +2186,73 @@ function Travelogue({
   const [openId, setOpenId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [charging, setCharging] = useState<{ x: number; y: number; key: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingPinId = useRef<string | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const holdTimer = useRef<number | null>(null);
+  const holdStart = useRef<{ x: number; y: number } | null>(null);
+
+  const commitPin = useCallback(
+    (x: number, y: number) => {
+      const id = uid("pin");
+      onChange((prev) => ({
+        items: [...prev.items, { id, place: "New place", date: "", note: "", photo: null, x, y }],
+      }));
+      onFlush();
+      setOpenId(id);
+      sfx.stamp();
+    },
+    [onChange, onFlush]
+  );
 
   const addPin = () => {
     const id = uid("pin");
+    const pos = randomRadarPoint(id);
     onChange((prev) => ({
-      items: [...prev.items, { id, place: "New place", date: "", note: "", photo: null }],
+      items: [...prev.items, { id, place: "New place", date: "", note: "", photo: null, ...pos }],
     }));
     onFlush();
     setOpenId(id);
     sfx.dialClick();
+  };
+
+  /* Press and hold anywhere on the dish to drop a pin exactly there - a
+     radial "charging" ring tracks the hold so it reads as deliberate, not
+     accidental. Cancels on release-early, drifting the pointer, or leaving
+     the dish, same shape as the chapter's own upside-down-mode hold. */
+  const beginHoldPin = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    const rect = wrapRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const px = ((e.clientX - rect.left) / rect.width) * 100;
+    const py = ((e.clientY - rect.top) / rect.height) * 100;
+    const pos = clampToRadar(px, py);
+    holdStart.current = pos;
+    setCharging({ ...pos, key: Date.now() });
+    holdTimer.current = window.setTimeout(() => {
+      holdTimer.current = null;
+      commitPin(pos.x, pos.y);
+      setCharging(null);
+    }, 650);
+  };
+
+  const cancelHoldPin = () => {
+    if (holdTimer.current !== null) {
+      window.clearTimeout(holdTimer.current);
+      holdTimer.current = null;
+    }
+    holdStart.current = null;
+    setCharging(null);
+  };
+
+  const driftCancelHoldPin = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const rect = wrapRef.current?.getBoundingClientRect();
+    const start = holdStart.current;
+    if (!rect || !start) return;
+    const px = ((e.clientX - rect.left) / rect.width) * 100;
+    const py = ((e.clientY - rect.top) / rect.height) * 100;
+    if (Math.hypot(px - start.x, py - start.y) > 4) cancelHoldPin();
   };
 
   const setField = (id: string, patch: Partial<TravelPin>) =>
@@ -2197,16 +2290,6 @@ function Travelogue({
     }
   };
 
-  /* Scattered, not draggable - a stable position derived from the pin's own
-     id, same seeded technique the corkboard uses for a freshly-added
-     artifact's drop point. */
-  const posFor = (id: string) => {
-    const seed = hashString(id);
-    const angle = seeded(seed, 1) * Math.PI * 2;
-    const radius = 18 + seeded(seed, 2) * 74;
-    return { x: 50 + Math.cos(angle) * radius, y: 50 + Math.sin(angle) * radius };
-  };
-
   const active = travelogue.items.find((p) => p.id === openId) ?? null;
 
   return (
@@ -2218,25 +2301,51 @@ function Travelogue({
         <span className="dsr-panel-kicker">EVERYWHERE WE&apos;VE BEEN</span>
       </div>
 
-      <div className="dsr-radar-wrap">
+      <p className="dsr-note dsr-radar-hint">Hold anywhere on the dish to drop a pin there.</p>
+
+      <div
+        ref={wrapRef}
+        className="dsr-radar-wrap"
+        onPointerDown={beginHoldPin}
+        onPointerMove={driftCancelHoldPin}
+        onPointerUp={cancelHoldPin}
+        onPointerLeave={cancelHoldPin}
+        onPointerCancel={cancelHoldPin}
+      >
         <RadarFace className="dsr-radar-face" />
-        {travelogue.items.map((p) => {
-          const pos = posFor(p.id);
-          return (
-            <button
-              key={p.id}
-              type="button"
-              className={"dsr-radar-blip" + (openId === p.id ? " is-open" : "")}
-              style={{ left: pos.x + "%", top: pos.y + "%" }}
-              onClick={() => setOpenId((cur) => (cur === p.id ? null : p.id))}
-              aria-label={p.place || "Unnamed place"}
-            >
-              <span className="dsr-radar-blip-dot" aria-hidden />
-              <span className="dsr-radar-blip-label">{p.place || "Unnamed"}</span>
-            </button>
-          );
-        })}
-        <button type="button" className="dsr-radar-add" onClick={addPin} aria-label="Add a place">
+        <span className="dsr-radar-sweep" aria-hidden />
+
+        {travelogue.items.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            className={"dsr-radar-blip" + (openId === p.id ? " is-open" : "")}
+            style={{ left: p.x + "%", top: p.y + "%" }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => setOpenId((cur) => (cur === p.id ? null : p.id))}
+            aria-label={p.place || "Unnamed place"}
+          >
+            <span className="dsr-radar-blip-dot" aria-hidden />
+            <span className="dsr-radar-blip-label">{p.place || "Unnamed"}</span>
+          </button>
+        ))}
+
+        {charging && (
+          <span
+            key={charging.key}
+            className="dsr-radar-charge"
+            style={{ left: charging.x + "%", top: charging.y + "%" }}
+            aria-hidden
+          />
+        )}
+
+        <button
+          type="button"
+          className="dsr-radar-add"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={addPin}
+          aria-label="Add a place at a random spot"
+        >
           <Plus className="w-4 h-4" aria-hidden />
         </button>
       </div>
@@ -2978,6 +3087,29 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
     peeveIndex.saving ||
     timeCapsule.saving;
 
+  /* A full takeover, not just a spinner in the content area - the same
+     "gate the whole chapter behind something on-theme" convention every
+     other chapter's first paint uses, sized to match how much visual
+     identity this one actually has. */
+  if (loading) {
+    return (
+      <main className="dsr-root dsr-boot-root">
+        <style>{DOSSIER_CSS}</style>
+        <DossierDefs />
+        <div className="dsr-bg" aria-hidden />
+        <div className="dsr-grid" aria-hidden />
+        <div className="dsr-boot">
+          <ThumbScanner active size={92} />
+          <p className="dsr-boot-title">Decrypting file&hellip;</p>
+          <p className="dsr-boot-sub">CLASSIFIED &middot; SUBJECT: EARTH-65</p>
+          <div className="dsr-boot-bar" aria-hidden>
+            <span />
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main
       ref={rootRef}
@@ -3034,10 +3166,7 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
         </p>
       )}
 
-      {loading ? (
-        <p className="dsr-loading">Pulling the file&hellip;</p>
-      ) : (
-        <div className="dsr-stack">
+      <div className="dsr-stack">
           <HeroBadge identity={identity.value} onChange={identity.update} onFlush={identity.flush} />
 
           <VibeRadar
@@ -3098,7 +3227,6 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
             onGlitch={glitch}
           />
         </div>
-      )}
 
       {chaos && (
         <div className="dsr-spikes" aria-hidden>
@@ -3303,16 +3431,52 @@ const DOSSIER_CSS = `
   color: var(--dsr-dim);
 }
 
-.dsr-loading {
+.dsr-boot-root { display: grid; place-items: center; min-height: 100svh; }
+.dsr-boot {
   position: relative;
   z-index: 10;
-  text-align: center;
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: 40px;
+}
+.dsr-boot-title {
+  margin: 4px 0 0;
+  font-family: 'Permanent Marker', cursive;
+  font-size: 1.4rem;
+  color: var(--dsr-text);
+  letter-spacing: .02em;
+}
+.dsr-boot-sub {
+  margin: 0;
   font-family: var(--dsr-mono);
-  font-size: 11px;
-  letter-spacing: .16em;
+  font-size: 10px;
+  letter-spacing: .18em;
   text-transform: uppercase;
   color: var(--dsr-dim);
-  padding: 40px 0;
+}
+.dsr-boot-bar {
+  width: min(220px, 60vw);
+  height: 4px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, .08);
+  border: 1px solid var(--dsr-line);
+}
+.dsr-boot-bar span {
+  display: block;
+  height: 100%;
+  width: 40%;
+  border-radius: 4px;
+  background: var(--dsr-accent);
+  animation: dsr-boot-sweep 1.1s ease-in-out infinite;
+}
+@keyframes dsr-boot-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dsr-boot-bar span { animation: none; width: 100%; transform: none; }
 }
 
 /* ---------------------------------------------------------------- panels -- */
@@ -3630,9 +3794,18 @@ const DOSSIER_CSS = `
   background: rgba(21, 27, 35, .7);
   color: var(--dsr-dim);
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 130ms ease, color 130ms ease, border-color 130ms ease;
 }
 .dsr-field-x:hover { color: var(--dsr-accent); border-color: var(--dsr-accent); }
-@media (hover: none) { .dsr-field-x { opacity: .9; } }
+/* Hidden until the row it belongs to is actually being touched - hovered,
+   tapped into (focus-within), or pressed (active covers a touch that hasn't
+   lifted yet) - so a form full of fields doesn't read as a wall of x's. */
+.dsr-field:hover .dsr-field-x, .dsr-field:focus-within .dsr-field-x, .dsr-field:active .dsr-field-x,
+.dsr-sizing-field:hover .dsr-field-x, .dsr-sizing-field:focus-within .dsr-field-x, .dsr-sizing-field:active .dsr-field-x,
+.dsr-peeve-item:hover .dsr-field-x, .dsr-peeve-item:focus-within .dsr-field-x, .dsr-peeve-item:active .dsr-field-x {
+  opacity: 1;
+}
 
 .dsr-field-add {
   grid-column: 1 / -1;
@@ -3775,7 +3948,10 @@ const DOSSIER_CSS = `
   stroke: #E23A46;
   stroke-linecap: round;
   filter: drop-shadow(0 1px 1px rgba(0,0,0,.5));
+  transition: stroke 160ms ease, opacity 160ms ease, filter 160ms ease;
 }
+.dsr-strand.is-lit { stroke: #FF6B7A; filter: drop-shadow(0 0 4px rgba(255, 61, 200, .8)); }
+.dsr-strand.is-dimmed { opacity: .22; }
 
 .dsr-strand-cut {
   position: absolute;
@@ -3819,6 +3995,13 @@ const DOSSIER_CSS = `
 }
 .dsr-artifact.is-dragging { cursor: grabbing; scale: 1.04; box-shadow: 10px 16px 26px rgba(0,0,0,.55); z-index: 5; }
 .dsr-artifact.is-linking { outline: 2.5px solid var(--dsr-cyan); outline-offset: 3px; }
+/* Picked-up-off-the-board feel, and it's what makes the strand highlight
+   above legible - you can tell which pin you're about to trace a case from. */
+.dsr-artifact.is-hovered:not(.is-dragging) {
+  scale: 1.07;
+  box-shadow: 6px 11px 20px rgba(0,0,0,.55);
+  z-index: 6;
+}
 
 .dsr-artifact-img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; background: #2A2119; }
 .dsr-artifact-note .dsr-artifact-img,
@@ -3874,8 +4057,8 @@ const DOSSIER_CSS = `
   transition: opacity 130ms ease;
 }
 .dsr-artifact:hover .dsr-artifact-x,
-.dsr-artifact:focus-within .dsr-artifact-x { opacity: 1; }
-@media (hover: none) { .dsr-artifact-x { opacity: 1; } }
+.dsr-artifact:focus-within .dsr-artifact-x,
+.dsr-artifact:active .dsr-artifact-x { opacity: 1; }
 
 .dsr-artifact-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .dsr-artifact-tag {
@@ -4119,9 +4302,9 @@ const DOSSIER_CSS = `
   cursor: pointer;
   transition: opacity 130ms ease, background-color 130ms ease;
 }
-.dsr-note-sheet:hover .dsr-note-x { opacity: 1; }
+.dsr-note-sheet:hover .dsr-note-x,
+.dsr-note-sheet:active .dsr-note-x { opacity: 1; }
 .dsr-note-x:hover { background: #C0293B; color: #FFF; }
-@media (hover: none) { .dsr-note-x { opacity: .75; } }
 
 .dsr-note-empty {
   grid-column: 1 / -1;
@@ -4256,9 +4439,8 @@ const DOSSIER_CSS = `
   cursor: pointer;
   transition: opacity 140ms ease, background-color 140ms ease, color 140ms ease;
 }
-.dsr-step:hover .dsr-step-x, .dsr-step:focus-within .dsr-step-x { opacity: 1; }
+.dsr-step:hover .dsr-step-x, .dsr-step:focus-within .dsr-step-x, .dsr-step:active .dsr-step-x { opacity: 1; }
 .dsr-step-x:hover { background: #C0293B; color: #FFF; }
-@media (hover: none) { .dsr-step-x { opacity: .7; } }
 .dsr-step-input {
   width: 100%;
   padding: 7px 9px;
@@ -4292,8 +4474,15 @@ const DOSSIER_CSS = `
   pointer-events: auto;
   mix-blend-mode: normal;
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 130ms ease;
 }
-.dsr-stamp-remove:hover { color: #FF5C6C; }
+/* .dsr-stamp-mark (the parent) is pointer-events:none so the sheet below it
+   stays clickable for placing more stamps - that also means the parent can
+   never register :hover, so this has to reveal on its own hitbox instead. */
+.dsr-stamp-remove:hover,
+.dsr-stamp-remove:active,
+.dsr-stamp-remove:focus-visible { opacity: 1; color: #FF5C6C; }
 
 .dsr-splatter { position: absolute; translate: -50% -50%; pointer-events: none; }
 .dsr-splat-dot {
@@ -4384,8 +4573,13 @@ const DOSSIER_CSS = `
   border-radius: 50%;
   color: #FF9AA2;
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 130ms ease, color 130ms ease;
 }
 .dsr-quote-x:hover { color: #FF5C6C; }
+.dsr-quote-card:hover .dsr-quote-x,
+.dsr-quote-card:focus-within .dsr-quote-x,
+.dsr-quote-card:active .dsr-quote-x { opacity: 1; }
 .dsr-quote-add {
   flex: 0 0 140px;
   display: grid;
@@ -4404,8 +4598,44 @@ const DOSSIER_CSS = `
 
 /* ============================================ 7. DIMENSIONAL TRAVELOGUE == */
 
-.dsr-radar-wrap { position: relative; width: min(100%, 420px); aspect-ratio: 1; margin: 0 auto 18px; }
+.dsr-radar-hint { text-align: center; margin: -4px 0 10px; }
+.dsr-radar-wrap {
+  position: relative;
+  width: min(100%, 420px);
+  aspect-ratio: 1;
+  margin: 0 auto 18px;
+  touch-action: none;
+  cursor: crosshair;
+}
 .dsr-radar-face { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 50%; }
+.dsr-radar-sweep {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  background: conic-gradient(from 0deg, rgba(95, 231, 216, .38), transparent 30%, transparent 100%);
+  mix-blend-mode: screen;
+  animation: dsr-radar-spin 4.5s linear infinite;
+}
+@keyframes dsr-radar-spin { to { transform: rotate(360deg); } }
+.dsr-radar-charge {
+  position: absolute;
+  translate: -50% -50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #5FE7D8;
+  pointer-events: none;
+  animation: dsr-radar-charge 650ms ease forwards;
+}
+@keyframes dsr-radar-charge {
+  0% { width: 10px; height: 10px; opacity: .95; border-width: 3px; }
+  100% { width: 60px; height: 60px; opacity: 0; border-width: 1px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dsr-radar-sweep { animation: none; opacity: .3; }
+  .dsr-radar-charge { animation: none; opacity: .7; }
+}
 .dsr-radar-blip {
   position: absolute;
   translate: -50% -50%;
@@ -4575,9 +4805,13 @@ const DOSSIER_CSS = `
   border-radius: 50%;
   color: var(--dsr-dim);
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 130ms ease, color 130ms ease;
 }
 .dsr-capsule-x:hover { color: var(--dsr-accent); }
-@media (hover: none) { .dsr-capsule-x { opacity: 1; } }
+.dsr-capsule-card:hover .dsr-capsule-x,
+.dsr-capsule-card:focus-within .dsr-capsule-x,
+.dsr-capsule-card:active .dsr-capsule-x { opacity: 1; }
 
 .dsr-capsule-new {
   min-height: 150px;
@@ -4610,9 +4844,12 @@ const DOSSIER_CSS = `
 /* ================================================ ATMOSPHERE / EGGS ====== */
 
 .dsr-flip-spider {
+  /* Bottom-LEFT on purpose - the global now-playing pill (NowPlayingPill.tsx)
+     is fixed to bottom-right on every chapter it isn't hidden on, dossier
+     included, and used to sit directly on top of this button. */
   position: fixed;
-  right: 14px;
-  bottom: 14px;
+  left: max(14px, env(safe-area-inset-left));
+  bottom: max(14px, env(safe-area-inset-bottom));
   z-index: 30;
   display: grid;
   place-items: center;

@@ -2579,7 +2579,7 @@ function LetterPaper({
           />
         </svg>
 
-        <div className={`${font.cls} ${font.size} whitespace-pre-wrap break-words`}>
+        <div className={`lj-body-fill ${font.cls} ${font.size} whitespace-pre-wrap break-words`}>
           {letter.body}
         </div>
 
@@ -2843,7 +2843,7 @@ function Composer({
                   />
                 </svg>
 
-                <div className={`${font.cls} ${font.size} whitespace-pre-wrap break-words min-h-[80px]`}>
+                <div className={`lj-body-fill ${font.cls} ${font.size} whitespace-pre-wrap break-words min-h-[80px]`}>
                   {draft.body || "start writing and it appears here, in your ink, on your paper."}
                 </div>
 
@@ -4742,7 +4742,16 @@ function ScopedStyles() {
       }
 
       .lj-paper-body { position: relative; z-index: 10; flex: 1; display: flex; flex-direction: column; min-height: 100%; }
-      .lj-paper-sign { margin-top: auto; padding-top: 2rem; }
+      /* The sign used to be pushed to the bottom via margin-top:auto - that
+         computes fine for a short letter, but once the body text grows
+         past the visible well and the well starts scrolling, the auto
+         margin can resolve against a stale pre-overflow height and land the
+         sign on top of the tail of the text instead of below it. Growing
+         the body-text div itself (see .lj-body-fill on the JSX side) pushes
+         the sign down as a real size effect instead, which stays correct
+         however tall the letter gets. */
+      .lj-paper-sign { margin-top: 2rem; padding-top: 0; }
+      .lj-body-fill { flex: 1 0 auto; }
       .lj-rule { display: block; width: 100%; height: 8px; margin: 1rem 0 1.1rem; }
 
       .lj-occasion-tag {
