@@ -749,8 +749,8 @@ export default function CountdownsScreen({
 
       {/* Modal: Create & Edit */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs animate-in fade-in">
-          <div className="paper-sheet-solid max-w-lg w-full p-6 sm:p-8 relative border-4 border-[#261D24] shadow-[16px_16px_0_rgba(0,0,0,0.95)] rounded-2xl">
+        <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center p-4 py-8 overflow-y-auto bg-black/80 backdrop-blur-xs animate-in fade-in">
+          <div className="paper-sheet-solid max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 sm:p-8 relative border-4 border-[#261D24] shadow-[16px_16px_0_rgba(0,0,0,0.95)] rounded-2xl">
             <div className="absolute -top-3.5 left-12 w-28 h-6 tape-pink-solid -rotate-2 pointer-events-none" />
             <div className="absolute -top-3.5 right-12 w-28 h-6 tape-red-solid rotate-2 pointer-events-none" />
 

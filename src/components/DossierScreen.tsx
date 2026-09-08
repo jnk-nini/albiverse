@@ -38,6 +38,7 @@ import {
   ThumbScanner,
   VectorFigure,
   hashString,
+  resolveFigurePart,
   seeded,
   type StampId,
 } from "./DossierArt";
@@ -93,6 +94,12 @@ interface IdentityField {
 
 interface Identity {
   portrait: string | null;
+  /* Pan/zoom applied to the portrait inside its fixed 3:4 frame - object-fit:
+     cover alone always auto-centre-crops with no way to choose which part of
+     the photo stays visible. Same idea as Timeline's photo_scale/x/y. */
+  portraitScale: number;
+  portraitX: number;
+  portraitY: number;
   frontFields: IdentityField[];
   /* The classified backside. */
   backFields: IdentityField[];
@@ -133,6 +140,9 @@ const DEFAULT_BACK_FIELDS: IdentityField[] = [
 
 const EMPTY_IDENTITY: Identity = {
   portrait: null,
+  portraitScale: 1,
+  portraitX: 0,
+  portraitY: 0,
   frontFields: DEFAULT_FRONT_FIELDS,
   backFields: DEFAULT_BACK_FIELDS,
 };
@@ -146,9 +156,14 @@ function migrateIdentity(raw: unknown, fallback: Identity): Identity {
   if (!raw || typeof raw !== "object") return fallback;
   const r = raw as Record<string, unknown>;
 
+  const num = (v: unknown, fallbackNum: number) => (typeof v === "number" && Number.isFinite(v) ? v : fallbackNum);
+
   if (Array.isArray(r.frontFields)) {
     return {
       portrait: typeof r.portrait === "string" ? r.portrait : null,
+      portraitScale: num(r.portraitScale, 1),
+      portraitX: num(r.portraitX, 0),
+      portraitY: num(r.portraitY, 0),
       frontFields: r.frontFields as IdentityField[],
       backFields: Array.isArray(r.backFields) ? (r.backFields as IdentityField[]) : DEFAULT_BACK_FIELDS,
     };
@@ -159,6 +174,9 @@ function migrateIdentity(raw: unknown, fallback: Identity): Identity {
 
   return {
     portrait: typeof r.portrait === "string" ? r.portrait : null,
+    portraitScale: num(r.portraitScale, 1),
+    portraitX: num(r.portraitX, 0),
+    portraitY: num(r.portraitY, 0),
     frontFields: carryOver(DEFAULT_FRONT_FIELDS),
     backFields: carryOver(DEFAULT_BACK_FIELDS),
   };
@@ -603,6 +621,52 @@ const HeroBadge = memo(function HeroBadge({
   const [photoError, setPhotoError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  /* object-fit: cover alone always auto-centre-crops the portrait with no
+     say in which part of the photo actually stays visible - this is the pan
+     (portraitX/Y, -100..100) + zoom (portraitScale) adjuster that lets the
+     reader choose, same idea as Timeline's polaroid framing tool. Draft
+     state so dragging the preview doesn't write on every pointermove. */
+  const [adjustOpen, setAdjustOpen] = useState(false);
+  const [draftScale, setDraftScale] = useState(1);
+  const [draftX, setDraftX] = useState(0);
+  const [draftY, setDraftY] = useState(0);
+  const [isDraggingPortrait, setIsDraggingPortrait] = useState(false);
+  const portraitDragRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
+
+  const openAdjust = () => {
+    setDraftScale(identity.portraitScale);
+    setDraftX(identity.portraitX);
+    setDraftY(identity.portraitY);
+    setAdjustOpen(true);
+  };
+
+  const saveAdjust = () => {
+    onChange((prev) => ({ ...prev, portraitScale: draftScale, portraitX: draftX, portraitY: draftY }));
+    onFlush();
+    setAdjustOpen(false);
+  };
+
+  const portraitTransform = (scale: number, x: number, y: number) =>
+    `translate(${x}%, ${y}%) scale(${scale})`;
+
+  const handlePortraitPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setIsDraggingPortrait(true);
+    portraitDragRef.current = { x: e.clientX, y: e.clientY, startX: draftX, startY: draftY };
+  };
+  const handlePortraitPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingPortrait || !portraitDragRef.current) return;
+    const dx = e.clientX - portraitDragRef.current.x;
+    const dy = e.clientY - portraitDragRef.current.y;
+    setDraftX(Math.max(-100, Math.min(100, portraitDragRef.current.startX + dx / 2)));
+    setDraftY(Math.max(-100, Math.min(100, portraitDragRef.current.startY + dy / 2)));
+  };
+  const handlePortraitPointerUp = () => {
+    setIsDraggingPortrait(false);
+    portraitDragRef.current = null;
+  };
+
   /* The scan is what flips the card - clicking straight to the back would
      throw away the one bit of theatre this panel has. */
   const runScan = () => {
@@ -692,12 +756,19 @@ const HeroBadge = memo(function HeroBadge({
               <button
                 type="button"
                 className="dsr-portrait"
-                onClick={() => fileRef.current?.click()}
-                aria-label={identity.portrait ? "Replace the portrait" : "Add a portrait"}
+                onClick={() => (identity.portrait ? openAdjust() : fileRef.current?.click())}
+                aria-label={identity.portrait ? "Adjust the portrait" : "Add a portrait"}
                 disabled={busy}
               >
                 {identity.portrait ? (
-                  <img src={identity.portrait} alt="" className="dsr-portrait-img" />
+                  <img
+                    src={identity.portrait}
+                    alt=""
+                    className="dsr-portrait-img"
+                    style={{
+                      transform: portraitTransform(identity.portraitScale, identity.portraitX, identity.portraitY),
+                    }}
+                  />
                 ) : (
                   <span className="dsr-portrait-empty">
                     <ImageIcon className="w-6 h-6" aria-hidden />
@@ -706,6 +777,11 @@ const HeroBadge = memo(function HeroBadge({
                 )}
                 <span className="dsr-portrait-scan" aria-hidden />
               </button>
+              {identity.portrait && (
+                <button type="button" className="dsr-portrait-replace" onClick={() => fileRef.current?.click()}>
+                  Replace photo
+                </button>
+              )}
 
               <input
                 ref={fileRef}
@@ -820,6 +896,64 @@ const HeroBadge = memo(function HeroBadge({
           </button>
         </div>
       </div>
+
+      {adjustOpen && (
+        <div className="dsr-lightbox" role="dialog" aria-modal="true" aria-label="Adjust the portrait">
+          <div className="dsr-portrait-adjust-sheet">
+            <h3 className="dsr-notes-sheet-head">Adjust the portrait</h3>
+            <div
+              className="dsr-portrait-adjust-frame"
+              onPointerDown={handlePortraitPointerDown}
+              onPointerMove={handlePortraitPointerMove}
+              onPointerUp={handlePortraitPointerUp}
+              onPointerCancel={handlePortraitPointerUp}
+            >
+              {identity.portrait && (
+                <img
+                  src={identity.portrait}
+                  alt=""
+                  className="dsr-portrait-adjust-img"
+                  draggable={false}
+                  style={{ transform: portraitTransform(draftScale, draftX, draftY) }}
+                />
+              )}
+            </div>
+            <p className="dsr-portrait-adjust-hint">Drag the photo to reposition it</p>
+
+            <label className="dsr-portrait-adjust-zoom">
+              <span>Zoom</span>
+              <input
+                type="range"
+                min="1"
+                max="3"
+                step="0.05"
+                value={draftScale}
+                onChange={(e) => setDraftScale(parseFloat(e.target.value))}
+              />
+            </label>
+
+            <div className="dsr-portrait-adjust-actions">
+              <button
+                type="button"
+                className="dsr-tool-btn"
+                onClick={() => {
+                  setDraftScale(1);
+                  setDraftX(0);
+                  setDraftY(0);
+                }}
+              >
+                Reset
+              </button>
+              <button type="button" className="dsr-tool-btn" onClick={() => setAdjustOpen(false)}>
+                Cancel
+              </button>
+              <button type="button" className="dsr-tool-btn" data-on="true" onClick={saveAdjust}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 });
@@ -1285,6 +1419,7 @@ function Corkboard({
   };
 
   const lightboxItem = lightboxId ? byId[lightboxId] : null;
+  const notesItem = notesForId ? byId[notesForId] : null;
 
   return (
     <section className="dsr-panel dsr-cork-panel" aria-labelledby="dsr-cork-head">
@@ -1514,40 +1649,6 @@ function Corkboard({
               <Trash2 className="w-3 h-3" aria-hidden />
             </button>
 
-            {notesForId === a.id && (
-              <div
-                className="dsr-artifact-notes"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <textarea
-                  className="dsr-artifact-notes-text"
-                  value={a.note}
-                  onChange={(e) => setNote(a.id, e.target.value)}
-                  onBlur={onFlush}
-                  placeholder="Everything else about this one..."
-                  rows={3}
-                />
-                <div className="dsr-artifact-tag-row">
-                  <input
-                    className="dsr-artifact-tag-input"
-                    value={tagDrafts[a.id] ?? ""}
-                    onChange={(e) => setTagDrafts((prev) => ({ ...prev, [a.id]: e.target.value }))}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        addTag(a.id);
-                      }
-                    }}
-                    placeholder="Add a tag, press Enter"
-                    maxLength={24}
-                  />
-                  <button type="button" className="dsr-artifact-tag-add" onClick={() => addTag(a.id)}>
-                    <Plus className="w-3 h-3" aria-hidden />
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         ))}
 
@@ -1588,6 +1689,81 @@ function Corkboard({
             >
               <X className="w-4 h-4" aria-hidden />
               <span className="sr-only">Close</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* --------------------------------------------- evidence notes ----
+          Used to expand INSIDE the pinned artifact card itself (max 152px
+          wide, and the corkboard clips overflow so its drag bounds/edges
+          stay contained) - on a card pinned anywhere near an edge, an
+          expanded note routinely got clipped by that overflow:hidden, or
+          just didn't have room to lay out inside a card that narrow on a
+          phone. Same fixed-overlay pattern as the slide projector above:
+          rendered outside the clipped corkboard entirely, sized off the
+          viewport instead of the pin. */}
+      {notesItem && (
+        <div
+          className="dsr-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={"Notes for " + (notesItem.title || "this pin")}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setNotesForId(null);
+          }}
+        >
+          <div className="dsr-notes-sheet">
+            <div className="dsr-notes-sheet-head">
+              <StickyNote className="w-4 h-4" aria-hidden />
+              <span>{notesItem.title || "Untitled pin"}</span>
+            </div>
+            <textarea
+              className="dsr-artifact-notes-text"
+              value={notesItem.note}
+              onChange={(e) => setNote(notesItem.id, e.target.value)}
+              onBlur={onFlush}
+              placeholder="Everything else about this one..."
+              rows={5}
+              autoFocus
+            />
+            <div className="dsr-artifact-tag-row">
+              <input
+                className="dsr-artifact-tag-input"
+                value={tagDrafts[notesItem.id] ?? ""}
+                onChange={(e) => setTagDrafts((prev) => ({ ...prev, [notesItem.id]: e.target.value }))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addTag(notesItem.id);
+                  }
+                }}
+                placeholder="Add a tag, press Enter"
+                maxLength={24}
+              />
+              <button type="button" className="dsr-artifact-tag-add" onClick={() => addTag(notesItem.id)}>
+                <Plus className="w-3 h-3" aria-hidden />
+              </button>
+            </div>
+            {(notesItem.tags ?? []).length > 0 && (
+              <div className="dsr-artifact-tags">
+                {(notesItem.tags ?? []).map((t) => (
+                  <span key={t} className="dsr-artifact-tag">
+                    {t}
+                    <button type="button" onClick={() => removeTag(notesItem.id, t)} aria-label={"Remove tag " + t}>
+                      <X className="w-2.5 h-2.5" aria-hidden />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <button
+              type="button"
+              className="dsr-slide-close"
+              onClick={() => setNotesForId(null)}
+              aria-label="Close notes"
+            >
+              <X className="w-4 h-4" aria-hidden />
             </button>
           </div>
         </div>
@@ -2424,6 +2600,13 @@ function Travelogue({
    8. WEB-SHOOTER SIZING BLUEPRINT
    ========================================================================== */
 
+const FIGURE_PART_LABELS: Record<"jacket" | "wrist" | "ring" | "shoe", string> = {
+  jacket: "Jacket",
+  wrist: "Wrist",
+  ring: "Ring",
+  shoe: "Shoe",
+};
+
 function SizingBlueprint({
   sizing,
   onChange,
@@ -2434,6 +2617,8 @@ function SizingBlueprint({
   onFlush: () => void;
 }) {
   const [highlight, setHighlight] = useState<string | null>(null);
+  const fieldInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const pendingFocusRef = useRef<string | null>(null);
 
   const setField = (id: string, patch: Partial<SizingField>) =>
     onChange((prev) => ({ items: prev.items.map((f) => (f.id === id ? { ...f, ...patch } : f)) }));
@@ -2448,6 +2633,34 @@ function SizingBlueprint({
     onFlush();
   };
 
+  /* Makes the mannequin an actual control instead of a passive readout that
+     only ever reacted to whichever field you happened to already be in:
+     clicking a region jumps straight to its measurement, creating one first
+     if it doesn't exist yet. */
+  const handlePartClick = (part: "jacket" | "wrist" | "ring" | "shoe") => {
+    const existing = sizing.items.find((f) => resolveFigurePart(f.part) === part);
+    if (existing) {
+      setHighlight(part);
+      fieldInputRefs.current[existing.id]?.focus();
+      return;
+    }
+    const id = uid("size");
+    pendingFocusRef.current = id;
+    onChange((prev) => ({
+      items: [...prev.items, { id, part: FIGURE_PART_LABELS[part], value: "", unit: "" }],
+    }));
+    onFlush();
+  };
+
+  useEffect(() => {
+    const id = pendingFocusRef.current;
+    if (!id) return;
+    if (sizing.items.some((f) => f.id === id)) {
+      pendingFocusRef.current = null;
+      fieldInputRefs.current[id]?.focus();
+    }
+  }, [sizing.items]);
+
   return (
     <section className="dsr-panel dsr-sizing" aria-labelledby="dsr-sizing-head">
       <div className="dsr-panel-head">
@@ -2458,7 +2671,11 @@ function SizingBlueprint({
       </div>
 
       <div className="dsr-sizing-body">
-        <VectorFigure highlight={highlight} className="dsr-sizing-figure" />
+        <VectorFigure
+          highlight={highlight}
+          onPartClick={handlePartClick}
+          className="dsr-sizing-figure dsr-sizing-figure-interactive"
+        />
 
         <div className="dsr-sizing-fields">
           {sizing.items.map((f) => (
@@ -2472,6 +2689,9 @@ function SizingBlueprint({
               }}
             >
               <input
+                ref={(el) => {
+                  fieldInputRefs.current[f.id] = el;
+                }}
                 className="dsr-field-label-input"
                 value={f.part}
                 onChange={(e) => setField(f.id, { part: e.target.value })}
@@ -3724,6 +3944,84 @@ const DOSSIER_CSS = `
   opacity: .5;
 }
 
+.dsr-portrait-replace {
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--dsr-dim);
+  background: none;
+  border: none;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.dsr-portrait-replace:hover { color: var(--dsr-cyan); }
+
+.dsr-portrait-adjust-sheet {
+  position: relative;
+  width: min(300px, 88vw);
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  background: var(--dsr-paper);
+  border: 1px solid rgba(0,0,0,.35);
+  box-shadow: 0 24px 60px rgba(0,0,0,.6);
+  border-radius: 4px;
+  color: #2A2119;
+}
+.dsr-portrait-adjust-frame {
+  position: relative;
+  width: 100%;
+  max-width: 220px;
+  aspect-ratio: 3 / 4;
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1.5px solid rgba(0,0,0,.35);
+  background: #14100F;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.dsr-portrait-adjust-frame:active { cursor: grabbing; }
+.dsr-portrait-adjust-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+  transition: transform 60ms linear;
+}
+.dsr-portrait-adjust-hint {
+  text-align: center;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: rgba(42,33,25,.6);
+  margin: 0;
+}
+.dsr-portrait-adjust-zoom {
+  display: grid;
+  gap: 4px;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.dsr-portrait-adjust-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.dsr-portrait-adjust-sheet .dsr-tool-btn {
+  background: rgba(0,0,0,.06);
+  border-color: rgba(0,0,0,.3);
+  color: #2A2119;
+}
+
 .dsr-scanner {
   display: grid;
   place-items: center;
@@ -3746,15 +4044,25 @@ const DOSSIER_CSS = `
   color: var(--dsr-cyan);
 }
 
+/* 'top' in the keyframes, not transform: translateY() - percentages on
+   transform resolve against the SCANLINE's own 42px height (a ~45px total
+   travel), while percentages on 'top' resolve against the containing block
+   (.dsr-badge-front, made one by its own transform: rotateY()), i.e. the
+   full card. The line also had no base 'top' at all, so with no animation
+   running its static position fell wherever it landed in normal flow -
+   after the head/body/error blocks, right near the bottom of the card. Both
+   together are why the scan only ever swept a sliver near the bottom
+   instead of the whole dossier card. */
 @keyframes dsr-scanline {
-  from { transform: translateY(-8%); opacity: 0; }
+  from { top: -8%; opacity: 0; }
   12%  { opacity: 1; }
-  to   { transform: translateY(108%); opacity: 0; }
+  to   { top: 108%; opacity: 0; }
 }
 .dsr-scanline {
   position: absolute;
   left: 0;
   right: 0;
+  top: 0;
   height: 42px;
   pointer-events: none;
   background: linear-gradient(transparent, rgba(63,224,240,.5), transparent);
@@ -4190,6 +4498,30 @@ const DOSSIER_CSS = `
   font-size: 1.4rem;
   color: #E9E3D4;
 }
+.dsr-notes-sheet {
+  position: relative;
+  width: min(340px, 88vw);
+  max-height: 82vh;
+  overflow-y: auto;
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  background: var(--dsr-paper);
+  border: 1px solid rgba(0,0,0,.35);
+  box-shadow: 0 24px 60px rgba(0,0,0,.6);
+  border-radius: 4px;
+}
+.dsr-notes-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Caveat', cursive;
+  font-size: 1.2rem;
+  color: #2A2119;
+  padding-right: 20px;
+}
+.dsr-notes-sheet .dsr-artifact-notes-text { font-size: 13px; }
+
 .dsr-slide-close {
   position: absolute;
   top: -14px;

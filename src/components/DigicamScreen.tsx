@@ -14,8 +14,11 @@ import {
   FlipVertical2,
   Heart,
   HelpCircle,
+  GripVertical,
   Loader2,
+  Pause,
   Pencil,
+  Play,
   Plus,
   RefreshCw,
   RotateCw,
@@ -36,6 +39,7 @@ import {
   readFileAsDataUrl,
   relabelDataUrl,
   transcodeVideo,
+  withGuessedType,
 } from "@/lib/media/mediaPrep";
 
 /* ============================================================================
@@ -63,6 +67,7 @@ interface DigicamItem {
   photo_flip_v: boolean | null;
   filter: string | null;
   is_favorite: boolean | null;
+  position: number | null;
 }
 
 interface DigicamScreenProps {
@@ -108,7 +113,7 @@ const VIDEO_TRANSCODE_THRESHOLD = 12 * 1024 * 1024;
    below is a couple of KB and arrives instantly; the media itself is fetched
    afterwards by `loadMediaFor`, current frame first. */
 const SELECT_COLUMNS =
-  "id, couple_id, uploader_id, media_type, caption, notes, created_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v, filter, is_favorite";
+  "id, couple_id, uploader_id, media_type, caption, notes, created_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v, filter, is_favorite, position";
 
 /* Film stocks. `css` goes straight into the CSS filter property on the photo,
    `chip` is the swatch colour used in the picker so each stock is identifiable
@@ -293,6 +298,10 @@ function FilmStrip({
   currentIndex,
   onJump,
   urlOf,
+  onReorder,
+  onReorderCommit,
+  slideshowOn,
+  onToggleSlideshow,
 }: {
   items: DigicamItem[];
   currentIndex: number;
@@ -301,13 +310,93 @@ function FilmStrip({
      handed a resolver rather than reading `item.url` (which no longer exists
      on the row). Returns "" while a frame's bytes are still in flight. */
   urlOf: (item: DigicamItem) => string;
+  onReorder: (dragId: string, overId: string) => void;
+  onReorderCommit: () => void;
+  slideshowOn: boolean;
+  onToggleSlideshow: () => void;
 }) {
   const stripRef = useRef<HTMLDivElement>(null);
   const [thumbErrors, setThumbErrors] = useState<Set<string>>(new Set());
 
+  /* Pointer Events rather than HTML5 drag-and-drop: native DnD barely works
+     on touch, and every other drag interaction in this app (Timeline's crop
+     pan, the Letter Jar pile, the Dossier corkboard) already uses Pointer
+     Events for the same reason - one code path for mouse, touch and pen. A
+     small movement threshold before a drag "starts" keeps a plain tap still
+     working as jump-to-frame instead of every tap being swallowed as a
+     zero-distance drag. */
+  const dragIdRef = useRef<string | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+
+  const handleFramePointerDown = (e: React.PointerEvent<HTMLButtonElement>, id: string) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    dragIdRef.current = id;
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handleFramePointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (!dragIdRef.current || !dragStartRef.current) return;
+    const dx = e.clientX - dragStartRef.current.x;
+    const dy = e.clientY - dragStartRef.current.y;
+    if (!draggingId && Math.hypot(dx, dy) < 6) return;
+    if (!draggingId) setDraggingId(dragIdRef.current);
+
+    const rail = stripRef.current;
+    if (!rail) return;
+    const frames = Array.from(rail.querySelectorAll<HTMLElement>("[data-frame-id]"));
+    const overEl = frames.find((f) => {
+      const r = f.getBoundingClientRect();
+      return e.clientX >= r.left && e.clientX <= r.right;
+    });
+    const overId = overEl?.dataset.frameId;
+    if (overId && overId !== dragIdRef.current) {
+      onReorder(dragIdRef.current, overId);
+    }
+  };
+
+  /* A ref, not the `draggingId` state: the browser fires `click` right after
+     `pointerup`, and by then React has already committed the state update
+     from endDrag() on a fresh render with a new click handler closure - a
+     state read there would already see the reset value and the guard below
+     would never fire. */
+  const justDraggedRef = useRef(false);
+
+  const endDrag = () => {
+    const wasDragging = Boolean(draggingId);
+    dragIdRef.current = null;
+    dragStartRef.current = null;
+    setDraggingId(null);
+    if (wasDragging) {
+      justDraggedRef.current = true;
+      onReorderCommit();
+    }
+  };
+
+  const handleFrameClick = (e: React.MouseEvent<HTMLButtonElement>, i: number) => {
+    /* A drag that just ended shouldn't also fire the click that finishes a
+       pointer gesture. */
+    if (justDraggedRef.current) {
+      justDraggedRef.current = false;
+      e.preventDefault();
+      return;
+    }
+    onJump(i);
+  };
+
   useEffect(() => {
-    const el = stripRef.current?.querySelector<HTMLElement>(`[data-frame="${currentIndex}"]`);
-    el?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    /* Deliberately NOT el.scrollIntoView(): it walks up the ancestor chain
+       looking for anything scrollable to satisfy `inline: "center"`, and
+       `<main className="digicam-desk ... overflow-hidden">` counts as a
+       scroll container even with no visible scrollbar - so it was also
+       nudging the whole chassis sideways every time Next/Prev changed the
+       frame. Scrolling only this strip's own rail keeps the shift local. */
+    const container = stripRef.current;
+    const el = container?.querySelector<HTMLElement>(`[data-frame="${currentIndex}"]`);
+    if (!container || !el) return;
+    const target = el.offsetLeft - (container.clientWidth - el.clientWidth) / 2;
+    container.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
   }, [currentIndex]);
 
   if (!items.length) return null;
@@ -327,12 +416,18 @@ function FilmStrip({
             <button
               key={item.id}
               data-frame={i}
+              data-frame-id={item.id}
               type="button"
-              onClick={() => onJump(i)}
-              aria-label={`Frame ${i + 1}${item.caption ? `, ${item.caption}` : ""}`}
+              onClick={(e) => handleFrameClick(e, i)}
+              onPointerDown={(e) => handleFramePointerDown(e, item.id)}
+              onPointerMove={handleFramePointerMove}
+              onPointerUp={endDrag}
+              onPointerCancel={endDrag}
+              aria-label={`Frame ${i + 1}${item.caption ? `, ${item.caption}` : ""}. Press and drag to reorder.`}
               aria-current={isCurrent}
-              className={`film-frame relative shrink-0 w-24 h-[72px] overflow-hidden cursor-pointer
-                ${isCurrent ? "film-frame-current" : ""}`}
+              className={`film-frame relative shrink-0 w-24 h-[72px] overflow-hidden cursor-grab touch-none
+                ${isCurrent ? "film-frame-current" : ""}
+                ${draggingId === item.id ? "film-frame-dragging" : ""}`}
             >
               {!urlOf(item) ? (
                 /* Unexposed frame: the row is known, its bytes are still on the
@@ -373,6 +468,7 @@ function FilmStrip({
               {item.is_favorite && (
                 <Heart className="absolute top-1 right-1 w-3 h-3 fill-[#D9889E] text-[#17131A]" />
               )}
+              <GripVertical className="absolute top-0.5 left-0.5 w-2.5 h-2.5 text-white/60 drop-shadow pointer-events-none" />
               <span className="absolute bottom-0 left-0 right-0 bg-[#17131A]/80 font-mono text-[7px] font-black text-[#ECA8B8] px-1 py-px text-left">
                 {String(i + 1).padStart(2, "0")}
               </span>
@@ -384,6 +480,27 @@ function FilmStrip({
       <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 font-mono text-[9px] font-black uppercase tracking-widest text-[#261D24] bg-[#EAD9A9] px-3 py-0.5 border-2 border-[#261D24] shadow-[2px_2px_0_#17131A] -rotate-1">
         Contact sheet
       </span>
+
+      <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+        <span className="font-mono text-[8px] font-bold text-[#8faeaa] uppercase tracking-widest">
+          Drag a frame to reorder
+        </span>
+        {items.length > 1 && (
+          <button
+            type="button"
+            onClick={onToggleSlideshow}
+            aria-pressed={slideshowOn}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm border text-[9px] font-mono font-black uppercase tracking-widest cursor-pointer transition ${
+              slideshowOn
+                ? "bg-[#7D2834] border-[#261D24] text-[#F2E6D2]"
+                : "bg-[#17131A] border-[#8faeaa]/40 text-[#ECA8B8] hover:bg-[#231C28]"
+            }`}
+          >
+            {slideshowOn ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+            {slideshowOn ? "Stop slideshow" : "Auto slideshow"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -452,6 +569,7 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
       .from("digicam_media")
       .select(SELECT_COLUMNS)
       .eq("couple_id", coupleId)
+      .order("position", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: true });
 
     if (loadError) {
@@ -532,8 +650,16 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
      network calls; these two only move a local index, and the 160ms cooldown it
      was imposing meant a quick second tap was silently swallowed, which is why
      the arrows felt laggy or dead. Local state changes should be instant. */
-  const runPrev = useCallback(() => goTo(currentIndex - 1), [goTo, currentIndex]);
-  const runNext = useCallback(() => goTo(currentIndex + 1), [goTo, currentIndex]);
+  const [slideshowOn, setSlideshowOn] = useState(false);
+
+  const runPrev = useCallback(() => {
+    setSlideshowOn(false);
+    goTo(currentIndex - 1);
+  }, [goTo, currentIndex]);
+  const runNext = useCallback(() => {
+    setSlideshowOn(false);
+    goTo(currentIndex + 1);
+  }, [goTo, currentIndex]);
 
   const shuffle = useCallback(() => {
     if (items.length < 2) return;
@@ -541,6 +667,82 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
     while (n === currentIndex) n = Math.floor(Math.random() * items.length);
     goTo(n);
   }, [currentIndex, items.length, goTo]);
+
+  const jumpTo = useCallback(
+    (i: number) => {
+      setSlideshowOn(false);
+      goTo(i);
+    },
+    [goTo]
+  );
+
+  const toggleSlideshow = useCallback(() => {
+    setSlideshowOn((v) => !v);
+  }, []);
+
+  /* Auto slideshow: picks a new random frame every few seconds while on.
+     Reuses shuffle() (which already avoids repeating the current frame)
+     rather than a separate "next random" implementation. Any manual
+     navigation (prev/next/jump/reorder) turns it off instead of fighting the
+     reader's own input. Below two items there's simply nothing to rotate
+     between - the toggle button itself is already hidden in that case (see
+     its `items.length > 1` guard in FilmStrip below), so this just skips
+     starting the interval rather than also flipping the boolean off: if the
+     roll grows back to 2+ while still "on", the slideshow silently resumes
+     instead of the reader having to press the button again. */
+  useEffect(() => {
+    if (!slideshowOn || items.length < 2) return;
+    const id = window.setInterval(() => shuffle(), 3500);
+    return () => window.clearInterval(id);
+  }, [slideshowOn, items.length, shuffle]);
+
+  /* ---- drag-to-reorder the contact sheet -------------------------------- */
+
+  const itemsRef = useRef(items);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  /* Live-reorders local state as the reader drags a thumbnail over another -
+     called on every pointermove while dragging, so it's a pure array splice
+     with no network call. The currently-viewed frame is tracked by id
+     through the move so the LCD doesn't jump to a different photo just
+     because its position in the strip changed. */
+  const reorderLocally = useCallback(
+    (dragId: string, overId: string) => {
+      const list = itemsRef.current;
+      const from = list.findIndex((i) => i.id === dragId);
+      const to = list.findIndex((i) => i.id === overId);
+      if (from === -1 || to === -1 || from === to) return;
+      const currentId = list[currentIndex]?.id;
+      const next = [...list];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      setItems(next);
+      if (currentId) {
+        const newIdx = next.findIndex((i) => i.id === currentId);
+        if (newIdx !== -1 && newIdx !== currentIndex) setCurrentIndex(newIdx);
+      }
+    },
+    [currentIndex]
+  );
+
+  /* Persists the order once the drag ends. Renumbers every row's `position`
+     to its current index rather than diffing, since a roll is small (a
+     handful to a few dozen frames) and this keeps the logic simple and
+     always self-consistent even after several drags in a row. */
+  const commitReorder = useCallback(async () => {
+    const list = itemsRef.current;
+    const results = await Promise.all(
+      list.map((item, idx) =>
+        item.position === idx
+          ? Promise.resolve({ error: null })
+          : supabase.from("digicam_media").update({ position: idx }).eq("id", item.id).eq("couple_id", coupleId)
+      )
+    );
+    const failed = results.find((r) => r.error);
+    if (failed?.error) setError(failed.error.message);
+  }, [supabase, coupleId]);
 
   /* ---- filters ---------------------------------------------------------- */
 
@@ -716,10 +918,15 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
   }, []);
 
   const prepareFile = useCallback(
-    async (file: File): Promise<{ dataUrl: string; isVideo: boolean } | null> => {
+    async (rawFile: File): Promise<{ dataUrl: string; isVideo: boolean } | null> => {
       setError(null);
       setUploadNotice(null);
 
+      /* Some phone browsers hand back a video file with no `file.type` at
+         all - the guess-from-extension fallback below is what makes those
+         uploads recognisable instead of silently rejected as "not an image
+         or video". */
+      const file = withGuessedType(rawFile);
       const isVideo = file.type.startsWith("video/");
       const isImage = file.type.startsWith("image/");
       if (!isVideo && !isImage) {
@@ -816,6 +1023,10 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
       media_type: isVideo ? "video" : "image",
       caption: "",
       notes: "",
+      /* Appends to the end of the roll - matches the created_at-ordered
+         behaviour this replaced, and stays correct alongside drag reorder
+         since positions are re-numbered 0..n-1 after every reorder. */
+      position: items.length,
     });
 
     if (insertError) {
@@ -829,6 +1040,31 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
     setCurrentIndex(items.length);
     setPanel(null);
   }, 400);
+
+  /* Picking several files at once queues them through the same guarded
+     upload one at a time (never in parallel - video re-encoding runs a real
+     MediaRecorder, and several running at once would contend for the same
+     encoder and make everything slower, not faster). `uploadQueue` is what
+     lets the banner say "2 of 5" instead of the picker just going quiet for
+     a while, which was the "no indicator" complaint. */
+  const [uploadQueue, setUploadQueue] = useState<{ index: number; total: number } | null>(null);
+
+  const uploadFiles = useCallback(
+    async (files: File[]) => {
+      if (!files.length) return;
+      if (files.length === 1) {
+        await runUpload(files[0]);
+        return;
+      }
+      for (let i = 0; i < files.length; i += 1) {
+        setUploadQueue({ index: i + 1, total: files.length });
+        // eslint-disable-next-line no-await-in-loop -- deliberately sequential, see comment above
+        await runUpload(files[i]);
+      }
+      setUploadQueue(null);
+    },
+    [runUpload]
+  );
 
   /* Replace swaps the raw media on the CURRENT slot in place - same row id,
      same caption/notes/favourite/filter, so it isn't just a delete+reupload
@@ -922,9 +1158,9 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
   const openFilePicker = useCallback(() => fileInputRef.current?.click(), []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const files = Array.from(e.target.files ?? []);
     e.target.value = "";
-    if (file) runUpload(file);
+    if (files.length) uploadFiles(files);
   };
 
   /* Arrow keys walk the roll the way the D-pad does. Skipped while a text
@@ -1169,6 +1405,13 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
           transform: translateY(-4px);
           box-shadow: 0 0 0 3px #D9889E, 0 10px 18px rgba(0,0,0,.55);
         }
+        .film-frame-dragging {
+          filter: none;
+          transform: scale(1.08) translateY(-6px);
+          box-shadow: 0 0 0 3px #ECA8B8, 0 16px 26px rgba(0,0,0,.65);
+          z-index: 30;
+          opacity: .92;
+        }
 
         /* ---- ambience ---------------------------------------------------- */
         @keyframes digicamDust {
@@ -1340,6 +1583,7 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
               ref={fileInputRef}
               type="file"
               accept="image/*,video/*"
+              multiple
               className="hidden"
               onChange={handleFileChange}
             />
@@ -1403,6 +1647,18 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
+              </div>
+            )}
+
+            {uploadQueue && (
+              <div
+                role="status"
+                className="w-full max-w-xl mb-4 p-3 bg-[#2E0509] text-[#F2E6D2] text-xs font-mono border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] z-20 flex items-center gap-2"
+              >
+                <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-[#ECA8B8]" />
+                <span className="uppercase tracking-wider">
+                  Uploading {uploadQueue.index} of {uploadQueue.total}…
+                </span>
               </div>
             )}
 
@@ -2154,7 +2410,16 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
               />
             </div>
 
-            <FilmStrip items={items} currentIndex={currentIndex} onJump={goTo} urlOf={urlOf} />
+            <FilmStrip
+              items={items}
+              currentIndex={currentIndex}
+              onJump={jumpTo}
+              urlOf={urlOf}
+              onReorder={reorderLocally}
+              onReorderCommit={commitReorder}
+              slideshowOn={slideshowOn}
+              onToggleSlideshow={toggleSlideshow}
+            />
 
             <footer className="max-w-md mx-auto text-center z-20 mt-10 mb-4">
               <span className="font-mono text-[10px] font-black text-[#261D24] uppercase tracking-widest bg-[#EAD9A9] px-4 py-1 border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] inline-block -rotate-1">

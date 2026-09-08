@@ -877,8 +877,8 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
 
       {/* -------- purchase / archive ritual -------- */}
       {purchaseDraft && (
-        <div className="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-          <div className="paper-sheet-solid max-w-sm w-full p-6 relative border-4 border-[#261D24] shadow-[16px_16px_0_rgba(0,0,0,0.95)] rounded-2xl">
+        <div className="fixed inset-0 z-[65] flex items-start sm:items-center justify-center p-4 py-8 overflow-y-auto bg-black/85 backdrop-blur-md">
+          <div className="paper-sheet-solid max-w-sm w-full max-h-[90vh] overflow-y-auto p-6 relative border-4 border-[#261D24] shadow-[16px_16px_0_rgba(0,0,0,0.95)] rounded-2xl">
             <button
               onClick={() => setPurchaseDraft(null)}
               className="absolute top-4 right-4 p-1.5 rounded-lg bg-[#EFE4D6] hover:bg-[#E2D2C0] border-2 border-[#261D24] cursor-pointer"

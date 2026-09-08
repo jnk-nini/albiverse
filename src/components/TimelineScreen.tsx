@@ -32,6 +32,9 @@ export interface PolaroidMemory {
   url: string;
   caption: string;
   date: string;
+  /* Raw ISO (YYYY-MM-DD) backing the editable date input - `date` above stays
+     the pretty display string so the card rendering never has to reformat. */
+  rawDate: string;
   notes?: string;
   photo_scale?: number;
   photo_x?: number;
@@ -39,6 +42,33 @@ export interface PolaroidMemory {
   photo_rotation?: number;
   photo_flip_h?: boolean;
   photo_flip_v?: boolean;
+}
+
+const MEMORY_SELECT_COLUMNS =
+  "id, url, caption, notes, memory_date, created_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v";
+
+function normalizeMemory(item: any): PolaroidMemory {
+  const rawDate: string = item.memory_date || (item.created_at ? new Date(item.created_at).toISOString().slice(0, 10) : "");
+  return {
+    id: item.id,
+    url: item.file_url || item.url || "https://images.unsplash.com/photo-1518199266791-5375a83190b7?w=800&q=80",
+    caption: item.caption || "Multiverse Memory",
+    date: rawDate
+      ? new Date(`${rawDate}T00:00:00`).toLocaleDateString([], {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        })
+      : "CANON",
+    rawDate,
+    notes: item.notes || "",
+    photo_scale: item.photo_scale ?? 1.0,
+    photo_x: item.photo_x ?? 0,
+    photo_y: item.photo_y ?? 0,
+    photo_rotation: item.photo_rotation ?? 0,
+    photo_flip_h: item.photo_flip_h ?? false,
+    photo_flip_v: item.photo_flip_v ?? false,
+  };
 }
 
 interface TimelineScreenProps {
@@ -68,6 +98,7 @@ export default function TimelineScreen({
   const [formImagePreview, setFormImagePreview] = useState<string>("");
   const [formCaption, setFormCaption] = useState("");
   const [formNotes, setFormNotes] = useState("");
+  const [formDate, setFormDate] = useState("");
   const [saving, setSaving] = useState(false);
 
   // Photo Transformation Controls
@@ -95,6 +126,9 @@ export default function TimelineScreen({
     return () => clearTimeout(timer);
   }, []);
 
+  const sortByDate = (list: PolaroidMemory[]) =>
+    [...list].sort((a, b) => a.rawDate.localeCompare(b.rawDate));
+
   const fetchMemories = async () => {
     if (!coupleId) return;
     try {
@@ -102,39 +136,17 @@ export default function TimelineScreen({
          that has always been written together with it (verified byte-identical
          on every row), so selecting both doubled the base64 payload of every
          photo for no benefit. Writes still populate both columns; only this
-         read drops the copy, and the mapper below already falls through to
+         read drops the copy, and normalizeMemory() already falls through to
          `url` when `file_url` is absent. */
       const { data, error: fetchErr } = await supabase
         .from("media_items")
-        .select(
-          "id, url, caption, notes, created_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v"
-        )
+        .select(MEMORY_SELECT_COLUMNS)
         .eq("couple_id", coupleId)
-        .order("created_at", { ascending: true });
+        .order("memory_date", { ascending: true });
 
       if (fetchErr) throw fetchErr;
 
-      const normalized: PolaroidMemory[] = (data || []).map((item: any) => ({
-        id: item.id,
-        url: item.file_url || item.url || "https://images.unsplash.com/photo-1518199266791-5375a83190b7?w=800&q=80",
-        caption: item.caption || "Multiverse Memory",
-        date: item.created_at
-          ? new Date(item.created_at).toLocaleDateString([], {
-              month: "short",
-              day: "numeric",
-              year: "numeric",
-            })
-          : "CANON",
-        notes: item.notes || "",
-        photo_scale: item.photo_scale ?? 1.0,
-        photo_x: item.photo_x ?? 0,
-        photo_y: item.photo_y ?? 0,
-        photo_rotation: item.photo_rotation ?? 0,
-        photo_flip_h: item.photo_flip_h ?? false,
-        photo_flip_v: item.photo_flip_v ?? false,
-      }));
-
-      setMemories(normalized);
+      setMemories(sortByDate((data || []).map(normalizeMemory)));
     } catch (err: any) {
       setError(err.message || "Failed to load timeline polaroids.");
     } finally {
@@ -145,6 +157,13 @@ export default function TimelineScreen({
   useEffect(() => {
     fetchMemories();
 
+    /* Own writes (insert/update/delete below) already patch `memories`
+       locally the instant Supabase confirms them, so this subscription only
+       has to react to the PARTNER's changes. Rather than re-running
+       fetchMemories() (which re-downloads every polaroid's base64 photo on
+       every single edit - the exact "takes too long to reflect" bug), patch
+       state directly from the realtime payload, which already carries the
+       full new row for insert/update. */
     const channel = supabase
       .channel(`media_items_${coupleId}`)
       .on(
@@ -155,7 +174,20 @@ export default function TimelineScreen({
           table: "media_items",
           filter: `couple_id=eq.${coupleId}`,
         },
-        () => fetchMemories()
+        (payload) => {
+          if (payload.eventType === "DELETE") {
+            const deletedId = (payload.old as any)?.id;
+            if (deletedId) setMemories((prev) => prev.filter((m) => m.id !== deletedId));
+            return;
+          }
+
+          const row = normalizeMemory(payload.new);
+          setMemories((prev) => {
+            const exists = prev.some((m) => m.id === row.id);
+            const next = exists ? prev.map((m) => (m.id === row.id ? row : m)) : [...prev, row];
+            return sortByDate(next);
+          });
+        }
       )
       .subscribe();
 
@@ -207,6 +239,7 @@ export default function TimelineScreen({
     setFormImagePreview("");
     setFormCaption("");
     setFormNotes("");
+    setFormDate(new Date().toISOString().slice(0, 10));
     setPhotoScale(1.0);
     setPhotoX(0);
     setPhotoY(0);
@@ -223,6 +256,7 @@ export default function TimelineScreen({
     setFormImagePreview(m.url);
     setFormCaption(m.caption);
     setFormNotes(m.notes || "");
+    setFormDate(m.rawDate || new Date().toISOString().slice(0, 10));
     setPhotoScale(m.photo_scale ?? 1.0);
     setPhotoX(m.photo_x ?? 0);
     setPhotoY(m.photo_y ?? 0);
@@ -279,6 +313,7 @@ export default function TimelineScreen({
         url: formImagePreview,
         caption: formCaption.trim() || "Timeline Memory ❤️",
         notes: formNotes.trim() || "",
+        memory_date: formDate || new Date().toISOString().slice(0, 10),
         photo_scale: photoScale,
         photo_x: photoX,
         photo_y: photoY,
@@ -287,19 +322,32 @@ export default function TimelineScreen({
         photo_flip_v: photoFlipV,
       };
 
+      /* .select().single() hands back the saved row in the same round trip,
+         so the polaroid can be patched into state immediately instead of
+         re-fetching (and re-downloading every OTHER photo's base64 blob)
+         after every save - that refetch was the "takes too long to reflect"
+         bug. */
       if (editingId) {
-        const { error: updateErr } = await supabase
+        const { data: saved, error: updateErr } = await supabase
           .from("media_items")
           .update(payload)
-          .eq("id", editingId);
+          .eq("id", editingId)
+          .select(MEMORY_SELECT_COLUMNS)
+          .single();
 
         if (updateErr) throw updateErr;
+        const row = normalizeMemory(saved);
+        setMemories((prev) => sortByDate(prev.map((m) => (m.id === row.id ? row : m))));
       } else {
-        const { error: insertErr } = await supabase
+        const { data: saved, error: insertErr } = await supabase
           .from("media_items")
-          .insert(payload);
+          .insert(payload)
+          .select(MEMORY_SELECT_COLUMNS)
+          .single();
 
         if (insertErr) throw insertErr;
+        const row = normalizeMemory(saved);
+        setMemories((prev) => sortByDate([...prev, row]));
       }
 
       setIsModalOpen(false);
@@ -307,7 +355,6 @@ export default function TimelineScreen({
       setFormCaption("");
       setFormNotes("");
       setEditingId(null);
-      await fetchMemories();
     } catch (err: any) {
       setError(err.message || "Failed to pin memory to the timeline.");
     } finally {
@@ -531,7 +578,7 @@ export default function TimelineScreen({
                     return (
                       <div
                         key={m.id}
-                        className={`relative shrink-0 w-[290px] sm:w-[325px] ${tiltClass} hover:rotate-0 hover:-translate-y-2 transition duration-300`}
+                        className={`relative shrink-0 w-[310px] sm:w-[325px] ${tiltClass} hover:rotate-0 hover:-translate-y-2 transition duration-300`}
                       >
                         {/* Clothespin Rig */}
                         <div className="absolute -top-9 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center pointer-events-none">
@@ -608,7 +655,7 @@ export default function TimelineScreen({
                                   />
                                 </div>
 
-                                <div className="px-1 min-h-[48px] flex items-center justify-center text-center">
+                                <div className="px-1 min-h-[28px] sm:min-h-[48px] py-1 flex items-center justify-center text-center">
                                   <p className="font-handwriting text-2xl text-[#1A0D10] leading-snug line-clamp-2 break-words">
                                     {m.caption}
                                   </p>
@@ -890,17 +937,32 @@ export default function TimelineScreen({
                 )}
               </div>
 
-              <div>
-                <label className="block font-mono text-xs font-black text-[#7D2834] uppercase tracking-wider mb-1.5">
-                  Polaroid Front Caption
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Sunset rooftop talks ✨"
-                  value={formCaption}
-                  onChange={(e) => setFormCaption(e.target.value)}
-                  className="w-full text-sm font-mono p-3 rounded-xl bg-white border-3 border-[#261D24] text-stone-900 outline-none shadow-inner"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block font-mono text-xs font-black text-[#7D2834] uppercase tracking-wider mb-1.5">
+                    Polaroid Front Caption
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Sunset rooftop talks ✨"
+                    value={formCaption}
+                    onChange={(e) => setFormCaption(e.target.value)}
+                    className="w-full text-sm font-mono p-3 rounded-xl bg-white border-3 border-[#261D24] text-stone-900 outline-none shadow-inner"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-mono text-xs font-black text-[#7D2834] uppercase tracking-wider mb-1.5">
+                    Memory Date
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={formDate}
+                    onChange={(e) => setFormDate(e.target.value)}
+                    className="w-full text-sm font-mono p-3 rounded-xl bg-white border-3 border-[#261D24] text-stone-900 outline-none shadow-inner"
+                  />
+                </div>
               </div>
 
               <div>
