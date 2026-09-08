@@ -254,11 +254,6 @@ export default function SoundtrackScreen({
      (`mixtape` above), so this survives navigating away from the chapter.
      What stays local here: which tape's tracklist is currently in view, and
      the presentational flags around the boombox drop animation. */
-  /* Set when a board widget (the "fresh off the tape" card) wants a specific
-     track playing the moment its tape finishes dropping into the boombox,
-     rather than just opening on the tracklist like a normal pick-up does. */
-  const [pendingPlayTrackId, setPendingPlayTrackId] = useState<string | null>(null);
-
   /* -------------------------------------------------------------- panels */
   const [showSearch, setShowSearch] = useState(false);
   const [showShare, setShowShare] = useState(false);
@@ -461,10 +456,27 @@ export default function SoundtrackScreen({
       clack();
       setActiveTapeId(track.mixtape_id);
       setDroppingTapeId(track.mixtape_id);
-      setPendingPlayTrackId(track.id);
       setStage("dropping");
+
+      /* Start playback RIGHT HERE, synchronously inside the click that
+         requested it - not via pendingPlayTrackId's effect, which only fired
+         once the 1750ms drop animation finished and `stage` flipped to
+         "player". By then the call was happening from a setTimeout
+         callback, with no user gesture on the stack, and both
+         HTMLMediaElement.play() and the YouTube IFrame player's
+         playVideo() are gated on exactly that - so the reel visibly loaded
+         but stayed silent until a second, real tap on Play supplied the
+         gesture the browser was waiting for. Queueing the track's siblings
+         straight off `tracks` (rather than the `tapeTracks` memo, which is
+         keyed on `activeTapeId` state and wouldn't have updated yet inside
+         this same synchronous handler) means this doesn't have to wait for
+         a re-render either. */
+      const queue = tracks
+        .filter((t) => t.mixtape_id === track.mixtape_id)
+        .sort((a, b) => a.position - b.position || a.created_at.localeCompare(b.created_at));
+      mixtape.play(track, queue, track.mixtape_id);
     },
-    [clack]
+    [clack, tracks, mixtape]
   );
 
   /* ----------------------------------------------------- the fresh tape */
@@ -556,15 +568,30 @@ export default function SoundtrackScreen({
     writeProgress(mixtape.elapsed, mixtape.duration);
   }, [mixtape.elapsed, mixtape.duration, writeProgress]);
 
-  /* The other half of pendingPlayTrackId: once the boombox drop lands on the
-     player, start the specific track the board widget asked for instead of
-     leaving the turntable idle. */
+  /* "X of tape banked" (totalRuntimeSeconds above) sums each track's stored
+     duration_seconds - it was reading 0m for real tapes because that column
+     was only ever populated from the YouTube search API, and Nini has never
+     set YOUTUBE_API_KEY, so every track she's added went through the keyless
+     oEmbed fallback (see src/app/api/youtube/search/route.ts), which returns
+     title/thumbnail but no duration at all. The player itself DOES learn the
+     real duration once a YouTube track actually loads (mixtape.duration is
+     driven by the IFrame API's getDuration(), not the stored column - see
+     AudioPlayerProvider). So rather than needing a paid API key just to know
+     how long a song is, backfill the column the first time each track is
+     actually played: once, per track, when the engine reports a real
+     duration for whatever's currently loaded and the stored value doesn't
+     match it yet. */
+  const durationBackfilledRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (stage !== "player" || !pendingPlayTrackId) return;
-    const track = tracks.find((t) => t.id === pendingPlayTrackId);
-    setPendingPlayTrackId(null);
-    if (track) mixtape.play(track, tapeTracks, track.mixtape_id);
-  }, [stage, pendingPlayTrackId, tracks, tapeTracks, mixtape]);
+    const id = mixtape.currentTrackId;
+    const known = Math.round(mixtape.duration);
+    if (!id || known <= 0) return;
+    if (durationBackfilledRef.current.has(id)) return;
+    const track = tracks.find((t) => t.id === id);
+    if (!track || track.duration_seconds === known) return;
+    durationBackfilledRef.current.add(id);
+    void supabase.from("mixtape_tracks").update({ duration_seconds: known }).eq("id", id);
+  }, [mixtape.currentTrackId, mixtape.duration, tracks, supabase]);
 
   /* mixtape.togglePlay()/skip() only ever act on whatever the engine already
      has loaded. The very first press - nothing loaded into it yet - has to
@@ -1078,9 +1105,10 @@ export default function SoundtrackScreen({
             }
             if (stage === "dropping") {
               /* Cancels the boombox-drop animation outright, same reset the
-                 drop's own completion would otherwise apply. */
+                 drop's own completion would otherwise apply. Whatever track
+                 openTrackDirect() already started keeps playing in the
+                 background - same as leaving any other playing tape. */
               setDroppingTapeId(null);
-              setPendingPlayTrackId(null);
             }
             setStage("board");
           }}
@@ -2094,6 +2122,15 @@ const SOUNDTRACK_CSS = `
   margin: 0 auto;
 }
 .st-board-head { text-align: center; margin-bottom: 18px; }
+/* The exit stub is position: fixed at top-left (see .st-exit-fixed), so it
+   sits on top of whatever's underneath it rather than pushing content down.
+   On a narrow phone the centred kicker/title/subtitle start close enough to
+   the left edge that the fixed stub covered them. Desktop has enough room
+   between the corner and the centred text that this was never visible
+   there. */
+@media (max-width: 640px) {
+  .st-board-head { padding-top: 52px; }
+}
 .st-kicker {
   display: inline-block;
   font-family: 'Space Grotesk', monospace;
@@ -2244,6 +2281,17 @@ const SOUNDTRACK_CSS = `
   top: max(12px, env(safe-area-inset-top));
   left: max(12px, env(safe-area-inset-left));
   z-index: 55;
+  /* No ancestor between this button and <body> has a transform/filter/
+     perspective, so position: fixed here is correctly viewport-relative,
+     not scroll-relative - confirmed by reading the whole ancestor chain
+     (this file, layout.tsx, AudioPlayerProvider). If it still visibly
+     drifts during a scroll gesture on a phone, that matches a known WebKit
+     bug where an installed (Home Screen / standalone) PWA can temporarily
+     detach fixed elements during momentum scrolling - promoting it to its
+     own compositing layer is the standard mitigation, though it isn't a
+     guaranteed fix for that specific engine bug. */
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 .st-board-empty {
@@ -2722,9 +2770,19 @@ const SOUNDTRACK_CSS = `
    only changes paint order, never the DOM, so the >=1080px 3-column layout
    above (which relies on source order for its column assignment) is
    untouched. The extra top padding keeps the deck's first control clear of
-   the fixed exit stub. */
+   the fixed exit stub.
+
+   .st-rail-right (the viewfinder showing whatever's actually playing) gets
+   the same treatment as the deck: it was still left in DOM order AFTER
+   .st-rail-left, so it sat below the tracklist on mobile. Expanding or
+   collapsing "Show/Hide tracks" changes .st-rail-left's height instantly (it
+   mounts/unmounts, no animation), which shoved the viewfinder up or down the
+   page without the browser adjusting scroll to follow it - the reader had to
+   go hunting for it again after every toggle. Ordering it before the
+   tracklist means the toggle can no longer move it at all. */
 @media (max-width: 1079px) {
   .st-deck { order: -1; }
+  .st-rail-right { order: -1; }
   .st-player { padding-top: 56px; }
 }
 

@@ -2579,7 +2579,7 @@ function LetterPaper({
           />
         </svg>
 
-        <div className={`${font.cls} ${font.size} whitespace-pre-wrap break-words`}>
+        <div className={`lj-body-fill ${font.cls} ${font.size} whitespace-pre-wrap break-words`}>
           {letter.body}
         </div>
 
@@ -2843,7 +2843,7 @@ function Composer({
                   />
                 </svg>
 
-                <div className={`${font.cls} ${font.size} whitespace-pre-wrap break-words min-h-[80px]`}>
+                <div className={`lj-body-fill ${font.cls} ${font.size} whitespace-pre-wrap break-words min-h-[80px]`}>
                   {draft.body || "start writing and it appears here, in your ink, on your paper."}
                 </div>
 
@@ -4535,6 +4535,14 @@ function ScopedStyles() {
       .lj-reader {
         position: fixed; inset: 0; z-index: 120; display: grid; place-items: center;
         padding: 12px 12px 138px;
+        /* .lj-stage has no height of its own, so a letter long enough to make
+           the unrolled sheet taller than the viewport had nowhere for that
+           extra height to go - .lj-paper-well's own overflow-y:auto never
+           gets a bounded ancestor height to actually clip against here (see
+           the mobile composer fix above for the same root cause), so the
+           tail of a long letter was simply unreachable past the screen edge.
+           Letting the reader itself scroll is the backstop. */
+        overflow-y: auto;
       }
       @media (min-width: 640px) { .lj-reader { padding-bottom: 118px; } }
       .lj-reader-scrim {
@@ -4742,7 +4750,16 @@ function ScopedStyles() {
       }
 
       .lj-paper-body { position: relative; z-index: 10; flex: 1; display: flex; flex-direction: column; min-height: 100%; }
-      .lj-paper-sign { margin-top: auto; padding-top: 2rem; }
+      /* The sign used to be pushed to the bottom via margin-top:auto - that
+         computes fine for a short letter, but once the body text grows
+         past the visible well and the well starts scrolling, the auto
+         margin can resolve against a stale pre-overflow height and land the
+         sign on top of the tail of the text instead of below it. Growing
+         the body-text div itself (see .lj-body-fill on the JSX side) pushes
+         the sign down as a real size effect instead, which stays correct
+         however tall the letter gets. */
+      .lj-paper-sign { margin-top: 2rem; padding-top: 0; }
+      .lj-body-fill { flex: 1 0 auto; }
       .lj-rule { display: block; width: 100%; height: 8px; margin: 1rem 0 1.1rem; }
 
       .lj-occasion-tag {
@@ -4886,6 +4903,32 @@ function ScopedStyles() {
         flex: 1; min-height: 0; display: grid; gap: 1rem;
         grid-template-columns: 1fr; padding: 1rem; overflow-y: auto;
         overscroll-behavior: contain;
+      }
+      /* Below the desktop 2-column breakpoint, this used to stay a
+         single-row CSS grid: the preview and the rail panel both got an
+         indeterminate (auto/percentage) height, so .lj-paper-well's
+         own overflow-y:auto had nothing definite to clip against and the
+         paper just grew to fit however long the letter was. Three real bugs
+         followed from that one cause: the signature could render on top of
+         the tail of a long letter instead of below it (no true internal
+         scroll to carry it past), the tab menu could sit far below the fold
+         since the reader had to scroll past an oversized preview to reach
+         it, and the postage stamp (pinned near the top of .lj-preview)
+         could end up hovering over whatever text had scrolled up to meet
+         it. Giving the preview an explicit height and making the body a
+         flex column - both panes independently scrollable, always both on
+         screen - fixes all three at once instead of three separate patches. */
+      @media (max-width: 1023.98px) {
+        .lj-composer-body {
+          display: flex; flex-direction: column; overflow: hidden;
+        }
+        .lj-preview-stage { flex: 0 0 auto; height: min(46vh, 380px); }
+        /* The desktop 300px floors exist so the paper never looks cramped
+           in the wide rail column - on a short phone screen they can be
+           taller than the 46vh box above actually has room for, which would
+           force the very overflow this fix exists to prevent. */
+        .lj-preview, .lj-preview .lj-paper-well { min-height: 0; }
+        .lj-rail-panel { flex: 1; min-height: 0; }
       }
       @media (min-width: 1024px) {
         .lj-composer-body { grid-template-columns: minmax(0,1fr) 392px; overflow: hidden; }

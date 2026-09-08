@@ -2539,6 +2539,38 @@ const DIARY_CSS = `
 
 .dy-desk { position: relative; padding-bottom: 8px; }
 
+@media (min-width: 1080px) {
+  /* .dy-write clips .dy-desk to a fixed viewport-tied height (see above), on
+     the assumption the desk's own content never needs more room than that.
+     It sometimes did: the sheet's headline + label rows + textarea could run
+     tall enough that the machine art below it - drawn AFTER the sheet in
+     normal flow - got its bottom edge clipped off by that overflow:hidden,
+     which is exactly the typewriter's keyboard (always the lowest part of
+     the illustration). Making the desk a flex column with the machine
+     flex: 0 0 auto guarantees the machine always renders at its full
+     natural height; the sheet becomes the one that scrolls internally
+     (.dy-body-input already caps its own height above, so this is a rare
+     backstop, not the everyday case) instead of pushing the machine out of
+     the clipped box. */
+  .dy-desk {
+    display: flex;
+    flex-direction: column;
+    /* Same calc .dy-write and .dy-ticket already use, rather than height:100%
+       - a grid item stretches to its row by default, but pinning the exact
+       value directly here doesn't depend on that default staying true. */
+    height: calc(100svh - 170px);
+    min-height: 0;
+  }
+  .dy-sheet {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .dy-machine {
+    flex: 0 0 auto;
+  }
+}
+
 /* The sheet, rolling upward out of the platen. Its lower edge is deliberately
    tucked under the machine, which is drawn on top of it. */
 .dy-sheet {

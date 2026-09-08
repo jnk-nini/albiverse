@@ -171,6 +171,57 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
   const [isSpinning, setIsSpinning] = useState(false);
   const [rouletteResult, setRouletteResult] = useState<BucketItem | null>(null);
 
+  /* Cover emoji picker: starts from the built-in defaults, then a couple can
+     add or remove options. Stored separately from `bucket_list` itself (a
+     one-row-per-couple settings table) so customising the palette never
+     touches any item's own data. No row yet just means "hasn't customised
+     it" - the defaults are used until they do, so nothing is written on a
+     couple's first-ever visit to this chapter. */
+  const [emojiPalette, setEmojiPalette] = useState<string[]>(COVER_EMOJI_CHOICES);
+  const [newEmojiInput, setNewEmojiInput] = useState("");
+  const [emojiError, setEmojiError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!coupleId) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("bucket_list_emoji_palette")
+        .select("emojis")
+        .eq("couple_id", coupleId)
+        .maybeSingle();
+      if (!cancelled && data?.emojis?.length) setEmojiPalette(data.emojis);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [coupleId, supabase]);
+
+  const persistEmojiPalette = async (next: string[]) => {
+    setEmojiPalette(next);
+    const { error: upsertErr } = await supabase
+      .from("bucket_list_emoji_palette")
+      .upsert({ couple_id: coupleId, emojis: next, updated_at: new Date().toISOString() }, { onConflict: "couple_id" });
+    if (upsertErr) setEmojiError(upsertErr.message);
+  };
+
+  const addEmoji = () => {
+    const char = newEmojiInput.trim();
+    if (!char) return;
+    if (emojiPalette.includes(char)) {
+      setEmojiError("That one's already in the picker.");
+      return;
+    }
+    setEmojiError(null);
+    setNewEmojiInput("");
+    persistEmojiPalette([...emojiPalette, char]);
+  };
+
+  const removeEmoji = (char: string) => {
+    setEmojiError(null);
+    persistEmojiPalette(emojiPalette.filter((e) => e !== char));
+  };
+
   const fetchItems = async () => {
     if (!coupleId) return;
     try {
@@ -739,16 +790,53 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
               <div>
                 <label className="block font-mono text-xs font-black text-[#7D2834] uppercase mb-1">Cover Emoji</label>
                 <div className="flex flex-wrap gap-1.5">
-                  {COVER_EMOJI_CHOICES.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => setForm((f) => ({ ...f, coverEmoji: s }))}
-                      className={`text-xl p-1.5 rounded-lg border-2 cursor-pointer transition ${form.coverEmoji === s ? "border-[#7D2834] bg-[#ECA8B8]/40 scale-110" : "border-transparent hover:bg-stone-200"}`}
-                    >
-                      {s}
-                    </button>
+                  {emojiPalette.map((s) => (
+                    <div key={s} className="group/emoji relative">
+                      <button
+                        type="button"
+                        onClick={() => setForm((f) => ({ ...f, coverEmoji: s }))}
+                        className={`text-xl p-1.5 rounded-lg border-2 cursor-pointer transition ${form.coverEmoji === s ? "border-[#7D2834] bg-[#ECA8B8]/40 scale-110" : "border-transparent hover:bg-stone-200"}`}
+                      >
+                        {s}
+                      </button>
+                      {emojiPalette.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => removeEmoji(s)}
+                          aria-label={`Remove ${s} from the picker`}
+                          title="Remove from picker"
+                          className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[#7D2834] text-white text-[9px] leading-none flex items-center justify-center opacity-0 group-hover/emoji:opacity-100 focus-visible:opacity-100 transition cursor-pointer"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
                   ))}
+                </div>
+                <div className="flex items-center gap-1.5 mt-2">
+                  <input
+                    type="text"
+                    value={newEmojiInput}
+                    onChange={(e) => setNewEmojiInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addEmoji();
+                      }
+                    }}
+                    placeholder="Add an emoji…"
+                    maxLength={8}
+                    className="w-28 text-sm font-mono p-1.5 rounded-lg bg-white border-2 border-[#261D24] text-stone-900 outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={addEmoji}
+                    disabled={!newEmojiInput.trim()}
+                    className="px-2.5 py-1.5 rounded-lg bg-[#EFE4D6] hover:bg-[#E2D2C0] disabled:opacity-40 text-[#261D24] border-2 border-[#261D24] text-[10px] font-mono font-black uppercase cursor-pointer"
+                  >
+                    Add
+                  </button>
+                  {emojiError && <span className="text-[10px] font-mono text-[#96131F]">{emojiError}</span>}
                 </div>
               </div>
 
@@ -819,7 +907,7 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
       {/* Completion ritual modal */}
       {completionDraft && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
-          <div className="paper-sheet-solid max-w-md w-full p-6 sm:p-8 relative border-4 border-[#261D24] shadow-[16px_16px_0_rgba(0,0,0,0.95)] rounded-2xl">
+          <div className="paper-sheet-solid max-w-md w-full max-h-[90vh] overflow-y-auto p-6 sm:p-8 relative border-4 border-[#261D24] shadow-[16px_16px_0_rgba(0,0,0,0.95)] rounded-2xl">
             <button onClick={() => setCompletionDraft(null)} className="absolute top-5 right-5 p-2 rounded-lg bg-[#EFE4D6] hover:bg-[#E2D2C0] border-2 border-[#261D24] cursor-pointer">
               <X className="w-5 h-5" />
             </button>

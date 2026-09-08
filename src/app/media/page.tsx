@@ -3,6 +3,7 @@
 import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import DigicamScreen from "@/components/DigicamScreen";
+import ChapterLoadingScreen from "@/components/ChapterLoadingScreen";
 import { CHAPTER_SPREAD, tocReturnHref } from "@/lib/nav/chapterReturn";
 import { useChapterAccess } from "@/lib/hooks/useChapterAccess";
 
@@ -14,9 +15,6 @@ import { useChapterAccess } from "@/lib/hooks/useChapterAccess";
    carries the table-of-contents spread the reader opened this chapter from -
    see chapterReturn.ts. */
 
-const LOADING_SHELL =
-  "min-h-screen bg-[#181114] text-[#F2E6D2] grid place-items-center p-6 font-mono text-sm";
-
 function MediaPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -25,11 +23,23 @@ function MediaPageInner() {
   const backHref = tocReturnHref(searchParams?.get("from"), CHAPTER_SPREAD.media);
 
   if (access.status === "checking") {
-    return <main className={LOADING_SHELL}>Loading your digicam...</main>;
+    return (
+      <ChapterLoadingScreen
+        chapter="Chapter 04 · Retro Digicam"
+        title="Developing the film..."
+        message="Web-slinging your snapshots into frame."
+      />
+    );
   }
 
   if (access.status === "unlinked") {
-    return <main className={LOADING_SHELL}>Link both universes before opening the digicam.</main>;
+    return (
+      <ChapterLoadingScreen
+        chapter="Chapter 04 · Retro Digicam"
+        title="Camera's locked"
+        message="Link both universes before opening the digicam."
+      />
+    );
   }
 
   return (
@@ -43,7 +53,15 @@ function MediaPageInner() {
 
 export default function MediaPage() {
   return (
-    <Suspense fallback={<main className={LOADING_SHELL}>Loading your digicam...</main>}>
+    <Suspense
+      fallback={
+        <ChapterLoadingScreen
+          chapter="Chapter 04 · Retro Digicam"
+          title="Developing the film..."
+          message="Web-slinging your snapshots into frame."
+        />
+      }
+    >
       <MediaPageInner />
     </Suspense>
   );

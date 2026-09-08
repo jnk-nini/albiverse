@@ -218,12 +218,16 @@ export default function NowPlayingPill() {
             {ambient.uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
           </button>
 
-          {ambient.trackName && (
-            <>
-              <span className="w-px h-4 bg-[#261D24]" />
-              <Music className="w-3.5 h-3.5 text-[#ECA8B8]" />
-            </>
-          )}
+          <span className="w-px h-4 bg-[#261D24]" />
+
+          <Link
+            href="/soundtrack"
+            title="Open the soundtrack deck"
+            aria-label="Open the soundtrack deck"
+            className="w-8 h-8 shrink-0 flex items-center justify-center rounded-full text-[#E0B1AE] hover:text-[#F2E6D2] hover:bg-[#450A10] cursor-pointer transition"
+          >
+            <Music className="w-4 h-4" />
+          </Link>
 
           <span className="w-px h-4 bg-[#261D24]" />
 

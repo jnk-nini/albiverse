@@ -371,18 +371,74 @@ export const RadarFace = memo(function RadarFace({ className }: { className?: st
  * catalogued, so the drawing has to work either way. Each `data-part` region
  * is highlighted by the caliper interaction.
  */
+/* The four regions the figure actually knows how to draw a highlight for.
+   `highlight` used to require an exact match against these literal strings -
+   but the measurement's name is a free-text field the reader can rename to
+   anything ("Chest" instead of "jacket", say), which silently broke the
+   highlight for anyone who ever customised a label. Aliases keep the figure
+   reacting to whatever a reader plausibly calls each measurement, not just
+   the four seeded defaults. */
+const FIGURE_PART_ALIASES: Record<string, string> = {
+  jacket: "jacket",
+  chest: "jacket",
+  torso: "jacket",
+  shoulders: "jacket",
+  waist: "jacket",
+  wrist: "wrist",
+  cuff: "wrist",
+  sleeve: "wrist",
+  ring: "ring",
+  finger: "ring",
+  shoe: "shoe",
+  shoes: "shoe",
+  foot: "shoe",
+  feet: "shoe",
+};
+
+export function resolveFigurePart(label: string | null | undefined): string | null {
+  if (!label) return null;
+  const key = label.trim().toLowerCase();
+  if (FIGURE_PART_ALIASES[key]) return FIGURE_PART_ALIASES[key];
+  const hit = Object.keys(FIGURE_PART_ALIASES).find((alias) => key.includes(alias));
+  return hit ? FIGURE_PART_ALIASES[hit] : null;
+}
+
 export const VectorFigure = memo(function VectorFigure({
   highlight,
   className,
+  onPartClick,
 }: {
   highlight: string | null;
   className?: string;
+  /** Makes the figure a real control, not just a readout: clicking a region
+      jumps to (or creates) that measurement's field. Omit for a purely
+      decorative render. */
+  onPartClick?: (part: "jacket" | "wrist" | "ring" | "shoe") => void;
 }) {
-  const on = (part: string) => (highlight === part ? "#3FE0F0" : "#3D5460");
-  const w = (part: string) => (highlight === part ? 3 : 1.6);
+  const resolved = resolveFigurePart(highlight);
+  const on = (part: string) => (resolved === part ? "#3FE0F0" : "#3D5460");
+  const w = (part: string) => (resolved === part ? 3 : 1.6);
+  const interactive = Boolean(onPartClick);
+
+  const partProps = (part: "jacket" | "wrist" | "ring" | "shoe") =>
+    interactive
+      ? {
+          role: "button" as const,
+          tabIndex: 0,
+          "aria-label": `Jump to the ${part} measurement`,
+          onClick: () => onPartClick?.(part),
+          onKeyDown: (e: React.KeyboardEvent) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onPartClick?.(part);
+            }
+          },
+          style: { cursor: "pointer", pointerEvents: "auto" as const },
+        }
+      : {};
 
   return (
-    <svg className={className} viewBox="0 0 160 320" fill="none" aria-hidden>
+    <svg className={className} viewBox="0 0 160 320" fill="none" aria-hidden={!interactive}>
       {/* head + torso, never highlighted - context only */}
       <circle cx="80" cy="34" r="20" stroke="#3D5460" strokeWidth="1.6" />
       <path
@@ -396,21 +452,32 @@ export const VectorFigure = memo(function VectorFigure({
         d="M48 72 C 44 100, 44 146, 50 176 L110 176 C 116 146, 116 100, 112 72"
         stroke={on("jacket")}
         strokeWidth={w("jacket")}
-        strokeDasharray={highlight === "jacket" ? "0" : "5 5"}
+        strokeDasharray={resolved === "jacket" ? "0" : "5 5"}
+        {...partProps("jacket")}
       />
 
       {/* arms, with the wrist band picked out */}
       <path d="M52 78 L28 150 M108 78 L132 150" stroke="#3D5460" strokeWidth="1.6" />
-      <path
-        d="M24 150 a7 7 0 0 0 8 0"
-        stroke={on("wrist")}
-        strokeWidth={w("wrist") + 1}
-        strokeLinecap="round"
-      />
-      <circle cx="28" cy="152" r="9" stroke={on("wrist")} strokeWidth={w("wrist")} />
+      <g {...partProps("wrist")}>
+        {/* Invisible, wider than the drawn ring - the visible band is ~16
+            viewBox units across, which scales down to a few px on screen at
+            this figure's actual rendered size, well under a comfortable tap
+            target. */}
+        {interactive && <circle cx="28" cy="152" r="18" fill="transparent" stroke="none" />}
+        <path
+          d="M24 150 a7 7 0 0 0 8 0"
+          stroke={on("wrist")}
+          strokeWidth={w("wrist") + 1}
+          strokeLinecap="round"
+        />
+        <circle cx="28" cy="152" r="9" stroke={on("wrist")} strokeWidth={w("wrist")} />
+      </g>
 
       {/* ring finger */}
-      <circle cx="132" cy="158" r="5.5" stroke={on("ring")} strokeWidth={w("ring") + 0.6} />
+      <g {...partProps("ring")}>
+        {interactive && <circle cx="132" cy="158" r="16" fill="transparent" stroke="none" />}
+        <circle cx="132" cy="158" r="5.5" stroke={on("ring")} strokeWidth={w("ring") + 0.6} />
+      </g>
       <path d="M132 150 L132 168" stroke="#3D5460" strokeWidth="1.6" />
 
       {/* legs + feet */}
@@ -419,6 +486,7 @@ export const VectorFigure = memo(function VectorFigure({
         d="M50 296 L74 296 L74 284 L58 284 Z M110 296 L86 296 L86 284 L102 284 Z"
         stroke={on("shoe")}
         strokeWidth={w("shoe")}
+        {...partProps("shoe")}
       />
     </svg>
   );

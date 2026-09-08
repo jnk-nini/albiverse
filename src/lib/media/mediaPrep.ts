@@ -109,6 +109,46 @@ export function wasMimeRemapped(url: string | null | undefined): boolean {
   return Boolean(VIDEO_MIME_REMAP[mime]);
 }
 
+/* Some mobile browsers hand a picked file back with an empty or generic
+   `file.type` ("" or "application/octet-stream") for certain phone-recorded
+   video formats, especially through a share-sheet "Choose File" flow rather
+   than a native gallery picker. When that happens, `file.type.startsWith(...)`
+   rejects the upload before a single byte is read - not a codec problem, a
+   missing label. Fall back to the extension so those clips are still
+   recognised; the existing MIME remap above still does the real playability
+   fix once a mime exists. */
+const EXTENSION_MIME: Record<string, string> = {
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  m4v: "video/x-m4v",
+  "3gp": "video/3gpp",
+  "3g2": "video/3gpp2",
+  webm: "video/webm",
+  mkv: "video/x-matroska",
+  avi: "video/x-msvideo",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  heic: "image/heic",
+  heif: "image/heif",
+  bmp: "image/bmp",
+  avif: "image/avif",
+};
+
+function guessMimeFromExtension(filename: string): string | null {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  return EXTENSION_MIME[ext] ?? null;
+}
+
+/** A File with a real `type`, guessing from the extension when the browser gave none. */
+export function withGuessedType(file: File): File {
+  if (file.type) return file;
+  const guessed = guessMimeFromExtension(file.name);
+  return guessed ? new File([file], file.name, { type: guessed }) : file;
+}
+
 /* -------------------------------------------------------------- helpers --- */
 
 export function readFileAsDataUrl(file: Blob): Promise<string> {
