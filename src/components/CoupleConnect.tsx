@@ -5,12 +5,15 @@ import { createClient } from "@/lib/supabase/client";
 import { Copy, HeartHandshake, Sparkles, Check, ShieldAlert, Zap } from "lucide-react";
 
 interface CoupleConnectProps {
+  /* Still passed by the caller, but the link itself is done server side now
+     (see handleLinkPartner) - the RPC reads the caller from auth.uid() rather
+     than trusting an id sent up from the client. */
   userId: string;
   myInviteCode: string;
   onConnected: () => void;
 }
 
-export default function CoupleConnect({ userId, myInviteCode, onConnected }: CoupleConnectProps) {
+export default function CoupleConnect({ myInviteCode, onConnected }: CoupleConnectProps) {
   const [partnerCode, setPartnerCode] = useState("");
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,59 +39,24 @@ export default function CoupleConnect({ userId, myInviteCode, onConnected }: Cou
         throw new Error("You cannot link with your own invite code!");
       }
 
-      // 1. Search for partner by code
-      const { data: partnerProfile, error: partnerErr } = await supabase
-        .from("profiles")
-        .select("id, couple_id")
-        .eq("invite_code", cleanCode)
-        .maybeSingle();
+      /* One atomic, rate-limited round trip instead of the old read-then-write
+         chain that used to live here (find profile by code -> look for an old
+         couples row -> insert one -> update both profiles).
 
-      if (partnerErr || !partnerProfile) {
-        throw new Error("Dimension mismatch: Invalid partner code. Please verify.");
-      }
+         The old version could only ever CREATE a couple: if the code's owner
+         already had a couple_id it refused outright, which made it impossible
+         to hand an existing scrapbook to a new partner without a manual SQL
+         swap. `link_partner_by_code` keeps that behaviour for a fresh pair,
+         and adds the case that matters here - dropping into a VACANT seat on a
+         couple that already exists, so every couple_id-keyed row (photos,
+         letters, diary, tapes, events) stays exactly where it is.
 
-      if (partnerProfile.couple_id) {
-        throw new Error("This Spider-Hero is already connected to another universe!");
-      }
-
-      /* 2. If these two were ever linked before and unlinked (Dashboard's
-         "Unlink" only clears couple_id, it never touches this table - see
-         Dashboard.tsx), reattach that same couple row instead of creating a
-         blank one, so their old shared scrapbook comes back instead of being
-         replaced. A pairing that's never existed between these two still
-         creates a fresh row exactly as before. */
-      const { data: existingCouple, error: existingErr } = await supabase
-        .from("couples")
-        .select("id")
-        .or(
-          `and(partner_1_id.eq.${userId},partner_2_id.eq.${partnerProfile.id}),and(partner_1_id.eq.${partnerProfile.id},partner_2_id.eq.${userId})`
-        )
-        .maybeSingle();
-      if (existingErr) throw existingErr;
-
-      let coupleId: string;
-      if (existingCouple) {
-        coupleId = existingCouple.id;
-      } else {
-        const { data: newCouple, error: coupleErr } = await supabase
-          .from("couples")
-          .insert({
-            partner_1_id: userId,
-            partner_2_id: partnerProfile.id,
-          })
-          .select()
-          .single();
-
-        if (coupleErr || !newCouple) throw coupleErr;
-        coupleId = newCouple.id;
-      }
-
-      // 3. Update both users with the shared couple ID
-      const { error: profileUpdateError } = await supabase
-        .from("profiles")
-        .update({ couple_id: coupleId })
-        .in("id", [userId, partnerProfile.id]);
-      if (profileUpdateError) throw profileUpdateError;
+         It runs SECURITY DEFINER because someone who is not a member yet
+         cannot SELECT or UPDATE the couples row they are about to join. */
+      const { error: linkErr } = await supabase.rpc("link_partner_by_code", {
+        p_code: cleanCode,
+      });
+      if (linkErr) throw new Error(linkErr.message);
 
       onConnected();
     } catch (err: any) {

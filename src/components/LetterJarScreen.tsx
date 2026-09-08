@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCachedDraft } from "@/lib/hooks/useCachedDraft";
 import { createPortal } from "react-dom";
 import {
   ArrowLeft,
@@ -528,7 +529,28 @@ export default function LetterJarScreen({
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   const [composerOpen, setComposerOpen] = useState(false);
-  const [draft, setDraft] = useState<Draft>(emptyDraft);
+
+  /* Was plain useState. A letter is the longest thing anyone writes in this
+     app and the easiest to lose: the composer is a full-screen overlay, so a
+     pull-to-refresh, a back gesture or the PWA shell reloading a backgrounded
+     tab used to take the whole thing with it.
+
+     One scope for the chapter rather than one per letter, because the composer
+     holds a single draft at a time - the restored copy is simply "whatever was
+     last being written", which is what someone coming back to a reloaded tab
+     is looking for. Stickers and styling ride along; there is no media in a
+     letter, so nothing here needs pruning to fit. */
+  const {
+    draft,
+    setDraft,
+    restored: draftRestored,
+    discard: discardLetterDraft,
+    commit: commitLetterDraft,
+    dismissRestored: dismissLetterRestored,
+  } = useCachedDraft<Draft>(userId ? `${userId}:letter` : null, emptyDraft(), {
+    isEmpty: (d) => !d.title.trim() && !d.body.trim() && !d.occasion.trim(),
+  });
+
   const [saving, setSaving] = useState(false);
 
   const [stageH, setStageH] = useState(560);
@@ -1054,6 +1076,20 @@ export default function LetterJarScreen({
     return () => window.removeEventListener("keydown", onKey);
   }, [activeId, closeLetter, composerOpen, confirmDelete]);
 
+  /* The composer is a fixed full-viewport overlay, but nothing stops the page
+     underneath from scrolling too — on iOS the internal scroll region can
+     rubber-band at its limits and hand the gesture through. Lock body scroll
+     for as long as the composer is up, restoring whatever it was before. */
+  const prevBodyOverflowRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!composerOpen) return;
+    prevBodyOverflowRef.current = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevBodyOverflowRef.current ?? "";
+    };
+  }, [composerOpen]);
+
   /* Single-key shortcuts for the things worth reaching for without the mouse.
      They stay out of the way of any field being typed into, and of the reader
      and composer while either is up. */
@@ -1166,10 +1202,21 @@ export default function LetterJarScreen({
 
   const openComposer = (next: Draft) => {
     setDraft(next);
+    /* Deliberately opening a different letter, so the "you have an unfinished
+       one" offer is answered - it must not still be sitting there afterwards
+       pointing at a draft that has just been replaced. */
+    dismissLetterRestored();
     setComposerOpen(true);
   };
 
   const startNewLetter = () => openComposer(emptyDraft());
+
+  /* Reopen exactly what was on the desk when the tab reloaded, rather than
+     wiping it with a blank sheet the way startNewLetter would. */
+  const resumeDraft = () => {
+    dismissLetterRestored();
+    setComposerOpen(true);
+  };
 
   /* keeps the shortcut handler pointed at the current closures */
   useEffect(() => {
@@ -1250,9 +1297,36 @@ export default function LetterJarScreen({
       return;
     }
 
+    /* A revised letter goes back under fresh wax. Without this, rewriting a
+       letter your partner has already read leaves it sitting in the jar
+       looking opened, so the new words never get announced - they would only
+       find them by chance on a re-read.
+
+       Done through an RPC because "sealed" lives in the OTHER person's
+       letter_marks row, and letter_marks' RLS only ever lets someone update
+       their own (see the reseal_letter migration). Failure here is not worth
+       failing the save over: the rewrite itself is already committed, so the
+       letter is simply still marked read. */
+    /* Saved for real, so the localStorage rescue copy has done its job. */
+    commitLetterDraft();
+
+    let resealed = true;
+    if (draft.id) {
+      const { error: resealErr } = await supabase.rpc("reseal_letter", {
+        p_letter_id: draft.id,
+      });
+      resealed = !resealErr;
+    }
+
     setComposerOpen(false);
-    if (!draft.id) pulseJar("in");
-    showToast(draft.id ? "Letter rewritten and re-rolled." : "Rolled up and dropped in the jar.");
+    pulseJar(draft.id ? "shake" : "in");
+    showToast(
+      !draft.id
+        ? "Rolled up and dropped in the jar."
+        : resealed
+          ? "Rewritten, re-rolled and sealed again."
+          : "Rewritten, but the wax would not re-set. It stays marked read."
+    );
     fetchAll();
   };
 
@@ -1294,22 +1368,34 @@ export default function LetterJarScreen({
      letters load oldest first, so the newest are at the end. */
   const loose = useMemo(() => visible.slice(-3), [visible]);
 
-  /* Measures the hovered in-jar letter's real on-screen position for
-     JarHoverTag's portal. Loose rolls (outside the glass) keep their own
-     separate, purely CSS-anchored tag and are excluded here. */
-  useLayoutEffect(() => {
-    if (!hovered || loose.some((l) => l.id === hovered)) {
-      setHoverAnchor(null);
-      return;
-    }
-    const el = scrollRefs.current[hovered];
+  /* Every preview tag - in the glass or out on the desk - is now measured off
+     the element the pointer actually entered and portalled to document.body.
+
+     This replaces two different mechanisms that each had a hole in them. The
+     loose rolls beside the jar used a CSS-anchored tag living inside .lj-scene
+     at z-index 90, which the jar (a later sibling with its own stacking
+     context) painted straight over - that is the "previews hidden under the
+     jar" report. And the in-glass path deliberately bailed out for any letter
+     that was ALSO one of the three loose rolls, so hovering one of the three
+     newest letters inside the glass produced no tag at all.
+
+     Measuring the hovered node itself rather than looking an id up in a ref
+     map is what fixes the second one: the same letter has two DOM nodes (one
+     in the glass, one on the desk) and only the pointer knows which. */
+  const hoverOn = useCallback((id: string, el: HTMLElement | null) => {
+    setHovered(id);
     if (!el) {
       setHoverAnchor(null);
       return;
     }
     const rect = el.getBoundingClientRect();
     setHoverAnchor({ x: rect.left + rect.width / 2, y: rect.top });
-  }, [hovered, loose]);
+  }, []);
+
+  const hoverOff = useCallback((id: string) => {
+    setHovered((h) => (h === id ? null : h));
+    setHoverAnchor((a) => (a ? null : a));
+  }, []);
 
   return (
     <main
@@ -1461,6 +1547,29 @@ export default function LetterJarScreen({
       <div className="lj-columns">
         {/* ------------------------------ left: the writing desk collage --- */}
         <aside className="lj-rail lj-rail-l">
+          {/* Only shown when a cached draft actually came back on this mount -
+              i.e. the last visit ended mid-letter. */}
+          {draftRestored && !composerOpen && (
+            <div className="lj-resume">
+              <span className="lj-resume-kicker font-mono">STILL ON THE DESK</span>
+              <p className="lj-resume-title font-marker">
+                {draft.title.trim() || "An unfinished letter"}
+              </p>
+              <div className="lj-resume-actions">
+                <button type="button" className="lj-resume-btn" onClick={resumeDraft}>
+                  Pick it back up
+                </button>
+                <button
+                  type="button"
+                  className="lj-resume-btn is-ghost"
+                  onClick={discardLetterDraft}
+                >
+                  Bin it
+                </button>
+              </div>
+            </div>
+          )}
+
           <button onClick={startNewLetter} className="lj-write-card" type="button">
             {/* Everything that has to be clipped to the envelope's rounded
                 corners lives in here. The badge and the seal sit outside it so
@@ -1639,10 +1748,10 @@ export default function LetterJarScreen({
                     !myMarks[l.id]?.opened_at ? "is-sealed" : ""
                   }`}
                   onClick={(e) => openLetter(l, e.currentTarget)}
-                  onMouseEnter={() => setHovered(l.id)}
-                  onMouseLeave={() => setHovered((h) => (h === l.id ? null : h))}
-                  onFocus={() => setHovered(l.id)}
-                  onBlur={() => setHovered((h) => (h === l.id ? null : h))}
+                  onMouseEnter={(e) => hoverOn(l.id, e.currentTarget)}
+                  onMouseLeave={() => hoverOff(l.id)}
+                  onFocus={(e) => hoverOn(l.id, e.currentTarget)}
+                  onBlur={() => hoverOff(l.id)}
                   aria-label={`${
                     !myMarks[l.id]?.opened_at ? "Sealed letter" : "Letter"
                   }: ${l.title}, from ${nameOf(l.sender_id)}`}
@@ -1657,19 +1766,9 @@ export default function LetterJarScreen({
                     sealed={!myMarks[l.id]?.opened_at}
                     className="w-full h-full"
                   />
-                  {/* Anchored to this button itself (left:50%/top:0%), not to
-                      a jar-glass slot percentage - this letter isn't inside
-                      the glass. */}
-                  {hovered === l.id && !phase && (
-                    <HoverTag
-                      letter={l}
-                      left={50}
-                      top={0}
-                      fromName={nameOf(l.sender_id)}
-                      sealed={!myMarks[l.id]?.opened_at}
-                      locked={isLocked(l)}
-                    />
-                  )}
+                  {/* The preview tag is NOT rendered here any more. Living
+                      inside .lj-scene meant the jar painted over it; it is
+                      portalled to document.body with the in-glass ones now. */}
                 </button>
               ))}
 
@@ -1774,13 +1873,16 @@ export default function LetterJarScreen({
                             if (draggedRef.current) return;
                             openLetter(l, e.currentTarget);
                           }}
-                          onMouseEnter={() => setHovered(l.id)}
-                          onMouseLeave={() => setHovered((h) => (h === l.id ? null : h))}
-                          onFocus={() => {
-                            setHovered(l.id);
+                          onMouseEnter={(e) => hoverOn(l.id, e.currentTarget)}
+                          onMouseLeave={() => hoverOff(l.id)}
+                          onFocus={(e) => {
                             revealSlot(slot);
+                            /* Measured AFTER revealSlot, because that scrolls
+                               the pile - measuring first would tag the letter
+                               at the position it is about to leave. */
+                            hoverOn(l.id, e.currentTarget);
                           }}
-                          onBlur={() => setHovered((h) => (h === l.id ? null : h))}
+                          onBlur={() => hoverOff(l.id)}
                           aria-label={`${sealed ? "Sealed letter" : "Letter"}: ${l.title}, from ${nameOf(l.sender_id)}`}
                           className={`lj-scroll ${sealed ? "is-sealed" : ""} ${locked ? "is-locked" : ""} ${
                             isActive ? "is-out" : ""
@@ -1925,9 +2027,9 @@ export default function LetterJarScreen({
                     ones over lower letters - .lj-glass clips overflow to
                     contain the pile, which cut this off whenever a letter's
                     real on-screen position didn't leave 150-190px of clear
-                    space above it inside the glass itself. Loose rolls
-                    (outside the glass, on the desk) keep their own
-                    percentage-anchored tag - unrelated, unaffected. */}
+                    space above it inside the glass itself. The loose rolls on
+                    the desk render through this same portal now; their old
+                    in-scene tag was the one the jar painted over. */}
                 {hoverAnchor && !phase && (() => {
                   /* `hovered` can outlive the letter it points to - e.g. the
                      list changes out from under an in-progress hover - so
@@ -2304,45 +2406,25 @@ function HoverTagBody({
   );
 }
 
-/* Used only for the loose rolls beside the jar - anchored as a plain
-   percentage position inside that letter's own (non-clipping) button. */
-function HoverTag({
-  letter,
-  left,
-  top,
-  fromName,
-  sealed,
-  locked,
-}: {
-  letter: Letter;
-  left: number;
-  top: number;
-  fromName: string;
-  sealed: boolean;
-  locked: boolean;
-}) {
-  return (
-    <div
-      className="lj-hovertag"
-      style={{
-        left: `${Math.min(86, Math.max(14, left))}%`,
-        top: `${top}%`,
-      }}
-    >
-      <span className="lj-hovertag-string" aria-hidden />
-      <span className="lj-hovertag-hole" aria-hidden />
-      <HoverTagBody letter={letter} fromName={fromName} sealed={sealed} locked={locked} />
-    </div>
-  );
-}
+/* The ONE preview tag, used for every letter - in the glass and out on the
+   desk alike.
 
-/* Used for letters inside the glass. The glass clips overflow to contain the
-   pile, so a tag anchored with jar-relative percentages gets clipped whenever
-   it floats above a letter near the top - there just isn't 150-190px of
-   uncropped room above it in there. Portalled straight into document.body and
-   positioned in real viewport pixels (measured off the letter's own DOM node,
-   via scrollRefs) instead, so it always renders fully on top of everything,
-   above the letter, exactly like the ones over lower letters already do. */
+   It is portalled straight into document.body and positioned in real viewport
+   pixels, measured off whichever DOM node the pointer actually entered. Two
+   different clipping problems make that necessary, and neither can be solved
+   with a z-index:
+
+     - .lj-glass sets overflow:hidden to contain the pile, so a tag anchored
+       with jar-relative percentages was cut off for any letter without
+       150-190px of clear space above it inside the glass;
+     - the loose rolls' old in-scene tag sat at z-index 90 inside .lj-scene,
+       and the jar - a later sibling forming its own stacking context - simply
+       painted over it.
+
+   In document.body there is no clipping ancestor and nothing painted after
+   it, so it always lands fully on top, above its letter, every time. */
+const HOVER_TAG_WIDTH = 198;
+
 function JarHoverTag({
   letter,
   anchor,
@@ -2356,11 +2438,15 @@ function JarHoverTag({
   sealed: boolean;
   locked: boolean;
 }) {
+  /* The tag is centred on its anchor, so a letter close to either edge of the
+     window would otherwise hang half off-screen - the loose rolls sit at 24%
+     and 26% from the edges, which is close enough to matter on a phone. */
+  const half = HOVER_TAG_WIDTH / 2 + 8;
+  const maxX = typeof window === "undefined" ? anchor.x : window.innerWidth - half;
+  const x = Math.max(half, Math.min(anchor.x, maxX));
+
   return createPortal(
-    <div
-      className="lj-hovertag lj-hovertag-fixed"
-      style={{ left: `${anchor.x}px`, top: `${anchor.y}px` }}
-    >
+    <div className="lj-hovertag lj-hovertag-fixed" style={{ left: `${x}px`, top: `${anchor.y}px` }}>
       <span className="lj-hovertag-string" aria-hidden />
       <span className="lj-hovertag-hole" aria-hidden />
       <HoverTagBody letter={letter} fromName={fromName} sealed={sealed} locked={locked} />
@@ -3618,9 +3704,9 @@ function ScopedStyles() {
          it. The low, wide ones stay; the standing bunches step out. */
       @media (max-width: 1023px) {
         .lj-bunch { display: none; }
-        .lj-prop-envelope { width: 128px; left: -2%; }
-        .lj-prop-bundle { width: 118px; right: -3%; }
-        .lj-prop-candle { width: 66px; right: 6%; }
+        .lj-prop-envelope { width: clamp(72px, 22vw, 128px); left: 1%; }
+        .lj-prop-bundle { width: clamp(66px, 20vw, 118px); right: 1%; }
+        .lj-prop-candle { width: clamp(40px, 11vw, 66px); right: 8%; }
         .lj-loose-1, .lj-loose-2, .lj-loose-3 { display: none; }
       }
 
@@ -4175,6 +4261,39 @@ function ScopedStyles() {
          clip: the flap is clipped by .lj-write-paper instead, which leaves the
          badge and the wax seal free to overhang the edges the way a real sticker
          and a real blob of wax would. */
+      /* The "you left a letter half-written" card. Sits above the write
+         card so it reads as something already on the desk, not a new action. */
+      .lj-resume {
+        position: relative;
+        margin-bottom: .75rem;
+        padding: .7rem .8rem .8rem;
+        background: linear-gradient(#F3E7CE, #E3D2AC);
+        border: 2px solid #1C1317;
+        border-radius: 3px;
+        box-shadow: 5px 6px 0 rgba(9,6,8,.7);
+        rotate: -1.1deg;
+      }
+      .lj-resume-kicker {
+        font-size: 8px; font-weight: 900; letter-spacing: .18em; color: #7D2834;
+      }
+      .lj-resume-title {
+        margin: .1rem 0 .5rem; font-size: 1.05rem; line-height: 1.15; color: #1A0D10;
+        overflow-wrap: anywhere;
+      }
+      .lj-resume-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+      .lj-resume-btn {
+        padding: .3rem .6rem;
+        background: #7D2834; color: #F7EFE2;
+        border: 2px solid #1C1317; box-shadow: 2px 2px 0 rgba(9,6,8,.75);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 9.5px; font-weight: 900; letter-spacing: .1em;
+        cursor: pointer;
+      }
+      .lj-resume-btn:hover { background: #94303E; }
+      .lj-resume-btn:active { translate: 2px 2px; box-shadow: none; }
+      .lj-resume-btn.is-ghost { background: transparent; color: #4A2028; }
+      .lj-resume-btn.is-ghost:hover { background: rgba(28,19,23,.1); }
+
       .lj-write-card {
         position: relative; overflow: visible; text-align: left; cursor: pointer;
         display: block; width: 100%;
@@ -4766,15 +4885,16 @@ function ScopedStyles() {
       .lj-composer-body {
         flex: 1; min-height: 0; display: grid; gap: 1rem;
         grid-template-columns: 1fr; padding: 1rem; overflow-y: auto;
+        overscroll-behavior: contain;
       }
       @media (min-width: 1024px) {
         .lj-composer-body { grid-template-columns: minmax(0,1fr) 392px; overflow: hidden; }
       }
 
-      .lj-preview-stage { min-height: 0; display: flex; flex-direction: column; }
-      .lj-preview-frame { position: relative; flex: 1; min-height: 0; display: flex; }
+      .lj-preview-stage { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+      .lj-preview-frame { position: relative; flex: 1; min-height: 0; min-width: 0; display: flex; }
       .lj-preview {
-        flex: 1; min-height: 300px;
+        flex: 1; min-height: 300px; min-width: 0;
         box-shadow: 14px 16px 0 rgba(9,6,8,.66), inset 0 0 70px rgba(120,80,40,.14);
         rotate: -.5deg;
       }
@@ -4786,6 +4906,15 @@ function ScopedStyles() {
       .lj-roll-preview-svg {
         display: block; width: 172px; height: 50px;
         filter: drop-shadow(0 6px 10px rgba(0,0,0,.6));
+      }
+      @media (max-width: 640px) {
+        .lj-roll-preview {
+          right: 10px; bottom: auto; top: 10px;
+          width: 96px;
+        }
+        .lj-roll-preview-svg {
+          width: 96px; height: 28px;
+        }
       }
 
       .lj-sticker-tools {

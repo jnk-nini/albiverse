@@ -267,6 +267,25 @@ export default function SoundtrackScreen({
   const [openTrackMenu, setOpenTrackMenu] = useState<string | null>(null);
   const [fileChooser, setFileChooser] = useState<PendingUpload[] | null>(null);
 
+  /* Collapsed by default on mobile/tablet widths (a long tape used to push
+     the vinyl/controls far below the fold), expanded by default on desktop.
+     Starts `true` on every render - server and client alike - since
+     matchMedia isn't knowable during SSR; the effect below applies the real
+     mobile default exactly once, right after mount. Only that INITIAL value
+     tracks the viewport - it's a one-time default, not a live media-query
+     subscription, so a later resize never yanks the panel open/closed out
+     from under the reader mid-scroll. */
+  const [tracklistExpanded, setTracklistExpanded] = useState(true);
+  const tracklistDefaultAppliedRef = useRef(false);
+  useEffect(() => {
+    if (tracklistDefaultAppliedRef.current) return;
+    tracklistDefaultAppliedRef.current = true;
+    if (window.matchMedia("(max-width: 1079px)").matches) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time post-mount default; matchMedia isn't knowable during SSR, same reasoning as AudioPlayerProvider's mediaHostEl
+      setTracklistExpanded(false);
+    }
+  }, []);
+
   /* ----------------------------------------------------------- new tape */
   const [draftTitle, setDraftTitle] = useState("");
   const [draftLabel, setDraftLabel] = useState("kraft");
@@ -315,6 +334,20 @@ export default function SoundtrackScreen({
     if (tracks.length === 0) return null;
     return tracks.reduce((newest, t) => (t.created_at > newest.created_at ? t : newest));
   }, [tracks]);
+
+  /* "Fresh off the tape" used to need two taps on mobile: a cold player has
+     no YT iframe built yet, so the first tap's play() call could only queue
+     pendingYoutubeId and the actual loadVideoById fired later from an effect
+     reacting to the iframe API finishing its load - outside any user
+     gesture, which mobile browsers block. Building the player as soon as the
+     board is showing a YouTube track closes that gap for the common case;
+     ensureYtPlayer/warmUp no-ops if a player already exists or is already
+     being built, so this is safe to fire every time the board mounts. */
+  useEffect(() => {
+    if (stage !== "board" || latestTrack?.source !== "youtube") return;
+    mixtape.warmUp();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- narrow on purpose: mixtape.warmUp's own identity is stable (see AudioPlayerProvider's ensureYtPlayer), while `mixtape` itself is a new object on every 250ms playback tick and would otherwise re-fire this constantly
+  }, [stage, latestTrack, mixtape.warmUp]);
 
   const nameFor = useCallback(
     (id: string) => (id === userId ? myName : partnerName),
@@ -404,24 +437,35 @@ export default function SoundtrackScreen({
 
   /* ------------------------------------------------------ the boombox drop */
 
+  /* The clack() that used to fire here ran on the effect's own schedule, not
+     synchronously inside the click/tap that actually requested the drop -
+     mobile browsers require the AudioContext resume to happen inside the
+     real user gesture. Every path that sets stage to "dropping" now fires
+     clack() itself, as the first synchronous line of its own handler; this
+     effect only ever advances the animation timer. */
   useEffect(() => {
     if (stage !== "dropping") return;
-    clack();
     const id = window.setTimeout(() => {
       setStage("player");
       setDroppingTapeId(null);
     }, 1750);
     return () => window.clearTimeout(id);
-  }, [stage, clack]);
+  }, [stage]);
 
   /** Jump straight past the board and stack: drop a tape into the boombox
-      and start playing one particular track off it. */
-  const openTrackDirect = useCallback((track: Track) => {
-    setActiveTapeId(track.mixtape_id);
-    setDroppingTapeId(track.mixtape_id);
-    setPendingPlayTrackId(track.id);
-    setStage("dropping");
-  }, []);
+      and start playing one particular track off it. Called directly from the
+      "Fresh off the tape" button's onClick, so clack() here still runs
+      synchronously inside that gesture. */
+  const openTrackDirect = useCallback(
+    (track: Track) => {
+      clack();
+      setActiveTapeId(track.mixtape_id);
+      setDroppingTapeId(track.mixtape_id);
+      setPendingPlayTrackId(track.id);
+      setStage("dropping");
+    },
+    [clack]
+  );
 
   /* ----------------------------------------------------- the fresh tape */
 
@@ -454,7 +498,6 @@ export default function SoundtrackScreen({
         window.setTimeout(() => {
           if (cancelled) return;
           setCreatePhase("taped");
-          clack();
           nameInputRef.current?.focus();
         }, 420)
       );
@@ -464,7 +507,9 @@ export default function SoundtrackScreen({
       cancelled = true;
       timers.forEach((t) => window.clearTimeout(t));
     };
-  }, [stage, clack]);
+    // clack() for entering this stage now fires from the "blank tape" button's
+    // own onClick, synchronously inside the gesture - not from here.
+  }, [stage]);
 
   /* The marker cursor rides the end of the typed title. Measured off a hidden
      mirror span and written straight onto the node as a custom property, so
@@ -603,6 +648,11 @@ export default function SoundtrackScreen({
   /* -------------------------------------------------------------- writes */
 
   const [runCreateTape, creatingTape] = useGuardedAction(async () => {
+    /* First synchronous line, before the Supabase await - this call still
+       runs inside the click/Enter-key gesture that invoked runCreateTape,
+       which is what the AudioContext resume needs on mobile. Firing it after
+       the insert resolves (the old behavior) put it outside the gesture. */
+    clack();
     const title = draftTitle.trim() || "Untitled Mixtape";
     const { data, error: insertError } = await supabase
       .from("mixtapes")
@@ -625,7 +675,6 @@ export default function SoundtrackScreen({
     const tape = data as Mixtape;
     setTapes((prev) => [...prev, tape]);
     setCreatePhase("opening");
-    clack();
     setActiveTapeId(tape.id);
     setDraftTitle("");
     window.setTimeout(() => setStage("player"), 900);
@@ -819,6 +868,8 @@ export default function SoundtrackScreen({
   );
 
   const [runFileToTape] = useGuardedAction(async (tapeId: string) => {
+    /* Synchronous, before any await - see runCreateTape's note on why. */
+    clack();
     const pending = fileChooser;
     if (!pending) return;
     setFileChooser(null);
@@ -844,6 +895,8 @@ export default function SoundtrackScreen({
   }, 800);
 
   const [runFileToNewTape] = useGuardedAction(async () => {
+    /* Synchronous, before any await - see runCreateTape's note on why. */
+    clack();
     const pending = fileChooser;
     if (!pending) return;
     const { data, error: insertError } = await supabase
@@ -999,13 +1052,6 @@ export default function SoundtrackScreen({
 
   const boardTapes = tapes;
 
-  /* Playback is global now - leaving the tape only resets this screen's own
-     view state. The engine keeps whatever was playing going in the
-     background, per the app-wide "audio survives navigation" goal. */
-  const leaveTape = () => {
-    setStage("board");
-  };
-
   return (
     <main className="st-root">
       <style>{SOUNDTRACK_CSS}</style>
@@ -1014,6 +1060,37 @@ export default function SoundtrackScreen({
       <div className="st-cork" aria-hidden />
       <div className="st-cork-marks" aria-hidden />
       <div className="st-lamp" aria-hidden />
+
+      {/* One exit control, shared by all four stages, always pinned near the
+          top-left corner instead of drifting between a top-right ticket
+          (board), a bottom-of-deck ticket (player), or having none at all
+          (creating/dropping). Same TicketStub/st-object visual as before -
+          only the positioning is unified. */}
+      {!loading && (
+        <button
+          type="button"
+          className="st-exit-fixed st-object"
+          aria-label={stage === "board" ? "Exit to contents" : "Back to the board"}
+          onClick={() => {
+            if (stage === "board") {
+              onBack();
+              return;
+            }
+            if (stage === "dropping") {
+              /* Cancels the boombox-drop animation outright, same reset the
+                 drop's own completion would otherwise apply. */
+              setDroppingTapeId(null);
+              setPendingPlayTrackId(null);
+            }
+            setStage("board");
+          }}
+        >
+          <TicketStub
+            primary={stage === "board" ? "Exit" : "Back"}
+            secondary={stage === "board" ? "back to contents" : "back to the board"}
+          />
+        </button>
+      )}
 
       {/* the only thing that is not an object: a live region for messages */}
       <div className="st-messages" role="status" aria-live="polite">
@@ -1066,6 +1143,7 @@ export default function SoundtrackScreen({
                         } as CSSProperties
                       }
                       onClick={() => {
+                        clack();
                         setActiveTapeId(tape.id);
                         setDroppingTapeId(tape.id);
                         setStage("dropping");
@@ -1160,6 +1238,7 @@ export default function SoundtrackScreen({
               type="button"
               className="st-create st-object"
               onClick={() => {
+                clack();
                 setDraftTitle("");
                 setStage("creating");
               }}
@@ -1193,11 +1272,6 @@ export default function SoundtrackScreen({
             >
               <VinylQrSticker matrix={qrMatrix} caption="MJPICKS QR" size={132} />
               <span className="st-object-caption">Share</span>
-            </button>
-
-            {/* the way out */}
-            <button type="button" className="st-exit st-exit-top st-object" onClick={onBack}>
-              <TicketStub primary="Exit" secondary="back to contents" />
             </button>
           </div>
 
@@ -1350,6 +1424,20 @@ export default function SoundtrackScreen({
               </p>
             </header>
 
+            <button
+              type="button"
+              className="st-ghost-btn st-tracklist-toggle"
+              onClick={() => setTracklistExpanded((v) => !v)}
+              aria-expanded={tracklistExpanded}
+            >
+              <ListMusic className="w-4 h-4" strokeWidth={3} />
+              {`Side A — ${tapeTracks.length} track${tapeTracks.length === 1 ? "" : "s"}`}
+              <span className="st-tracklist-toggle-state">
+                {tracklistExpanded ? "Hide tracks" : "Show tracks"}
+              </span>
+            </button>
+
+            {tracklistExpanded && (
             <div className="st-tracklist">
               {tapeTracks.length === 0 && (
                 <p className="st-empty-card">
@@ -1427,6 +1515,7 @@ export default function SoundtrackScreen({
                 );
               })}
             </div>
+            )}
 
             <div className="st-rail-actions">
               <button type="button" className="st-ink-btn" onClick={() => setShowSearch(true)}>
@@ -1584,10 +1673,6 @@ export default function SoundtrackScreen({
                 )}
               </p>
             </div>
-
-            <button type="button" className="st-exit st-exit-deck st-object" onClick={leaveTape}>
-              <TicketStub primary="Back to the board" secondary="all our tapes" />
-            </button>
           </section>
 
           {/* right rail: the viewfinder and the share cutting */}
@@ -2142,16 +2227,24 @@ const SOUNDTRACK_CSS = `
 }
 .st-envelope-btn { width: min(260px, 72vw); }
 /* Bottom-aligned so it sits in the bottom-right of its spanned rows instead
-   of pinned to the top (which is also where the exit ticket floats) - that
-   used to leave the whole bottom of this column looking empty. */
+   of pinned to the top - that used to leave the whole bottom of this column
+   looking empty. */
 .st-share-btn { width: fit-content; align-self: end; }
 
-.st-exit { position: absolute; }
-.st-exit-top { top: 0; right: 4px; }
-@media (max-width: 899px) {
-  .st-exit-top { position: static; margin: 0 auto; display: block; }
+/* The one exit control shared by every stage (board/creating/dropping/player)
+   - see its single render site near the top of the component's return. Fixed
+   rather than stage-scoped so it never has to be re-declared per stage, and
+   pinned top-left (not top-right, where it used to collide with the search
+   API badge/share stack on narrow widths) with a safe-area inset for notched
+   phones. z-index sits above ordinary stage content (dropping/creating stages
+   are z-index 45, .st-fresh is 50) but below the search/share/editor sheet
+   overlays (z-index 60+), so an open sheet's own scrim still covers it. */
+.st-exit-fixed {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: max(12px, env(safe-area-inset-left));
+  z-index: 55;
 }
-.st-exit-deck { position: static; margin: 18px auto 0; display: block; }
 
 .st-board-empty {
   text-align: center;
@@ -2623,6 +2716,17 @@ const SOUNDTRACK_CSS = `
     align-items: start;
   }
 }
+/* Below the 3-column breakpoint the player stacks into one column in DOM
+   order (tracklist, deck, viewfinder) - the vinyl/turntable used to end up
+   buried under the whole tracklist on a long tape. The CSS order property
+   only changes paint order, never the DOM, so the >=1080px 3-column layout
+   above (which relies on source order for its column assignment) is
+   untouched. The extra top padding keeps the deck's first control clear of
+   the fixed exit stub. */
+@media (max-width: 1079px) {
+  .st-deck { order: -1; }
+  .st-player { padding-top: 56px; }
+}
 
 .st-rail { display: grid; gap: 16px; align-content: start; }
 .st-rail-head {
@@ -2636,6 +2740,20 @@ const SOUNDTRACK_CSS = `
 .st-rail-title { font-family: 'Permanent Marker', cursive; font-size: 26px; line-height: 1.05; }
 .st-rail-sub { font-family: 'Caveat', cursive; font-size: 18px; color: #5A452A; }
 .st-rail-head .st-kicker { color: #A03A44; }
+
+.st-tracklist-toggle {
+  width: 100%;
+  justify-content: space-between;
+  margin-bottom: -2px;
+}
+.st-tracklist-toggle-state {
+  font-family: 'Caveat', cursive;
+  font-size: 17px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: normal;
+  color: #5A452A;
+}
 
 .st-tracklist { display: grid; gap: 14px; }
 .st-empty-card {

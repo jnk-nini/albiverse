@@ -33,6 +33,8 @@ import {
   List,
   Loader2,
   RotateCcw,
+  Copy,
+  Check,
   X
 } from "lucide-react";
 
@@ -100,6 +102,22 @@ export default function Dashboard({
 
   const myName = profile?.full_name || "Gwen Stacy";
   const partnerName = partner?.full_name || "Peter Parker";
+
+  /* A couple row can sit with one seat empty: either it was created that way,
+     or the person in it walked away (Unlink clears profiles.couple_id but
+     leaves the couples row alone). The person still holding the row never sees
+     CoupleConnect - that screen only renders for a profile with NO couple_id -
+     so without this banner there is nowhere in the app to read your own invite
+     code, and no sign that the seat is waiting to be filled.
+
+     Guarded on the column actually being present, because page.tsx renders a
+     minimal fallback `couple` object while the real row is still in flight;
+     without this check the banner flashes on every load. */
+  const partnerSeatOpen =
+    !!couple &&
+    Object.prototype.hasOwnProperty.call(couple, "partner_1_id") &&
+    (!couple.partner_1_id || !couple.partner_2_id);
+  const [seatCodeCopied, setSeatCodeCopied] = useState(false);
 
   const coupleId = couple?.id as string | undefined;
   /* No shared static default image on purpose - the original placeholder,
@@ -797,14 +815,20 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            onClick={handleUnlink}
-            disabled={unlinking}
-            className="text-xs font-mono font-black text-[#E0B1AE] bg-[#3C1820] hover:bg-[#5A2029] px-3 py-1.5 border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] flex items-center gap-1.5 transition cursor-pointer"
-          >
-            <Unlink className="w-3.5 h-3.5" />
-            <span>{unlinking ? "Unlinking..." : "Unlink"}</span>
-          </button>
+          {/* Hidden while a seat is empty: there is nobody on the other side to
+              unlink from, and pressing it in that state would clear your OWN
+              couple_id and leave you locked out of a scrapbook you still own,
+              with no partner code left to type your way back in. */}
+          {!partnerSeatOpen && (
+            <button
+              onClick={handleUnlink}
+              disabled={unlinking}
+              className="text-xs font-mono font-black text-[#E0B1AE] bg-[#3C1820] hover:bg-[#5A2029] px-3 py-1.5 border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] flex items-center gap-1.5 transition cursor-pointer"
+            >
+              <Unlink className="w-3.5 h-3.5" />
+              <span>{unlinking ? "Unlinking..." : "Unlink"}</span>
+            </button>
+          )}
           <button
             onClick={() => runSignOut()}
             disabled={signingOut}
@@ -815,6 +839,49 @@ const handleGoToCountdowns = (e: React.MouseEvent) => {
           </button>
         </div>
       </header>
+
+      {/* ============= OPEN SEAT: WAITING FOR THE OTHER HALF ============= */}
+      {partnerSeatOpen && !isBookOpened && (
+        <div className="max-w-6xl mx-auto w-full z-30 mt-3">
+          <div className="relative paper-sheet-solid px-4 py-3 sm:px-6 sm:py-4 -rotate-[0.4deg] shadow-[6px_6px_0_#171B22]">
+            <div className="absolute -top-3 left-8 tape-red-solid w-28 h-6 rotate-2 pointer-events-none" />
+
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
+              <div className="flex-1 min-w-0">
+                <p className="font-mono text-[10px] font-black uppercase tracking-[0.18em] text-[#7a1f34]">
+                  One seat still empty
+                </p>
+                <p className="font-handwriting text-lg sm:text-xl leading-tight text-[#1a0d10]">
+                  Give them this frequency. They sign up, type it in, and every page in
+                  here is theirs too &mdash; nothing you&apos;ve made gets lost.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="font-mono text-2xl sm:text-3xl font-black tracking-[0.22em] text-[#1a0d10] bg-[#F5E7C8] border-[2.5px] border-[#261D24] px-3 py-1.5 shadow-[3px_3px_0_#171B22]">
+                  {profile?.invite_code || "------"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(profile?.invite_code ?? "");
+                    setSeatCodeCopied(true);
+                    window.setTimeout(() => setSeatCodeCopied(false), 2000);
+                  }}
+                  aria-label="Copy your invite code"
+                  className="p-2.5 bg-[#2E0509] hover:bg-[#450A10] text-[#ECA8B8] border-2 border-[#261D24] shadow-[3px_3px_0_#171B22] transition cursor-pointer"
+                >
+                  {seatCodeCopied ? (
+                    <Check className="w-4 h-4 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ================= INTRO: FRONT SCRAPBOOK COVER ================= */}
       {(!isBookOpened || isClosingSequence) && (
