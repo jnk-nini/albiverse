@@ -31,6 +31,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { blobKey, dropBlob, readBlobs, versionOf, writeBlobs } from "@/lib/media/blobCache";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import {
   compressImage,
@@ -68,6 +69,10 @@ interface DigicamItem {
   filter: string | null;
   is_favorite: boolean | null;
   position: number | null;
+  /* Not rendered - it is the blob cache's version stamp. Every path that
+     replaces `url` bumps it, so a replaced photo invalidates its own cached
+     copy on both partners' devices. */
+  updated_at: string | null;
 }
 
 interface DigicamScreenProps {
@@ -113,7 +118,7 @@ const VIDEO_TRANSCODE_THRESHOLD = 12 * 1024 * 1024;
    below is a couple of KB and arrives instantly; the media itself is fetched
    afterwards by `loadMediaFor`, current frame first. */
 const SELECT_COLUMNS =
-  "id, couple_id, uploader_id, media_type, caption, notes, created_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v, filter, is_favorite, position";
+  "id, couple_id, uploader_id, media_type, caption, notes, created_at, updated_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v, filter, is_favorite, position";
 
 /* Film stocks. `css` goes straight into the CSS filter property on the photo,
    `chip` is the swatch colour used in the picker so each stock is identifiable
@@ -536,6 +541,10 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
      the loading state rather than as an empty frame. */
   const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({});
   const inflightMediaRef = useRef<Set<string>>(new Set());
+  /* id -> updated_at for every row currently loaded, so loadMediaFor can key
+     the blob cache without taking `items` as a dependency (which would
+     re-create it and re-trigger the fetch effect on every metadata change). */
+  const mediaVersionRef = useRef<Map<string, string>>(new Map());
 
   const loadMediaFor = useCallback(
     async (ids: string[]) => {
@@ -543,14 +552,37 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
       if (wanted.length === 0) return;
       wanted.forEach((id) => inflightMediaRef.current.add(id));
 
+      /* EGRESS: this roll is ~74MB of base64 in the database and none of it
+         is CDN-cached, so before this every visit re-downloaded every frame
+         you looked at. Anything already held at the same `updated_at` now
+         costs nothing; only genuine misses reach the network. */
+      const versions = mediaVersionRef.current;
+      const cached = await readBlobs(
+        wanted.map((id) => ({ key: blobKey.digicamMedia(id), version: versions.get(id) ?? "v0" }))
+      );
+
+      if (cached.size > 0) {
+        setMediaUrls((prev) => {
+          const next = { ...prev };
+          for (const id of wanted) {
+            const hit = cached.get(blobKey.digicamMedia(id));
+            if (hit) next[id] = hit;
+          }
+          return next;
+        });
+      }
+
+      const missing = wanted.filter((id) => !cached.has(blobKey.digicamMedia(id)));
+      if (missing.length === 0) return;
+
       const { data, error: mediaError } = await supabase
         .from("digicam_media")
         .select("id, url")
         .eq("couple_id", coupleId)
-        .in("id", wanted);
+        .in("id", missing);
 
       if (mediaError) {
-        wanted.forEach((id) => inflightMediaRef.current.delete(id));
+        missing.forEach((id) => inflightMediaRef.current.delete(id));
         setError(mediaError.message);
         return;
       }
@@ -560,6 +592,16 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
         for (const row of data ?? []) next[row.id as string] = row.url as string;
         return next;
       });
+
+      void writeBlobs(
+        (data ?? [])
+          .filter((row) => typeof row.url === "string")
+          .map((row) => ({
+            key: blobKey.digicamMedia(row.id as string),
+            version: versions.get(row.id as string) ?? "v0",
+            value: row.url as string,
+          }))
+      );
     },
     [coupleId, supabase]
   );
@@ -576,6 +618,7 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
       setError(loadError.message);
     } else {
       const rows = (data ?? []) as DigicamItem[];
+      mediaVersionRef.current = new Map(rows.map((r) => [r.id, versionOf(r)]));
       setItems(rows);
       setCurrentIndex((i) => (rows.length ? Math.min(i, rows.length - 1) : 0));
       /* Anything whose bytes are already held stays cached; a Replace clears
@@ -1106,6 +1149,9 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
       delete next[currentItem.id];
       return next;
     });
+    /* The persistent copy is keyed by updated_at, which just changed, so it
+       is already a miss - this only stops the dead bytes taking up a slot. */
+    void dropBlob(blobKey.digicamMedia(currentItem.id));
     inflightMediaRef.current.delete(currentItem.id);
     setVideoErrorId((id) => (id === currentItem.id ? null : id));
     setDraftFrame(DEFAULT_FRAME);
@@ -1136,6 +1182,9 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
       setError(deleteError.message);
       return;
     }
+    /* The row is gone for good - do not leave its bytes sitting in the cache
+       taking up a slot that a live frame could use. */
+    void dropBlob(blobKey.digicamMedia(currentItem.id));
     setPanel(null);
     setCurrentIndex((i) => Math.max(0, i - 1));
     await loadItems();

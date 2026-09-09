@@ -403,10 +403,25 @@ export function resolveFigurePart(label: string | null | undefined): string | nu
   return hit ? FIGURE_PART_ALIASES[hit] : null;
 }
 
+/** A measurement pinned to an arbitrary spot on the figure, in viewBox units. */
+export interface FigurePin {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  active?: boolean;
+}
+
+export const FIGURE_VIEWBOX = { w: 160, h: 320 };
+
 export const VectorFigure = memo(function VectorFigure({
   highlight,
   className,
   onPartClick,
+  pins,
+  placing,
+  onCanvasClick,
+  onPinClick,
 }: {
   highlight: string | null;
   className?: string;
@@ -414,14 +429,23 @@ export const VectorFigure = memo(function VectorFigure({
       jumps to (or creates) that measurement's field. Omit for a purely
       decorative render. */
   onPartClick?: (part: "jacket" | "wrist" | "ring" | "shoe") => void;
+  /** Measurements pinned anywhere on the body, drawn as numbered markers. */
+  pins?: FigurePin[];
+  /** While true the whole figure is a target: the next click drops a pin. */
+  placing?: boolean;
+  /** Receives viewBox coordinates, not screen ones. */
+  onCanvasClick?: (x: number, y: number) => void;
+  onPinClick?: (id: string) => void;
 }) {
   const resolved = resolveFigurePart(highlight);
   const on = (part: string) => (resolved === part ? "#3FE0F0" : "#3D5460");
   const w = (part: string) => (resolved === part ? 3 : 1.6);
   const interactive = Boolean(onPartClick);
 
+  /* While placing, the preset regions stop intercepting - the point is that
+     ANY spot is valid, including one on top of the jacket outline. */
   const partProps = (part: "jacket" | "wrist" | "ring" | "shoe") =>
-    interactive
+    interactive && !placing
       ? {
           role: "button" as const,
           tabIndex: 0,
@@ -437,8 +461,42 @@ export const VectorFigure = memo(function VectorFigure({
         }
       : {};
 
+  /* Screen pixels to viewBox units. Done through the SVG's own matrix rather
+     than getBoundingClientRect maths, because the default preserveAspectRatio
+     letterboxes the viewBox inside the element - a percentage of the box is
+     not a percentage of the drawing. */
+  const toViewBox = (e: React.MouseEvent<SVGSVGElement>) => {
+    const svg = e.currentTarget;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    const local = pt.matrixTransform(ctm.inverse());
+    return { x: local.x, y: local.y };
+  };
+
   return (
-    <svg className={className} viewBox="0 0 160 320" fill="none" aria-hidden={!interactive}>
+    <svg
+      className={className}
+      viewBox="0 0 160 320"
+      fill="none"
+      aria-hidden={!interactive}
+      style={placing ? { cursor: "crosshair" } : undefined}
+      onClick={
+        placing && onCanvasClick
+          ? (e) => {
+              const p = toViewBox(e);
+              if (p) onCanvasClick(p.x, p.y);
+            }
+          : undefined
+      }
+    >
+      {/* Catches clicks on empty space while placing; without it only the
+          drawn strokes would be hit-testable and most of the body is gaps. */}
+      {placing && (
+        <rect x="0" y="0" width="160" height="320" fill="transparent" style={{ pointerEvents: "auto" }} />
+      )}
       {/* head + torso, never highlighted - context only */}
       <circle cx="80" cy="34" r="20" stroke="#3D5460" strokeWidth="1.6" />
       <path
@@ -488,6 +546,51 @@ export const VectorFigure = memo(function VectorFigure({
         strokeWidth={w("shoe")}
         {...partProps("shoe")}
       />
+
+      {/* Free-placed measurement pins. Drawn last so they sit above the body,
+          and inert while placing so the click reaches the canvas beneath. */}
+      {pins?.map((pin, i) => (
+        <g
+          key={pin.id}
+          style={{ pointerEvents: placing ? "none" : "auto", cursor: onPinClick ? "pointer" : "default" }}
+          onClick={placing ? undefined : () => onPinClick?.(pin.id)}
+          role={onPinClick && !placing ? "button" : undefined}
+          tabIndex={onPinClick && !placing ? 0 : undefined}
+          aria-label={onPinClick ? `Jump to the ${pin.label || "unnamed"} measurement` : undefined}
+          onKeyDown={
+            onPinClick && !placing
+              ? (e: React.KeyboardEvent) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onPinClick(pin.id);
+                  }
+                }
+              : undefined
+          }
+        >
+          {/* comfortable tap target, well beyond the drawn dot */}
+          <circle cx={pin.x} cy={pin.y} r="13" fill="transparent" />
+          <circle
+            cx={pin.x}
+            cy={pin.y}
+            r={pin.active ? 7.5 : 6}
+            fill="#0D1116"
+            stroke={pin.active ? "#3FE0F0" : "#6E8494"}
+            strokeWidth={pin.active ? 2.4 : 1.6}
+          />
+          <text
+            x={pin.x}
+            y={pin.y + 2.6}
+            textAnchor="middle"
+            fontSize="7"
+            fontFamily="'Courier New', Courier, monospace"
+            fontWeight="700"
+            fill={pin.active ? "#3FE0F0" : "#93A3B2"}
+          >
+            {i + 1}
+          </text>
+        </g>
+      ))}
     </svg>
   );
 });

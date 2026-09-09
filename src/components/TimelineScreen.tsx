@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { blobKey, dropBlob, readBlobs, writeBlobs } from "@/lib/media/blobCache";
+import { compressImage } from "@/lib/media/mediaPrep";
 import SpideyBackground from "./SpideyBackground";
 import { 
   ArrowLeft, 
@@ -17,7 +19,6 @@ import {
   Heart, 
   Camera, 
   RotateCw, 
-  UploadCloud, 
   Image as ImageIcon,
   ChevronLeft,
   ChevronRight,
@@ -42,16 +43,34 @@ export interface PolaroidMemory {
   photo_rotation?: number;
   photo_flip_h?: boolean;
   photo_flip_v?: boolean;
+  /* Not rendered - the blob cache's version stamp for this row's photo. */
+  updatedAt?: string;
 }
 
+/* PERFORMANCE: `url` is deliberately NOT in this list. It holds the whole
+   photo as a base64 data URL (no Storage bucket exists - see CLAUDE.md), and
+   on this account that averages ~3MB per polaroid. Selecting it here meant
+   nothing at all could be drawn until every photo in the gallery had come
+   down the wire. The metadata below is a couple of KB for the whole timeline
+   and arrives effectively instantly; the photo bytes are then fetched
+   separately by `loadPhotos()` so the polaroids develop into their frames.
+
+   This is the same two-stage load Ch.04 Digicam already uses. */
 const MEMORY_SELECT_COLUMNS =
-  "id, url, caption, notes, memory_date, created_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v";
+  "id, caption, notes, memory_date, created_at, updated_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v";
+
+/* How many photos to pull in the first burst. The rest follow immediately
+   after, so a long timeline still fills in without one giant request. */
+const PHOTO_BATCH = 3;
 
 function normalizeMemory(item: any): PolaroidMemory {
   const rawDate: string = item.memory_date || (item.created_at ? new Date(item.created_at).toISOString().slice(0, 10) : "");
   return {
     id: item.id,
-    url: item.file_url || item.url || "https://images.unsplash.com/photo-1518199266791-5375a83190b7?w=800&q=80",
+    /* Empty when the row came from the metadata-only select. Realtime
+       payloads DO carry the full row, so those arrive with bytes attached
+       and get harvested into `photoUrls` below. */
+    url: item.file_url || item.url || "",
     caption: item.caption || "Multiverse Memory",
     date: rawDate
       ? new Date(`${rawDate}T00:00:00`).toLocaleDateString([], {
@@ -68,6 +87,7 @@ function normalizeMemory(item: any): PolaroidMemory {
     photo_rotation: item.photo_rotation ?? 0,
     photo_flip_h: item.photo_flip_h ?? false,
     photo_flip_v: item.photo_flip_v ?? false,
+    updatedAt: item.updated_at ?? item.created_at ?? "v0",
   };
 }
 
@@ -89,8 +109,10 @@ export default function TimelineScreen({
   const [loading, setLoading] = useState(initialMemories.length === 0);
   const [error, setError] = useState<string | null>(null);
 
-  // Multiverse entry loading overlay
-  const [isSpideyLoading, setIsSpideyLoading] = useState(true);
+  /* Photo bytes, keyed by row id, filled in after the metadata lands. Kept
+     out of `memories` so a photo arriving never re-sorts or re-renders the
+     whole timeline structure. */
+  const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -100,6 +122,9 @@ export default function TimelineScreen({
   const [formNotes, setFormNotes] = useState("");
   const [formDate, setFormDate] = useState("");
   const [saving, setSaving] = useState(false);
+  /* Canvas downscale runs off the main data path; block submit while it does
+     so a photo can't be saved half-prepared. */
+  const [preparingPhoto, setPreparingPhoto] = useState(false);
 
   // Photo Transformation Controls
   const [photoScale, setPhotoScale] = useState<number>(1.0);
@@ -119,25 +144,93 @@ export default function TimelineScreen({
 
   const supabase = createClient();
 
+  /* The entry overlay used to sit for a flat 1100ms no matter how fast the
+     data arrived, so it was pure added latency on top of the load. Now it is
+     a floor, not a duration: it clears as soon as the metadata is in, and the
+     floor only exists so the animation doesn't flash on a warm cache.
+
+     Derived, not stored - whether the overlay shows is entirely a function of
+     these two, so keeping a third piece of state in sync with an effect would
+     only add a render and a way to be wrong. */
+  const [entryFloorPassed, setEntryFloorPassed] = useState(false);
+  const isSpideyLoading = !entryFloorPassed || loading;
+
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsSpideyLoading(false);
-    }, 1100);
+    const timer = setTimeout(() => setEntryFloorPassed(true), 420);
     return () => clearTimeout(timer);
   }, []);
 
   const sortByDate = (list: PolaroidMemory[]) =>
     [...list].sort((a, b) => a.rawDate.localeCompare(b.rawDate));
 
+  /* Pull the actual photo bytes for a set of rows and merge them in. Split
+     into batches so the first few polaroids can develop while the rest are
+     still in flight, rather than the whole gallery landing at once. */
+  const loadPhotos = async (ids: string[], versions: Map<string, string>) => {
+    if (ids.length === 0) return;
+    try {
+      /* EGRESS: these blobs are ~3MB each and a database row is never
+         CDN-cached, so every visit used to re-download the whole gallery.
+         Anything already held at the same `updated_at` costs nothing now. */
+      const cached = await readBlobs(
+        ids.map((id) => ({ key: blobKey.timelinePhoto(id), version: versions.get(id) ?? "v0" }))
+      );
+
+      if (cached.size > 0) {
+        setPhotoUrls((prev) => {
+          const next = { ...prev };
+          for (const id of ids) {
+            const hit = cached.get(blobKey.timelinePhoto(id));
+            if (hit) next[id] = hit;
+          }
+          return next;
+        });
+      }
+
+      const missing = ids.filter((id) => !cached.has(blobKey.timelinePhoto(id)));
+      if (missing.length === 0) return;
+
+      /* `url` only. `file_url` is a legacy duplicate that has always been
+         written alongside it - verified on every row: neither is ever null
+         and the two never differ - so asking for both would send every
+         photo's base64 down the wire twice. Writes still populate both. */
+      const { data, error: photoErr } = await supabase
+        .from("media_items")
+        .select("id, url")
+        .in("id", missing);
+
+      if (photoErr) throw photoErr;
+
+      setPhotoUrls((prev) => {
+        const next = { ...prev };
+        for (const row of data || []) {
+          const bytes = (row as any).url;
+          if (bytes) next[(row as any).id] = bytes;
+        }
+        return next;
+      });
+
+      void writeBlobs(
+        (data || [])
+          .filter((row) => typeof (row as any).url === "string")
+          .map((row) => ({
+            key: blobKey.timelinePhoto((row as any).id),
+            version: versions.get((row as any).id) ?? "v0",
+            value: (row as any).url as string,
+          }))
+      );
+    } catch {
+      /* A photo that won't load is not worth blocking the chapter over - the
+         frame keeps its "developing" state and the caption/notes still read.
+         The metadata fetch owns the visible error banner. */
+    }
+  };
+
   const fetchMemories = async () => {
     if (!coupleId) return;
     try {
-      /* Explicit columns, not "*". `file_url` is a legacy duplicate of `url`
-         that has always been written together with it (verified byte-identical
-         on every row), so selecting both doubled the base64 payload of every
-         photo for no benefit. Writes still populate both columns; only this
-         read drops the copy, and normalizeMemory() already falls through to
-         `url` when `file_url` is absent. */
+      /* Metadata only - see MEMORY_SELECT_COLUMNS. This is the query that
+         gates first paint, and it is now tiny. */
       const { data, error: fetchErr } = await supabase
         .from("media_items")
         .select(MEMORY_SELECT_COLUMNS)
@@ -146,10 +239,26 @@ export default function TimelineScreen({
 
       if (fetchErr) throw fetchErr;
 
-      setMemories(sortByDate((data || []).map(normalizeMemory)));
+      const rows = sortByDate((data || []).map(normalizeMemory));
+      setMemories(rows);
+      setLoading(false);
+
+      /* Photos come after the frames are already on screen. The leftmost ones
+         are awaited so the polaroids you are actually looking at fill in
+         first; the rest trail in behind, in small batches rather than one
+         enormous request - a single query for the tail would be tens of MB of
+         JSON arriving in one lump, so nothing would appear until all of it
+         landed. */
+      const ids = rows.map((m) => m.id);
+      const versions = new Map(rows.map((m) => [m.id, m.updatedAt ?? "v0"]));
+      await loadPhotos(ids.slice(0, PHOTO_BATCH), versions);
+      void (async () => {
+        for (let i = PHOTO_BATCH; i < ids.length; i += PHOTO_BATCH) {
+          await loadPhotos(ids.slice(i, i + PHOTO_BATCH), versions);
+        }
+      })();
     } catch (err: any) {
       setError(err.message || "Failed to load timeline polaroids.");
-    } finally {
       setLoading(false);
     }
   };
@@ -177,7 +286,15 @@ export default function TimelineScreen({
         (payload) => {
           if (payload.eventType === "DELETE") {
             const deletedId = (payload.old as any)?.id;
-            if (deletedId) setMemories((prev) => prev.filter((m) => m.id !== deletedId));
+            if (deletedId) {
+              setMemories((prev) => prev.filter((m) => m.id !== deletedId));
+              setPhotoUrls((prev) => {
+                if (!(deletedId in prev)) return prev;
+                const next = { ...prev };
+                delete next[deletedId];
+                return next;
+              });
+            }
             return;
           }
 
@@ -187,6 +304,17 @@ export default function TimelineScreen({
             const next = exists ? prev.map((m) => (m.id === row.id ? row : m)) : [...prev, row];
             return sortByDate(next);
           });
+
+          /* The payload usually carries the whole row, bytes included - but a
+             polaroid is a multi-MB base64 string and Realtime drops records
+             over its size limit rather than delivering them, so this must not
+             assume the photo came with it. Take the bytes when they are there,
+             fetch them when they are not. */
+          if (row.url) {
+            setPhotoUrls((prev) => ({ ...prev, [row.id]: row.url }));
+          } else {
+            void loadPhotos([row.id], new Map([[row.id, row.updatedAt ?? "v0"]]));
+          }
         }
       )
       .subscribe();
@@ -209,29 +337,39 @@ export default function TimelineScreen({
     });
   };
 
-  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 10 * 1024 * 1024) {
-      setError("Please choose a photo smaller than 10MB.");
+    /* The pick limit bounds the raw file; compressImage() below bounds what
+       actually lands in Postgres. Before this, a phone photo went in at full
+       size - the existing rows average ~3MB each, which is exactly why this
+       chapter was slow to load. Same treatment Ch.04 Digicam already gives
+       its uploads. */
+    if (file.size > 40 * 1024 * 1024) {
+      setError("Please choose a photo smaller than 40MB.");
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      if (event.target?.result) {
-        setFormImagePreview(event.target.result as string);
-        setPhotoScale(1.0);
-        setPhotoX(0);
-        setPhotoY(0);
-        setPhotoRotation(0);
-        setPhotoFlipH(false);
-        setPhotoFlipV(false);
-        setError(null);
-      }
-    };
-    reader.readAsDataURL(file);
+    setError(null);
+    setPreparingPhoto(true);
+    try {
+      const prepared = await compressImage(file, { maxEdge: 1600, targetBytes: 900_000 });
+      setFormImagePreview(prepared.dataUrl);
+      setPhotoScale(1.0);
+      setPhotoX(0);
+      setPhotoY(0);
+      setPhotoRotation(0);
+      setPhotoFlipH(false);
+      setPhotoFlipV(false);
+      /* compressImage reports HEIC-it-couldn't-decode this way; surface it
+         rather than silently storing something that may not render. */
+      if (prepared.note && !prepared.processed) setError(prepared.note);
+    } catch {
+      setError("Couldn't read that photo. Try a different one?");
+    } finally {
+      setPreparingPhoto(false);
+    }
   };
 
   const handleOpenCreate = () => {
@@ -250,10 +388,14 @@ export default function TimelineScreen({
     setIsModalOpen(true);
   };
 
-  const handleOpenEdit = (m: PolaroidMemory, e: React.MouseEvent) => {
+  const handleOpenEdit = async (m: PolaroidMemory, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingId(m.id);
-    setFormImagePreview(m.url);
+    /* The photo may not have been fetched yet (metadata-first load). Open the
+       editor straight away with whatever is on hand, and fill the preview in
+       when the bytes land - the crop tool needs the real image. */
+    const current = urlOf(m);
+    setFormImagePreview(current);
     setFormCaption(m.caption);
     setFormNotes(m.notes || "");
     setFormDate(m.rawDate || new Date().toISOString().slice(0, 10));
@@ -265,6 +407,16 @@ export default function TimelineScreen({
     setPhotoFlipV(m.photo_flip_v ?? false);
     setError(null);
     setIsModalOpen(true);
+
+    /* Modal is already up by here; the preview fills in behind it. */
+    if (!current) {
+      const { data } = await supabase.from("media_items").select("id, url").eq("id", m.id).single();
+      const bytes = (data as any)?.url || "";
+      if (bytes) {
+        setPhotoUrls((prev) => ({ ...prev, [m.id]: bytes }));
+        setFormImagePreview((prev) => (prev ? prev : bytes));
+      }
+    }
   };
 
   // Drag & Pan Handlers (Pointer Events cover mouse, touch and pen in one path)
@@ -311,6 +463,13 @@ export default function TimelineScreen({
         media_type: "image",
         file_url: formImagePreview,
         url: formImagePreview,
+        /* Load-bearing: `updated_at` is the version stamp the blob cache keys
+           on, and this payload can carry NEW bytes for an existing row. There
+           is no trigger maintaining it (checked - this schema has no triggers
+           at all), so without this line a replaced photo would keep the old
+           stamp and every other device would go on serving the old photo out
+           of its cache indefinitely. */
+        updated_at: new Date().toISOString(),
         caption: formCaption.trim() || "Timeline Memory ❤️",
         notes: formNotes.trim() || "",
         memory_date: formDate || new Date().toISOString().slice(0, 10),
@@ -337,6 +496,17 @@ export default function TimelineScreen({
 
         if (updateErr) throw updateErr;
         const row = normalizeMemory(saved);
+        /* The saved row comes back metadata-only, but the bytes we just sent
+           are right here - seed both caches so the card doesn't have to
+           re-download its own photo, this mount or any later one. */
+        setPhotoUrls((prev) => ({ ...prev, [row.id]: formImagePreview }));
+        void writeBlobs([
+          {
+            key: blobKey.timelinePhoto(row.id),
+            version: row.updatedAt ?? "v0",
+            value: formImagePreview,
+          },
+        ]);
         setMemories((prev) => sortByDate(prev.map((m) => (m.id === row.id ? row : m))));
       } else {
         const { data: saved, error: insertErr } = await supabase
@@ -347,6 +517,14 @@ export default function TimelineScreen({
 
         if (insertErr) throw insertErr;
         const row = normalizeMemory(saved);
+        setPhotoUrls((prev) => ({ ...prev, [row.id]: formImagePreview }));
+        void writeBlobs([
+          {
+            key: blobKey.timelinePhoto(row.id),
+            version: row.updatedAt ?? "v0",
+            value: formImagePreview,
+          },
+        ]);
         setMemories((prev) => sortByDate([...prev, row]));
       }
 
@@ -373,11 +551,19 @@ export default function TimelineScreen({
         .eq("id", id);
 
       if (delErr) throw delErr;
+      /* The row is gone - free the cache slot rather than waiting for
+         eviction to notice. */
+      void dropBlob(blobKey.timelinePhoto(id));
       setMemories((prev) => prev.filter((m) => m.id !== id));
     } catch (err: any) {
       setError(err.message || "Failed to delete polaroid.");
     }
   };
+
+  /* Photo bytes for a row, or "" while they are still in flight. Never feed
+     "" to an <img src> - browsers treat an empty src as a request for the
+     page itself, which is why the caller branches on this instead. */
+  const urlOf = (m: PolaroidMemory) => photoUrls[m.id] || m.url || "";
 
   const getTransformStyle = (
     scale: number = 1.0,
@@ -635,24 +821,37 @@ export default function TimelineScreen({
 
                                 {/* Picture Frame: Perfect 1:1 Aspect Ratio Box */}
                                 <div className="w-full aspect-square rounded bg-[#1A0D10] border-2 border-[#261D24] overflow-hidden relative shadow-inner mb-3 flex items-center justify-center">
-                                  <img
-                                    src={m.url}
-                                    alt={m.caption}
-                                    loading="lazy"
-                                    decoding="async"
-                                    style={{
-                                      transform: getTransformStyle(
-                                        m.photo_scale ?? 1.0,
-                                        m.photo_x ?? 0,
-                                        m.photo_y ?? 0,
-                                        m.photo_rotation ?? 0,
-                                        m.photo_flip_h ?? false,
-                                        m.photo_flip_v ?? false
-                                      ),
-                                      transformOrigin: "center center",
-                                    }}
-                                    className="w-full h-full object-contain pointer-events-none transition-transform duration-200"
-                                  />
+                                  {urlOf(m) ? (
+                                    <img
+                                      src={urlOf(m)}
+                                      alt={m.caption}
+                                      loading="lazy"
+                                      decoding="async"
+                                      style={{
+                                        transform: getTransformStyle(
+                                          m.photo_scale ?? 1.0,
+                                          m.photo_x ?? 0,
+                                          m.photo_y ?? 0,
+                                          m.photo_rotation ?? 0,
+                                          m.photo_flip_h ?? false,
+                                          m.photo_flip_v ?? false
+                                        ),
+                                        transformOrigin: "center center",
+                                      }}
+                                      className="w-full h-full object-contain pointer-events-none transition-transform duration-200 animate-polaroid-develop"
+                                    />
+                                  ) : (
+                                    /* Bytes still in flight. A polaroid that
+                                       hasn't developed yet is the honest
+                                       metaphor here, so the frame says so
+                                       rather than sitting empty. */
+                                    <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-[#241A20] animate-pulse">
+                                      <span className="text-3xl opacity-70 select-none">🧪</span>
+                                      <span className="font-mono text-[9px] font-black uppercase tracking-widest text-[#E0B1AE]/70">
+                                        Developing…
+                                      </span>
+                                    </div>
+                                  )}
                                 </div>
 
                                 <div className="px-1 min-h-[28px] sm:min-h-[48px] py-1 flex items-center justify-center text-center">
@@ -988,11 +1187,11 @@ export default function TimelineScreen({
                 </button>
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || preparingPhoto}
                   className="px-6 py-2.5 rounded-xl bg-[#7D2834] hover:bg-[#5A2029] text-[#F2E6D2] font-mono text-xs font-black border-3 border-[#261D24] shadow-[4px_4px_0_#171B24] flex items-center gap-2 transition disabled:opacity-50 cursor-pointer active:shadow-none active:translate-x-[2px] active:translate-y-[2px]"
                 >
-                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  <span>{editingId ? "Update Polaroid" : "Pin to String"}</span>
+                  {saving || preparingPhoto ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                  <span>{preparingPhoto ? "Optimising…" : editingId ? "Update Polaroid" : "Pin to String"}</span>
                 </button>
               </div>
             </form>
@@ -1006,6 +1205,24 @@ export default function TimelineScreen({
           EARTH-65 × EARTH-616 • RED STRING TIMELINE
         </span>
       </footer>
+
+      {/* Chapter-scoped CSS, per house convention (see CLAUDE.md) - kept here
+          rather than in globals.css so this chapter stays self-contained. */}
+      <style>{`
+        /* A photo arriving after its frame is already on screen would
+           otherwise pop in hard. This fades it up the way a polaroid
+           actually develops. */
+        @keyframes polaroidDevelop {
+          from { opacity: 0; filter: contrast(0.5) brightness(1.35) saturate(0.4); }
+          to   { opacity: 1; filter: none; }
+        }
+        .animate-polaroid-develop {
+          animation: polaroidDevelop 420ms ease-out both;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .animate-polaroid-develop { animation: none; }
+        }
+      `}</style>
     </main>
   );
 }

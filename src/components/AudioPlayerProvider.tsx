@@ -41,6 +41,7 @@ import {
 import { createPortal } from "react-dom";
 import { Disc3 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { blobKey, readBlob, writeBlob } from "@/lib/media/blobCache";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import NowPlayingPill from "./NowPlayingPill";
 
@@ -286,6 +287,17 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
     if (!coupleId || !ambientHasCustomTrack || ambientCustomTrackLoaded.current) return null;
     ambientCustomTrackLoaded.current = true;
 
+    /* EGRESS: a whole base64 MP3 (3MB on this account), re-downloaded the
+       first time Play was pressed in every single session. `couples` has no
+       updated_at, but the track NAME is already fetched by the cheap query on
+       login and changes whenever the track does - so it works as the version
+       stamp, and swapping tracks invalidates this by itself. */
+    const key = blobKey.coupleAmbient(coupleId);
+    const version = ambientTrackName ?? "unnamed";
+
+    const cached = await readBlob(key, version);
+    if (cached) return cached;
+
     const { data } = await supabase
       .from("couples")
       .select("ambient_audio_data")
@@ -293,8 +305,9 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
       .maybeSingle();
 
     if (!data?.ambient_audio_data) return null;
+    void writeBlob(key, version, data.ambient_audio_data);
     return data.ambient_audio_data;
-  }, [coupleId, ambientHasCustomTrack, supabase]);
+  }, [coupleId, ambientHasCustomTrack, ambientTrackName, supabase]);
 
   const [ambientTogglePlayRun] = useGuardedAction(async () => {
     const audio = ambientAudioRef.current;
@@ -357,6 +370,9 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
     setAmbientTrackName(file.name);
     setAmbientHasCustomTrack(true);
     ambientCustomTrackLoaded.current = true; // we already hold the bytes we just uploaded
+    /* Seed the cache with what we just uploaded, keyed by the new name, so no
+       later session re-downloads bytes this device already has. */
+    void writeBlob(blobKey.coupleAmbient(coupleId), file.name, dataUrl);
 
     /* Imperative, same as the play button - no React re-render is involved in
        setting the source, so there's nothing to wait a frame for. */
@@ -403,6 +419,18 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
       const cached = blobCacheRef.current.get(trackId);
       if (cached) return cached;
       if (!coupleId) return null;
+
+      /* EGRESS: the in-memory cache above dies with the page. `audio_data` is
+         written once at insert and never updated (no edit path touches it),
+         so the row id alone is a sound version stamp and a track survives
+         across sessions instead of being re-downloaded on every replay. */
+      const key = blobKey.mixtapeTrack(trackId);
+      const persisted = await readBlob(key, "insert-only");
+      if (persisted) {
+        blobCacheRef.current.set(trackId, persisted);
+        return persisted;
+      }
+
       const { data, error: blobError } = await supabase
         .from("mixtape_tracks")
         .select("audio_data")
@@ -411,6 +439,7 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
         .maybeSingle();
       if (blobError || !data?.audio_data) return null;
       blobCacheRef.current.set(trackId, data.audio_data);
+      void writeBlob(key, "insert-only", data.audio_data);
       return data.audio_data;
     },
     [supabase, coupleId]

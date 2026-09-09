@@ -37,12 +37,20 @@ import {
   STAMPS,
   ThumbScanner,
   VectorFigure,
+  FIGURE_VIEWBOX,
   hashString,
   resolveFigurePart,
   seeded,
   type StampId,
 } from "./DossierArt";
+import { createPortal } from "react-dom";
 import * as sfx from "@/lib/dossierAudio";
+import {
+  INTERVIEW_VOLUMES,
+  TOTAL_PROMPTS,
+  volumeOfPrompt,
+  type InterviewPrompt,
+} from "@/lib/dossierInterview";
 
 /* ============================================================================
    CH.11 — CLASSIFIED PERSONNEL DOSSIER: SUBJECT EARTH-65
@@ -397,6 +405,12 @@ interface SizingField {
   part: string;
   value: string;
   unit: string;
+  /* Where this measurement is pinned on the figure, in VectorFigure's viewBox
+     units (160x320). Absent means it has no pin yet - the four defaults below
+     are named regions the figure already knows how to light up, so they only
+     get coordinates if someone deliberately places them. */
+  x?: number;
+  y?: number;
 }
 
 /* Ids matching VectorFigure's `data-part` highlight names light the figure up
@@ -442,6 +456,106 @@ interface TimeCapsuleData {
 }
 
 const EMPTY_TIME_CAPSULE: TimeCapsuleData = { items: [] };
+
+/* ============================================================================
+   SECTION 11 — THE FIELD INTERVIEW (types)
+
+   The 269-prompt profile questionnaire, keyed by prompt id. Answers live in a
+   flat map rather than per-volume rows so progress, search and the "ask me
+   one" draw can all read the whole interview without six round trips.
+   ========================================================================== */
+
+/** A question the couple wrote themselves, living alongside the catalogue. */
+interface CustomPrompt {
+  id: string;
+  /** Which volume it was filed under. */
+  volume: string;
+  q: string;
+  long: boolean;
+}
+
+/** The running record of polygraph tests. Written once per completed test. */
+interface PolygraphRecord {
+  /** Tests taken all the way to a verdict. */
+  tests: number;
+  /** Best truth rating so far, 0-100. */
+  best: number;
+  /** The most recent rating, and when it was filed. */
+  last: number | null;
+  lastAt: string | null;
+}
+
+interface InterviewData {
+  /** prompt id -> answer. Absent or "" both mean unanswered. */
+  answers: Record<string, string>;
+  /** Prompt ids the reader starred, surfaced in the highlights strip. */
+  pinned: string[];
+  /** Their own questions. Ids are prefixed so they cannot collide with the catalogue. */
+  custom: CustomPrompt[];
+  polygraph: PolygraphRecord;
+}
+
+const EMPTY_POLYGRAPH: PolygraphRecord = { tests: 0, best: 0, last: null, lastAt: null };
+
+const EMPTY_INTERVIEW: InterviewData = {
+  answers: {},
+  pinned: [],
+  custom: [],
+  polygraph: EMPTY_POLYGRAPH,
+};
+
+/* Older saved panels predate `pinned`, `custom` and `polygraph`; spreading an
+   undefined over the fallback would break every .includes()/.map() below.
+   Panels saved with the short-lived per-volume `order` key still load - the
+   key is simply not read any more, so their prompts come back in catalogue
+   order. */
+function migrateInterview(raw: unknown, fallback: InterviewData): InterviewData {
+  const r = (raw ?? {}) as Partial<InterviewData>;
+  const pg = (r.polygraph ?? {}) as Partial<PolygraphRecord>;
+  const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+  return {
+    answers: r.answers && typeof r.answers === "object" ? r.answers : fallback.answers,
+    pinned: Array.isArray(r.pinned) ? r.pinned : fallback.pinned,
+    custom: Array.isArray(r.custom) ? r.custom : fallback.custom,
+    polygraph: {
+      tests: num(pg.tests, 0),
+      best: num(pg.best, 0),
+      last: typeof pg.last === "number" && Number.isFinite(pg.last) ? pg.last : null,
+      lastAt: typeof pg.lastAt === "string" ? pg.lastAt : null,
+    },
+  };
+}
+
+/* ============================================================================
+   FULL-SCREEN OVERLAYS
+   ========================================================================== */
+
+/**
+ * Renders an overlay up at the chapter root instead of where it was written.
+ *
+ * `position: fixed` does NOT reach the viewport from inside a panel: every
+ * `.dsr-panel` sets `backdrop-filter`, and a backdrop-filter makes an element
+ * a containing block for its fixed-position descendants. An overlay written
+ * inside a panel therefore anchors to that panel — measured at y = -6032 on a
+ * long page, i.e. scrolled far off the top of the screen.
+ *
+ * The host is `.dsr-root` rather than `<body>` on purpose: it is not a
+ * containing block (verified), and it carries the chapter's CSS custom
+ * properties, which a portal to <body> would leave behind — the overlay would
+ * lose its accent colour and every var()-driven style with it.
+ */
+function ChapterOverlay({ children }: { children: React.ReactNode }) {
+  /* Lazy initialiser, not an effect: these overlays only ever mount in
+     response to a user action, so the document and .dsr-root both exist by
+     the time this first renders, and there is no SSR pass to mismatch. */
+  const [host] = useState<HTMLElement | null>(() =>
+    typeof document === "undefined" ? null : document.querySelector<HTMLElement>(".dsr-root")
+  );
+  /* No host (SSR, or the chapter root somehow absent): fall back to rendering
+     in place, which is the old behaviour rather than a blank screen. */
+  if (!host) return <>{children}</>;
+  return createPortal(children, host);
+}
 
 /* ============================================================================
    PANEL PERSISTENCE
@@ -606,6 +720,147 @@ function usePanel<T extends object>(
    1. HERO IDENTIFICATION CARD
    ========================================================================== */
 
+type FieldListKey = "frontFields" | "backFields";
+
+/**
+ * One label + value row on the ID card.
+ *
+ * In re-file mode the WHOLE row is the drag handle, not a small grip: these
+ * tiles are 140px wide and a 19px grip is a miserable target on a phone. The
+ * inputs go inert for the same reason - a drag that starts on a text field
+ * would drop a caret in the middle of somebody's name instead of picking the
+ * card up. The nudge buttons stay, because a drag is unreachable by keyboard.
+ */
+const IdentityFieldRow = memo(function IdentityFieldRow({
+  field,
+  index,
+  total,
+  listKey,
+  multiline,
+  arranging,
+  dragging,
+  onValue,
+  onLabel,
+  onRemove,
+  onFlush,
+  onNudge,
+  onDragStart,
+}: {
+  field: IdentityField;
+  index: number;
+  total: number;
+  listKey: FieldListKey;
+  multiline?: boolean;
+  arranging: boolean;
+  dragging: boolean;
+  onValue: (id: string, value: string) => void;
+  onLabel: (id: string, label: string) => void;
+  onRemove: (id: string) => void;
+  onFlush: () => void;
+  onNudge: (listKey: FieldListKey, id: string, dir: -1 | 1) => void;
+  onDragStart: (listKey: FieldListKey, id: string, e: ReactPointerEvent) => void;
+}) {
+  const name = field.label || "field";
+  return (
+    <div
+      data-field={field.id}
+      data-field-list={listKey}
+      className={
+        (multiline ? "dsr-field dsr-back-field" : "dsr-field") +
+        (arranging ? " is-arranging" : "") +
+        (dragging ? " is-dragging" : "")
+      }
+      onPointerDown={arranging ? (e) => onDragStart(listKey, field.id, e) : undefined}
+    >
+      {arranging && (
+        <span className="dsr-field-ord" aria-hidden>
+          {index + 1}
+        </span>
+      )}
+
+      <div className="dsr-field-headrow">
+        <input
+          className="dsr-field-label-input"
+          value={field.label}
+          onChange={(e) => onLabel(field.id, e.target.value)}
+          onBlur={onFlush}
+          placeholder="Field name"
+          maxLength={40}
+          readOnly={arranging}
+          tabIndex={arranging ? -1 : undefined}
+        />
+        {arranging ? (
+          <span className="dsr-field-grip" aria-hidden>
+            &#10303;
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="dsr-field-x"
+            onClick={() => onRemove(field.id)}
+            aria-label={"Remove " + name}
+          >
+            <X className="w-3 h-3" aria-hidden />
+          </button>
+        )}
+      </div>
+
+      {multiline ? (
+        <textarea
+          className="dsr-textarea"
+          rows={2}
+          value={field.value}
+          onChange={(e) => onValue(field.id, e.target.value)}
+          onBlur={onFlush}
+          placeholder={field.placeholder ?? "Type it in"}
+          readOnly={arranging}
+          tabIndex={arranging ? -1 : undefined}
+        />
+      ) : (
+        <input
+          className="dsr-input"
+          value={field.value}
+          onChange={(e) => onValue(field.id, e.target.value)}
+          onBlur={onFlush}
+          placeholder={field.placeholder ?? "Type it in"}
+          maxLength={200}
+          readOnly={arranging}
+          tabIndex={arranging ? -1 : undefined}
+        />
+      )}
+
+      {arranging && (
+        <div className="dsr-field-movers">
+          {/* stopPropagation, or pressing a nudge button also starts a drag
+              on the row underneath it. */}
+          <button
+            type="button"
+            className="dsr-field-move"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => onNudge(listKey, field.id, -1)}
+            disabled={index === 0}
+            aria-label={"Move " + name + " earlier"}
+            title="Move earlier"
+          >
+            {multiline ? "↑" : "←"}
+          </button>
+          <button
+            type="button"
+            className="dsr-field-move"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => onNudge(listKey, field.id, 1)}
+            disabled={index === total - 1}
+            aria-label={"Move " + name + " later"}
+            title="Move later"
+          >
+            {multiline ? "↓" : "→"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+});
+
 const HeroBadge = memo(function HeroBadge({
   identity,
   onChange,
@@ -671,6 +926,9 @@ const HeroBadge = memo(function HeroBadge({
      throw away the one bit of theatre this panel has. */
   const runScan = () => {
     if (scanning) return;
+    /* Re-filing is a per-face mode; carrying it across the flip would land
+       you on the back of the card with its rows already loose. */
+    setArranging(false);
     setScanning(true);
     sfx.scan();
     window.setTimeout(() => {
@@ -733,6 +991,106 @@ const HeroBadge = memo(function HeroBadge({
   });
   const frontOps = makeFieldOps("frontFields");
   const backOps = makeFieldOps("backFields");
+
+  /* ------------------------------------------------------------ re-filing */
+
+  /* One flag for both faces - only one of them is ever on screen - and the
+     drag is keyed by the list it started in, so a pointer wandering onto the
+     other face's rows can never splice a field across. */
+  const [arranging, setArranging] = useState(false);
+  const [dragField, setDragField] = useState<{ list: FieldListKey; id: string } | null>(null);
+  const dragFieldRef = useRef<{ list: FieldListKey; id: string } | null>(null);
+
+  const moveField = useCallback(
+    (listKey: FieldListKey, id: string, toIndex: number) => {
+      onChange((prev) => {
+        const list = prev[listKey];
+        const from = list.findIndex((f) => f.id === id);
+        const to = Math.max(0, Math.min(list.length - 1, toIndex));
+        if (from < 0 || from === to) return prev;
+        const next = list.slice();
+        next.splice(to, 0, next.splice(from, 1)[0]);
+        return { ...prev, [listKey]: next };
+      });
+    },
+    [onChange]
+  );
+
+  const nudgeField = useCallback(
+    (listKey: FieldListKey, id: string, dir: -1 | 1) => {
+      const from = identity[listKey].findIndex((f) => f.id === id);
+      if (from < 0) return;
+      sfx.dialClick();
+      moveField(listKey, id, from + dir);
+      onFlush();
+    },
+    [identity, moveField, onFlush]
+  );
+
+  const startFieldDrag = useCallback((listKey: FieldListKey, id: string, e: ReactPointerEvent) => {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    dragFieldRef.current = { list: listKey, id };
+    setDragField({ list: listKey, id });
+    sfx.dialClick();
+  }, []);
+
+  /* Pointer events cover mouse, touch and pen in one path, matching the rest
+     of the app. The row sets touch-action:none in CSS or a drag on a phone
+     scrolls the page instead of moving anything - the trap the letter jar
+     pile hit. */
+  useEffect(() => {
+    if (!dragField) return;
+
+    const onPointerMove = (e: PointerEvent) => {
+      const held = dragFieldRef.current;
+      if (!held) return;
+      const row = (
+        document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
+      )?.closest?.("[data-field]") as HTMLElement | null;
+      const overId = row?.dataset.field;
+      if (!overId || overId === held.id || row?.dataset.fieldList !== held.list) return;
+      const to = identity[held.list].findIndex((f) => f.id === overId);
+      if (to >= 0) moveField(held.list, held.id, to);
+    };
+
+    const onPointerUp = () => {
+      dragFieldRef.current = null;
+      setDragField(null);
+      sfx.webSnap();
+      onFlush();
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    };
+  }, [dragField, identity, moveField, onFlush]);
+
+  const toggleArranging = () => {
+    sfx.dialClick();
+    setArranging((a) => !a);
+  };
+
+  const arrangeBar = (
+    <div className="dsr-fields-tools">
+      <button
+        type="button"
+        className={"dsr-arrange-btn" + (arranging ? " is-on" : "")}
+        aria-pressed={arranging}
+        onClick={toggleArranging}
+      >
+        {arranging ? "✓ Done re-filing" : "⠿ Re-file"}
+      </button>
+      {arranging && (
+        <span className="dsr-arrange-hint">Drag a field anywhere in the card</span>
+      )}
+    </div>
+  );
 
   return (
     <section className="dsr-panel dsr-badge-panel" aria-labelledby="dsr-badge-head">
@@ -805,40 +1163,34 @@ const HeroBadge = memo(function HeroBadge({
               </button>
             </div>
 
-            <div className="dsr-fields">
-              {identity.frontFields.map((f) => (
-                <div key={f.id} className="dsr-field">
-                  <div className="dsr-field-headrow">
-                    <input
-                      className="dsr-field-label-input"
-                      value={f.label}
-                      onChange={(e) => frontOps.rename(f.id, e.target.value)}
-                      onBlur={onFlush}
-                      placeholder="Field name"
-                      maxLength={40}
-                    />
-                    <button
-                      type="button"
-                      className="dsr-field-x"
-                      onClick={() => frontOps.remove(f.id)}
-                      aria-label={"Remove " + (f.label || "field")}
-                    >
-                      <X className="w-3 h-3" aria-hidden />
-                    </button>
-                  </div>
-                  <input
-                    className="dsr-input"
-                    value={f.value}
-                    onChange={(e) => frontOps.setValue(f.id, e.target.value)}
-                    onBlur={onFlush}
-                    placeholder={f.placeholder ?? "Type it in"}
-                    maxLength={200}
+            <div className="dsr-fields-col">
+              {arrangeBar}
+              <div className={"dsr-fields" + (arranging ? " is-arranging" : "")}>
+                {identity.frontFields.map((f, i) => (
+                  <IdentityFieldRow
+                    key={f.id}
+                    field={f}
+                    index={i}
+                    total={identity.frontFields.length}
+                    listKey="frontFields"
+                    arranging={arranging}
+                    dragging={dragField?.id === f.id}
+                    onValue={frontOps.setValue}
+                    onLabel={frontOps.rename}
+                    onRemove={frontOps.remove}
+                    onFlush={onFlush}
+                    onNudge={nudgeField}
+                    onDragStart={startFieldDrag}
                   />
-                </div>
-              ))}
-              <button type="button" className="dsr-field-add" onClick={frontOps.add}>
-                <Plus className="w-3.5 h-3.5" aria-hidden /> Add field
-              </button>
+                ))}
+                {/* Adding a field mid-re-file would drop a new row into an
+                    order you are in the middle of setting. */}
+                {!arranging && (
+                  <button type="button" className="dsr-field-add" onClick={frontOps.add}>
+                    <Plus className="w-3.5 h-3.5" aria-hidden /> Add field
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -854,40 +1206,33 @@ const HeroBadge = memo(function HeroBadge({
             <h3 className="dsr-badge-title">Not for the file room</h3>
           </header>
 
-          <div className="dsr-back-fields">
-            {identity.backFields.map((f) => (
-              <div key={f.id} className="dsr-back-field">
-                <div className="dsr-field-headrow">
-                  <input
-                    className="dsr-field-label-input"
-                    value={f.label}
-                    onChange={(e) => backOps.rename(f.id, e.target.value)}
-                    onBlur={onFlush}
-                    placeholder="Field name"
-                    maxLength={40}
-                  />
-                  <button
-                    type="button"
-                    className="dsr-field-x"
-                    onClick={() => backOps.remove(f.id)}
-                    aria-label={"Remove " + (f.label || "field")}
-                  >
-                    <X className="w-3 h-3" aria-hidden />
-                  </button>
-                </div>
-                <textarea
-                  className="dsr-textarea"
-                  rows={2}
-                  value={f.value}
-                  onChange={(e) => backOps.setValue(f.id, e.target.value)}
-                  onBlur={onFlush}
-                  placeholder={f.placeholder ?? "Type it in"}
+          <div className="dsr-fields-col">
+            {arrangeBar}
+            <div className={"dsr-back-fields" + (arranging ? " is-arranging" : "")}>
+              {identity.backFields.map((f, i) => (
+                <IdentityFieldRow
+                  key={f.id}
+                  field={f}
+                  index={i}
+                  total={identity.backFields.length}
+                  listKey="backFields"
+                  multiline
+                  arranging={arranging}
+                  dragging={dragField?.id === f.id}
+                  onValue={backOps.setValue}
+                  onLabel={backOps.rename}
+                  onRemove={backOps.remove}
+                  onFlush={onFlush}
+                  onNudge={nudgeField}
+                  onDragStart={startFieldDrag}
                 />
-              </div>
-            ))}
-            <button type="button" className="dsr-field-add" onClick={backOps.add}>
-              <Plus className="w-3.5 h-3.5" aria-hidden /> Add field
-            </button>
+              ))}
+              {!arranging && (
+                <button type="button" className="dsr-field-add" onClick={backOps.add}>
+                  <Plus className="w-3.5 h-3.5" aria-hidden /> Add field
+                </button>
+              )}
+            </div>
           </div>
 
           <button type="button" className="dsr-flip-back" onClick={runScan}>
@@ -898,6 +1243,7 @@ const HeroBadge = memo(function HeroBadge({
       </div>
 
       {adjustOpen && (
+        <ChapterOverlay>
         <div className="dsr-lightbox" role="dialog" aria-modal="true" aria-label="Adjust the portrait">
           <div className="dsr-portrait-adjust-sheet">
             <h3 className="dsr-notes-sheet-head">Adjust the portrait</h3>
@@ -953,6 +1299,7 @@ const HeroBadge = memo(function HeroBadge({
             </div>
           </div>
         </div>
+        </ChapterOverlay>
       )}
     </section>
   );
@@ -1662,6 +2009,7 @@ function Corkboard({
 
       {/* --------------------------------------------- slide projector ---- */}
       {lightboxItem?.url && (
+        <ChapterOverlay>
         <div
           className="dsr-lightbox"
           role="dialog"
@@ -1692,6 +2040,7 @@ function Corkboard({
             </button>
           </div>
         </div>
+        </ChapterOverlay>
       )}
 
       {/* --------------------------------------------- evidence notes ----
@@ -1704,6 +2053,7 @@ function Corkboard({
           rendered outside the clipped corkboard entirely, sized off the
           viewport instead of the pin. */}
       {notesItem && (
+        <ChapterOverlay>
         <div
           className="dsr-lightbox"
           role="dialog"
@@ -1767,6 +2117,7 @@ function Corkboard({
             </button>
           </div>
         </div>
+        </ChapterOverlay>
       )}
     </section>
   );
@@ -2619,19 +2970,56 @@ function SizingBlueprint({
   const [highlight, setHighlight] = useState<string | null>(null);
   const fieldInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const pendingFocusRef = useRef<string | null>(null);
+  /* The measurement waiting to be pinned. While this is set the whole figure
+     is a target and the next click on it drops the marker. */
+  const [placingId, setPlacingId] = useState<string | null>(null);
 
   const setField = (id: string, patch: Partial<SizingField>) =>
     onChange((prev) => ({ items: prev.items.map((f) => (f.id === id ? { ...f, ...patch } : f)) }));
 
+  /* A new measurement goes straight into placing mode, so "add" and "put it
+     where I mean" are one gesture rather than two unrelated ones. */
   const addField = () => {
-    onChange((prev) => ({ items: [...prev.items, { id: uid("size"), part: "", value: "", unit: "" }] }));
+    const id = uid("size");
+    pendingFocusRef.current = id;
+    onChange((prev) => ({ items: [...prev.items, { id, part: "", value: "", unit: "" }] }));
     onFlush();
+    setPlacingId(id);
   };
 
   const removeField = (id: string) => {
     onChange((prev) => ({ items: prev.items.filter((f) => f.id !== id) }));
+    if (placingId === id) setPlacingId(null);
     onFlush();
   };
+
+  /* Drop the pin wherever they clicked, in viewBox units. Clamped so a click
+     right on the edge cannot park a marker half outside the drawing. */
+  const placePin = (x: number, y: number) => {
+    if (!placingId) return;
+    sfx.stamp();
+    const cx = Math.max(8, Math.min(FIGURE_VIEWBOX.w - 8, x));
+    const cy = Math.max(8, Math.min(FIGURE_VIEWBOX.h - 8, y));
+    setField(placingId, { x: cx, y: cy });
+    onFlush();
+    const id = placingId;
+    setPlacingId(null);
+    fieldInputRefs.current[id]?.focus();
+  };
+
+  const pins = useMemo(
+    () =>
+      sizing.items
+        .filter((f) => typeof f.x === "number" && typeof f.y === "number")
+        .map((f) => ({
+          id: f.id,
+          label: f.part,
+          x: f.x as number,
+          y: f.y as number,
+          active: highlight === f.part && Boolean(f.part),
+        })),
+    [sizing.items, highlight]
+  );
 
   /* Makes the mannequin an actual control instead of a passive readout that
      only ever reacted to whichever field you happened to already be in:
@@ -2670,11 +3058,32 @@ function SizingBlueprint({
         <span className="dsr-panel-kicker">FOR WHEN YOU&apos;RE BUYING SOMETHING</span>
       </div>
 
+      {placingId && (
+        <p className="dsr-sizing-placing" role="status">
+          Tap anywhere on the figure to pin{" "}
+          <strong>{sizing.items.find((f) => f.id === placingId)?.part || "this measurement"}</strong> there.
+          <button type="button" className="dsr-sizing-placing-x" onClick={() => setPlacingId(null)}>
+            cancel
+          </button>
+        </p>
+      )}
+
       <div className="dsr-sizing-body">
         <VectorFigure
           highlight={highlight}
           onPartClick={handlePartClick}
-          className="dsr-sizing-figure dsr-sizing-figure-interactive"
+          pins={pins}
+          placing={Boolean(placingId)}
+          onCanvasClick={placePin}
+          onPinClick={(id) => {
+            const f = sizing.items.find((i) => i.id === id);
+            if (f) setHighlight(f.part);
+            fieldInputRefs.current[id]?.focus();
+          }}
+          className={
+            "dsr-sizing-figure dsr-sizing-figure-interactive" +
+            (placingId ? " is-placing" : "")
+          }
         />
 
         <div className="dsr-sizing-fields">
@@ -2713,6 +3122,24 @@ function SizingBlueprint({
                   placeholder="Unit"
                   maxLength={12}
                 />
+                <button
+                  type="button"
+                  className={
+                    "dsr-sizing-pinbtn" +
+                    (placingId === f.id ? " is-placing" : "") +
+                    (typeof f.x === "number" ? " is-pinned" : "")
+                  }
+                  onClick={() => setPlacingId((p) => (p === f.id ? null : f.id))}
+                  aria-pressed={placingId === f.id}
+                  aria-label={
+                    (typeof f.x === "number" ? "Move the pin for " : "Pin ") +
+                    (f.part || "this measurement") +
+                    " on the figure"
+                  }
+                  title={typeof f.x === "number" ? "Move pin" : "Pin on the figure"}
+                >
+                  📍
+                </button>
                 <button
                   type="button"
                   className="dsr-field-x"
@@ -3053,6 +3480,1244 @@ function TimeCapsule({
 }
 
 /* ============================================================================
+   11. THE FIELD INTERVIEW
+
+   The whole "A Little World About Them" questionnaire, rendered as the case
+   file's interview transcript: six numbered volumes of index cards behind
+   divider tabs, in the source document's own running order.
+
+   269 prompts is a wall if you present it as a form, so it deliberately is
+   not one:
+
+   - THE POLYGRAPH is the reason to come back to a questionnaire you have
+     already filled in. It reads out a question that is on record, takes YOUR
+     guess at what they said, then puts the two statements side by side and
+     rules on it. Every answer in the file becomes a question about how well
+     you were listening.
+   - INTERVIEW MODE deals the questions one at a time as a full-screen deck,
+     which is how this actually gets filled in - together, out loud.
+   - QUIZ MODE covers the answers already on record, in place.
+   - Any volume takes THEIR OWN QUESTIONS, because no stock list covers a
+     specific person.
+   ========================================================================== */
+
+/** A catalogue prompt or one they wrote themselves, once resolved for display. */
+type LivePrompt = InterviewPrompt & { custom?: boolean };
+
+/* Each volume gets its own ink so six stacks of index cards do not read as
+   one undifferentiated wall. Presentation only - kept out of the data module. */
+const VOLUME_INK: Record<string, string> = {
+  who: "#3FE0F0",
+  fav: "#FFC93F",
+  per: "#FF3DC8",
+  mem: "#8BE06B",
+  drm: "#7B6BF0",
+  us: "#FF6B6B",
+};
+
+/** A volume's prompts: catalogue entries first, then their own questions. */
+function resolveVolumePrompts(volId: string, custom: CustomPrompt[]): LivePrompt[] {
+  const catalogue = INTERVIEW_VOLUMES.find((v) => v.id === volId)?.prompts ?? [];
+  const theirs: LivePrompt[] = custom
+    .filter((c) => c.volume === volId)
+    .map((c) => ({ id: c.id, q: c.q, long: c.long, custom: true }));
+  return [...catalogue, ...theirs];
+}
+
+/** Which volume a prompt belongs to - catalogue or one of theirs. */
+function volumeIdOf(promptId: string, custom: CustomPrompt[]): string | undefined {
+  return volumeOfPrompt(promptId)?.id ?? custom.find((c) => c.id === promptId)?.volume;
+}
+
+/* ============================================================================
+   THE POLYGRAPH
+
+   Everything else in this chapter collects answers. This is the only thing
+   that spends them: it picks questions THEY have already answered, asks YOU
+   to state what they said, and rules on the two statements together.
+   ========================================================================== */
+
+/* Words carrying no signal when two people phrase the same answer differently
+   - "his mum" against "mum" should not read as half a miss. */
+const PG_STOPWORDS = new Set([
+  "a", "an", "and", "the", "of", "to", "in", "on", "at", "it", "is", "was", "be",
+  "i", "im", "my", "me", "we", "our", "us", "you", "your", "he", "she", "they",
+  "him", "her", "his", "hers", "them", "their", "that", "this", "with", "for",
+  "or", "but", "so", "if", "as", "by", "from", "just", "really", "very", "too",
+  "probably", "maybe", "always", "usually", "when", "then", "than", "about",
+]);
+
+function pgNormalise(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function pgTokens(text: string): string[] {
+  return pgNormalise(text)
+    .split(" ")
+    .filter((w) => w.length > 0 && !PG_STOPWORDS.has(w));
+}
+
+function pgBigrams(text: string): Set<string> {
+  const flat = pgNormalise(text).replace(/\s/g, "");
+  const out = new Set<string>();
+  for (let i = 0; i < flat.length - 1; i += 1) out.add(flat.slice(i, i + 2));
+  return out;
+}
+
+function pgDice(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let hit = 0;
+  a.forEach((x) => {
+    if (b.has(x)) hit += 1;
+  });
+  return (2 * hit) / (a.size + b.size);
+}
+
+/**
+ * How close a statement is to what is on record, 0..1.
+ *
+ * Word overlap is the honest signal for a sentence, but it collapses to 0 or
+ * 1 on one-word answers ("pancakes" against "pancake"), so character bigrams
+ * carry those instead and the better of the two wins. The machine only ever
+ * SUGGESTS a verdict: no ratio knows that "his mum's" and "mama dell" are the
+ * same answer, so the reader always gets to overrule it.
+ */
+function pgSimilarity(guess: string, truth: string): number {
+  const g = pgTokens(guess);
+  const t = pgTokens(truth);
+  if (g.length === 0 || t.length === 0) return 0;
+  const byWord = pgDice(new Set(g), new Set(t));
+  const byShape = pgDice(pgBigrams(guess), pgBigrams(truth));
+  return Math.min(1, Math.max(byWord, byShape * 0.92));
+}
+
+/** Where the machine stops calling it a match. */
+const PG_MATCH = 0.5;
+
+/** How many questions one test runs, when there are that many on record. */
+const PG_ROUNDS = 7;
+
+const PG_VERDICTS: { min: number; head: string; line: string }[] = [
+  {
+    min: 100,
+    head: "TOTAL CONSISTENCY",
+    line: "Every statement checks out. Either you know this person, or you wrote their answers for them.",
+  },
+  {
+    min: 80,
+    head: "CLEARED",
+    line: "Earth-616 has no further questions. Whatever you have been doing, keep doing it.",
+  },
+  {
+    min: 60,
+    head: "MOSTLY CONSISTENT",
+    line: "A solid file with a couple of smudged pages. You know the shape of them.",
+  },
+  {
+    min: 40,
+    head: "INCONCLUSIVE",
+    line: "Recommend further surveillance. Out loud, together, preferably tonight.",
+  },
+  {
+    min: 20,
+    head: "DECEPTION DETECTED",
+    line: "The machine is not impressed. Good news: every answer you missed is right there in the file.",
+  },
+  {
+    min: 0,
+    head: "FLAT LINE",
+    line: "Nothing checked out. Either a very bad night, or you have been dating a stranger.",
+  },
+];
+
+function pgVerdict(pct: number) {
+  return PG_VERDICTS.find((v) => pct >= v.min) ?? PG_VERDICTS[PG_VERDICTS.length - 1];
+}
+
+/* One deterministic sweep of chart paper per channel, generated once at
+   module load rather than per render - and with no Math.random in them, so
+   the server and the client draw the same line. Two channels, because one
+   wobbling line reads as a heart monitor and two read as a polygraph. */
+function pgTrace(fn: (x: number) => number): string {
+  const pts: string[] = [];
+  for (let x = 0; x <= 600; x += 5) pts.push(x + "," + fn(x).toFixed(1));
+  return pts.join(" ");
+}
+
+const PG_TRACE_A = pgTrace(
+  (x) => 20 + Math.sin(x / 43) * 7.5 + Math.sin(x / 17.3) * 3.6 + Math.sin(x / 6.1) * 1.6
+);
+const PG_TRACE_B = pgTrace(
+  (x) => 44 + Math.sin(x / 29 + 1.4) * 5.2 + Math.sin(x / 9.7) * 2.8 + Math.sin(x / 3.9) * 1.1
+);
+
+/** One question inside a running test. */
+interface PgRound {
+  prompt: LivePrompt;
+  /** What is on record, captured when the test was dealt. */
+  truth: string;
+  /** What the reader said it was. */
+  guess: string;
+  /** null until the tape has been read. */
+  verdict: "match" | "miss" | null;
+  /** The machine's reading, 0..1. */
+  score: number;
+}
+
+function PolygraphTest({
+  seed,
+  previousBest,
+  isStarred,
+  onStar,
+  onJump,
+  onFinish,
+  onClose,
+}: {
+  seed: PgRound[];
+  previousBest: number;
+  isStarred: (id: string) => boolean;
+  onStar: (id: string) => void;
+  onJump: (id: string) => void;
+  onFinish: (pct: number) => void;
+  onClose: () => void;
+}) {
+  /* The hand is dealt once, on open. Re-deriving it from props mid-run would
+     re-shuffle the questions under the reader every time an answer saved. */
+  const [rounds, setRounds] = useState<PgRound[]>(seed);
+  /* Snapshot, not the live prop: finishing the test writes the new best into
+     the panel in the same commit that shows the tape, so comparing against
+     the prop would always be comparing the score against itself and the
+     "new best" line could never appear. */
+  const [bestBefore] = useState(previousBest);
+  const [idx, setIdx] = useState(0);
+  const [phase, setPhase] = useState<"ask" | "read" | "done">("ask");
+
+  /* The needle only reacts to activity - a flat trace while somebody is
+     typing their statement is the one thing a polygraph would never do. */
+  const [hot, setHot] = useState(false);
+  const hotTimer = useRef<number | null>(null);
+  const pulseFor = useCallback((ms: number) => {
+    setHot(true);
+    if (hotTimer.current) window.clearTimeout(hotTimer.current);
+    hotTimer.current = window.setTimeout(() => setHot(false), ms);
+  }, []);
+  useEffect(
+    () => () => {
+      if (hotTimer.current) window.clearTimeout(hotTimer.current);
+    },
+    []
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const round = rounds[idx];
+  const matches = rounds.reduce((n, r) => n + (r.verdict === "match" ? 1 : 0), 0);
+  const pct = rounds.length ? Math.round((matches / rounds.length) * 100) : 0;
+
+  const setGuess = (value: string) => {
+    pulseFor(460);
+    setRounds((rs) => rs.map((r, i) => (i === idx ? { ...r, guess: value } : r)));
+  };
+
+  /* Reading the tape is the whole beat: the needle spikes, the recorded
+     answer comes up underneath yours, and the machine rules on it. */
+  const readTape = (skipped: boolean) => {
+    if (phase !== "ask") return;
+    const guess = skipped ? "" : round.guess.trim();
+    const score = guess ? pgSimilarity(guess, round.truth) : 0;
+    const verdict: "match" | "miss" = score >= PG_MATCH ? "match" : "miss";
+    setRounds((rs) =>
+      rs.map((r, i) => (i === idx ? { ...r, guess: skipped ? "" : r.guess, score, verdict } : r))
+    );
+    setPhase("read");
+    pulseFor(900);
+    sfx.stamp();
+    if (verdict === "miss") window.setTimeout(() => sfx.glitch(), 170);
+  };
+
+  /* The machine is confident, not right. "His mum's" and "mama dell" are the
+     same answer and no ratio will ever know that, so the reader overrules. */
+  const overrule = () => {
+    sfx.dialClick();
+    setRounds((rs) =>
+      rs.map((r, i) => (i === idx ? { ...r, verdict: r.verdict === "match" ? "miss" : "match" } : r))
+    );
+  };
+
+  const advance = () => {
+    if (idx + 1 < rounds.length) {
+      sfx.cardFlip();
+      setIdx(idx + 1);
+      setPhase("ask");
+      return;
+    }
+    setPhase("done");
+    if (pct >= 80) sfx.bloom();
+    else if (pct < 40) sfx.alarm();
+    else sfx.paperTear();
+    onFinish(pct);
+  };
+
+  const misses = rounds.filter((r) => r.verdict === "miss");
+  const verdict = pgVerdict(pct);
+  const ink = VOLUME_INK[volumeOfPrompt(round?.prompt.id ?? "")?.id ?? ""] ?? "#FF3DC8";
+  /* Derived, not timed: a pulse ticking on its own would re-render the whole
+     overlay several times a second for a decorative number. */
+  const bpm = 68 + (hot ? 34 : 0) + ((idx * 7) % 9);
+
+  return (
+    <ChapterOverlay>
+      <div
+        className="dsr-pg"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Polygraph test"
+        style={{ "--iv-ink": ink } as CSSProperties}
+      >
+        <div className="dsr-pg-sheet">
+          <div className="dsr-pg-head">
+            <span className="dsr-panel-kicker">
+              EARTH-616 VERIFICATION UNIT &middot;{" "}
+              {phase === "done" ? "TAPE COMPLETE" : "STATEMENT " + (idx + 1) + " / " + rounds.length}
+            </span>
+            <button
+              type="button"
+              className="dsr-iv-spotlight-x"
+              onClick={onClose}
+              aria-label="Abandon the test"
+            >
+              &#10005;
+            </button>
+          </div>
+
+          {/* the machine itself */}
+          <div className={"dsr-pg-chart" + (hot ? " is-hot" : "")}>
+            <svg className="dsr-pg-svg" viewBox="0 0 600 60" preserveAspectRatio="none" aria-hidden>
+              <g className="dsr-pg-roll">
+                <polyline className="dsr-pg-line" points={PG_TRACE_A} />
+                <polyline className="dsr-pg-line" points={PG_TRACE_A} transform="translate(600 0)" />
+                <polyline className="dsr-pg-line dsr-pg-line-b" points={PG_TRACE_B} />
+                <polyline
+                  className="dsr-pg-line dsr-pg-line-b"
+                  points={PG_TRACE_B}
+                  transform="translate(600 0)"
+                />
+              </g>
+            </svg>
+            <span className="dsr-pg-pen" aria-hidden />
+            <span className="dsr-pg-bpm" aria-hidden>
+              {bpm} BPM
+            </span>
+          </div>
+
+          {phase === "done" ? (
+            /* ------------------------------------------------ the tape --- */
+            <div className="dsr-pg-result">
+              <div className="dsr-pg-score">
+                <span className="dsr-pg-score-num">{pct}%</span>
+                <span className="dsr-pg-score-lab">
+                  TRUTH RATING &middot; {matches} OF {rounds.length}
+                </span>
+              </div>
+
+              <div className={"dsr-pg-verdict" + (pct >= 60 ? " is-good" : "")}>
+                <strong>{verdict.head}</strong>
+                <span>{verdict.line}</span>
+              </div>
+
+              {pct > bestBefore && (
+                <p className="dsr-pg-record">&#9733; New personal best on file.</p>
+              )}
+
+              {misses.length > 0 && (
+                <div className="dsr-pg-misses">
+                  <span className="dsr-field-label">Statements that did not check out</span>
+                  {misses.map((r) => (
+                    <button
+                      key={r.prompt.id}
+                      type="button"
+                      className="dsr-pg-miss"
+                      onClick={() => onJump(r.prompt.id)}
+                    >
+                      <span className="dsr-pg-miss-q">{r.prompt.q}</span>
+                      <span className="dsr-pg-miss-a">On record: {r.truth.trim() || "—"}</span>
+                      <span className="dsr-pg-miss-go">open the file &rarr;</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="dsr-pg-foot">
+                <button type="button" className="dsr-tool-btn dsr-iv-primary" onClick={onClose}>
+                  Close the file
+                </button>
+              </div>
+            </div>
+          ) : (
+            round && (
+              <>
+                <div className="dsr-pg-qrow">
+                  <span className="dsr-pg-vol" aria-hidden>
+                    {volumeOfPrompt(round.prompt.id)?.roman ?? "✴"}
+                  </span>
+                  <p className="dsr-pg-q">{round.prompt.q}</p>
+                </div>
+
+                <label className="dsr-field-label" htmlFor="dsr-pg-guess">
+                  Your statement &mdash; what did they say?
+                </label>
+                <textarea
+                  id="dsr-pg-guess"
+                  className="dsr-textarea dsr-pg-input"
+                  rows={2}
+                  value={round.guess}
+                  placeholder="Say it out loud first. No peeking."
+                  onChange={(e) => setGuess(e.target.value)}
+                  readOnly={phase === "read"}
+                />
+
+                {phase === "read" && (
+                  <div className={"dsr-pg-tape" + (round.verdict === "match" ? " is-match" : "")}>
+                    <div className="dsr-pg-stamp" aria-hidden>
+                      <RubberStamp
+                        label={round.verdict === "match" ? "CONSISTENT" : "DECEPTION"}
+                        color={round.verdict === "match" ? "#3BD17A" : "#FF5A5A"}
+                        rotate={-7}
+                        scale={0.7}
+                      />
+                    </div>
+
+                    <span className="dsr-field-label">On record</span>
+                    <p className="dsr-pg-truth">{round.truth.trim() || "—"}</p>
+
+                    <p className="dsr-pg-reading">
+                      MACHINE READS {Math.round(round.score * 100)}% CONSISTENT
+                      <span className="dsr-pg-reading-note">
+                        {round.verdict === "match"
+                          ? " · close enough to call it"
+                          : " · not close enough to call it"}
+                      </span>
+                    </p>
+
+                    <div className="dsr-pg-overrule">
+                      <button type="button" className="dsr-tool-btn" onClick={overrule}>
+                        {round.verdict === "match"
+                          ? "✖ No, I had that wrong"
+                          : "✔ No, that was right"}
+                      </button>
+                      {round.verdict === "miss" && (
+                        <button
+                          type="button"
+                          className={
+                            "dsr-tool-btn" + (isStarred(round.prompt.id) ? " dsr-iv-primary" : "")
+                          }
+                          onClick={() => onStar(round.prompt.id)}
+                        >
+                          {isStarred(round.prompt.id) ? "★ Starred" : "☆ Star for later"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div className="dsr-pg-foot">
+                  {phase === "ask" ? (
+                    <>
+                      <button type="button" className="dsr-tool-btn" onClick={() => readTape(true)}>
+                        No idea
+                      </button>
+                      <button
+                        type="button"
+                        className="dsr-tool-btn dsr-iv-primary"
+                        onClick={() => readTape(false)}
+                        disabled={!round.guess.trim()}
+                      >
+                        Run verification
+                      </button>
+                    </>
+                  ) : (
+                    <button type="button" className="dsr-tool-btn dsr-iv-primary" onClick={advance}>
+                      {idx + 1 < rounds.length ? "Next statement →" : "Read the tape"}
+                    </button>
+                  )}
+                </div>
+
+                <div className="dsr-pg-pips" aria-hidden>
+                  {rounds.map((r, i) => (
+                    <span
+                      key={r.prompt.id}
+                      className={
+                        "dsr-pg-pip" +
+                        (r.verdict === "match" ? " is-match" : "") +
+                        (r.verdict === "miss" ? " is-miss" : "") +
+                        (i === idx ? " is-now" : "")
+                      }
+                    />
+                  ))}
+                </div>
+              </>
+            )
+          )}
+        </div>
+      </div>
+    </ChapterOverlay>
+  );
+}
+
+/* Each card owns its own render. Without memo, one keystroke re-renders every
+   card in the volume (79 of them in Their Favorites), which is exactly the
+   kind of typing lag that shows up first on a phone. */
+const InterviewCard = memo(function InterviewCard({
+  prompt,
+  value,
+  pinned,
+  ink,
+  spotlit,
+  quiz,
+  revealed,
+  onSet,
+  onCommit,
+  onTogglePin,
+  onReveal,
+  onDelete,
+}: {
+  prompt: LivePrompt;
+  value: string;
+  pinned: boolean;
+  ink: string;
+  spotlit?: boolean;
+  quiz?: boolean;
+  revealed?: boolean;
+  onSet: (id: string, value: string) => void;
+  onCommit: () => void;
+  onTogglePin: (id: string) => void;
+  onReveal?: (id: string) => void;
+  onDelete?: (id: string) => void;
+}) {
+  const filled = value.trim().length > 0;
+  const inputId = "dsr-iv-" + prompt.id;
+  /* In quiz mode an answer already on record stays hidden until you say it
+     out loud and tap to check. A blank one has nothing to hide. */
+  const hidden = Boolean(quiz && filled && !revealed);
+
+  return (
+    <div
+      data-prompt={prompt.id}
+      className={
+        "dsr-iv-card" +
+        (filled ? " is-filled" : "") +
+        (spotlit ? " is-spotlit" : "") +
+        (prompt.custom ? " is-custom" : "")
+      }
+      style={{ "--iv-ink": ink } as CSSProperties}
+    >
+      <div className="dsr-iv-cardhead">
+        <label className="dsr-iv-q" htmlFor={inputId}>
+          {prompt.q}
+          {prompt.custom && <span className="dsr-iv-ours">OURS</span>}
+        </label>
+        <button
+          type="button"
+          className={"dsr-iv-pin" + (pinned ? " is-on" : "")}
+          onClick={() => onTogglePin(prompt.id)}
+          aria-pressed={pinned}
+          aria-label={(pinned ? "Unpin " : "Pin ") + prompt.q}
+          title={pinned ? "Unpin" : "Pin to highlights"}
+        >
+          {pinned ? "★" : "☆"}
+        </button>
+      </div>
+
+      {hidden ? (
+        <button type="button" className="dsr-iv-cover" onClick={() => onReveal?.(prompt.id)}>
+          <span className="dsr-iv-cover-tag">ON RECORD</span>
+          <span className="dsr-iv-cover-hint">say it, then tap to check</span>
+        </button>
+      ) : prompt.long ? (
+        <textarea
+          id={inputId}
+          className="dsr-textarea dsr-iv-input"
+          rows={2}
+          value={value}
+          placeholder="—"
+          onChange={(e) => onSet(prompt.id, e.target.value)}
+          onBlur={onCommit}
+        />
+      ) : (
+        <input
+          id={inputId}
+          className="dsr-input dsr-iv-input"
+          value={value}
+          placeholder="—"
+          onChange={(e) => onSet(prompt.id, e.target.value)}
+          onBlur={onCommit}
+        />
+      )}
+
+      {onDelete && prompt.custom && (
+        <div className="dsr-iv-cardfoot">
+          <button
+            type="button"
+            className="dsr-iv-del"
+            onClick={() => onDelete(prompt.id)}
+            aria-label={"Delete our question: " + prompt.q}
+          >
+            delete
+          </button>
+        </div>
+      )}
+    </div>
+  );
+});
+
+function FieldInterview({
+  interview,
+  loading,
+  onChange,
+  onFlush,
+  onGlitch,
+}: {
+  interview: InterviewData;
+  loading: boolean;
+  onChange: (next: InterviewData | ((p: InterviewData) => InterviewData)) => void;
+  onFlush: () => void;
+  onGlitch: () => void;
+}) {
+  const [volId, setVolId] = useState(INTERVIEW_VOLUMES[0].id);
+  const [query, setQuery] = useState("");
+  const [mode, setMode] = useState<"all" | "filled" | "blank">("all");
+  const [spotlight, setSpotlight] = useState<string | null>(null);
+  const [quiz, setQuiz] = useState(false);
+  const [revealed, setRevealed] = useState<string[]>([]);
+  const [newQ, setNewQ] = useState("");
+  const [deckOpen, setDeckOpen] = useState(false);
+  const [deckIdx, setDeckIdx] = useState(0);
+  const [deckAll, setDeckAll] = useState(false);
+  const [pgSeed, setPgSeed] = useState<PgRound[] | null>(null);
+  const [pgNotice, setPgNotice] = useState<string | null>(null);
+
+  const answers = interview.answers;
+  const ink = VOLUME_INK[volId] ?? "#3FE0F0";
+
+  const volume = useMemo(
+    () => INTERVIEW_VOLUMES.find((v) => v.id === volId) ?? INTERVIEW_VOLUMES[0],
+    [volId]
+  );
+
+  /* Every prompt in play, catalogue + theirs, so the counts, the deck and the
+     polygraph cover their own questions too rather than silently ignoring
+     them. */
+  const livePrompts = useMemo(() => {
+    const out: LivePrompt[] = [];
+    for (const v of INTERVIEW_VOLUMES) out.push(...resolveVolumePrompts(v.id, interview.custom));
+    return out;
+  }, [interview.custom]);
+
+  const isFilled = useCallback((id: string) => (answers[id] ?? "").trim().length > 0, [answers]);
+
+  const answeredCount = useMemo(
+    () => livePrompts.reduce((n, p) => n + (isFilled(p.id) ? 1 : 0), 0),
+    [livePrompts, isFilled]
+  );
+  const totalCount = livePrompts.length;
+
+  const volumePrompts = useMemo(
+    () => resolveVolumePrompts(volId, interview.custom),
+    [volId, interview.custom]
+  );
+
+  const volumeCounts = useMemo(() => {
+    const out: Record<string, { done: number; total: number }> = {};
+    for (const v of INTERVIEW_VOLUMES) {
+      const ps = resolveVolumePrompts(v.id, interview.custom);
+      out[v.id] = { done: ps.reduce((n, p) => n + (isFilled(p.id) ? 1 : 0), 0), total: ps.length };
+    }
+    return out;
+  }, [interview.custom, isFilled]);
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return volumePrompts.filter((p) => {
+      if (q && !p.q.toLowerCase().includes(q)) return false;
+      if (mode === "filled" && !isFilled(p.id)) return false;
+      if (mode === "blank" && isFilled(p.id)) return false;
+      return true;
+    });
+  }, [volumePrompts, query, mode, isFilled]);
+
+  const promptById = useMemo(() => {
+    const m = new Map<string, LivePrompt>();
+    for (const p of livePrompts) m.set(p.id, p);
+    return m;
+  }, [livePrompts]);
+
+  const pinnedPrompts = useMemo(
+    () => interview.pinned.map((id) => promptById.get(id)).filter((p): p is LivePrompt => Boolean(p)),
+    [interview.pinned, promptById]
+  );
+
+  /* Stable across renders so InterviewCard's memo actually holds. */
+  const setAnswer = useCallback(
+    (id: string, next: string) => {
+      onChange((prev) => ({ ...prev, answers: { ...prev.answers, [id]: next } }));
+    },
+    [onChange]
+  );
+
+  const togglePin = useCallback(
+    (id: string) => {
+      sfx.dialClick();
+      onChange((prev) => ({
+        ...prev,
+        pinned: prev.pinned.includes(id) ? prev.pinned.filter((p) => p !== id) : [...prev.pinned, id],
+      }));
+      onFlush();
+    },
+    [onChange, onFlush]
+  );
+
+  const reveal = useCallback((id: string) => {
+    sfx.cardFlip();
+    setRevealed((r) => (r.includes(id) ? r : [...r, id]));
+  }, []);
+
+  /** Bring one prompt to the front: its own volume, unfiltered, spotlit. */
+  const jumpTo = useCallback(
+    (id: string) => {
+      const vol = volumeIdOf(id, interview.custom);
+      if (vol) setVolId(vol);
+      setQuery("");
+      setMode("all");
+      setSpotlight(id);
+    },
+    [interview.custom]
+  );
+
+  /* ------------------------------------------------------ their questions */
+
+  const addOwnQuestion = () => {
+    const q = newQ.trim();
+    if (!q) return;
+    sfx.paperTear();
+    const id = uid("cus");
+    onChange((prev) => ({
+      ...prev,
+      custom: [...prev.custom, { id, volume: volId, q, long: q.length > 46 || q.endsWith("?") }],
+    }));
+    onFlush();
+    setNewQ("");
+    setSpotlight(id);
+  };
+
+  const deleteOwnQuestion = useCallback(
+    (id: string) => {
+      onGlitch();
+      onChange((prev) => {
+        const answers2 = { ...prev.answers };
+        delete answers2[id];
+        return {
+          ...prev,
+          answers: answers2,
+          custom: prev.custom.filter((c) => c.id !== id),
+          pinned: prev.pinned.filter((p) => p !== id),
+        };
+      });
+      onFlush();
+    },
+    [onChange, onFlush, onGlitch]
+  );
+
+  /* ----------------------------------------------------------- polygraph */
+
+  const onRecord = useMemo(() => livePrompts.filter((p) => isFilled(p.id)), [livePrompts, isFilled]);
+
+  const startPolygraph = () => {
+    if (onRecord.length < 3) {
+      sfx.alarm();
+      setPgNotice(
+        "The machine needs at least three answers on record before it can test you on them. Deal yourself a hand first."
+      );
+      return;
+    }
+    /* Fisher-Yates over a copy: taking the head of a sort-by-random draw is
+       biased, and a biased draw shows up as the same questions every night. */
+    const pool = onRecord.slice();
+    for (let i = pool.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    setPgNotice(null);
+    sfx.scan();
+    setPgSeed(
+      pool.slice(0, Math.min(PG_ROUNDS, pool.length)).map((prompt) => ({
+        prompt,
+        truth: answers[prompt.id] ?? "",
+        guess: "",
+        verdict: null,
+        score: 0,
+      }))
+    );
+  };
+
+  /* One write, at the end of a test - not per round. This panel is the
+     largest row in the vault, and a debounced save per question would push
+     the whole answer map up the wire seven times for a game. */
+  const finishPolygraph = useCallback(
+    (finalPct: number) => {
+      onChange((prev) => ({
+        ...prev,
+        polygraph: {
+          tests: prev.polygraph.tests + 1,
+          best: Math.max(prev.polygraph.best, finalPct),
+          last: finalPct,
+          lastAt: new Date().toISOString(),
+        },
+      }));
+      onFlush();
+    },
+    [onChange, onFlush]
+  );
+
+  /* --------------------------------------------------------------- deck */
+
+  const deckList = useMemo(
+    () => (deckAll ? livePrompts : volumePrompts),
+    [deckAll, livePrompts, volumePrompts]
+  );
+
+  const openDeck = (all: boolean) => {
+    const list = all ? livePrompts : volumePrompts;
+    if (list.length === 0) return;
+    /* Open on the first thing not yet answered - being handed a question you
+       have already done is the fastest way to make this feel like a form. */
+    const firstBlank = list.findIndex((p) => !isFilled(p.id));
+    sfx.paperTear();
+    setDeckAll(all);
+    setDeckIdx(firstBlank >= 0 ? firstBlank : 0);
+    setDeckOpen(true);
+  };
+
+  const deckStep = (dir: -1 | 1) => {
+    sfx.cardFlip();
+    setDeckIdx((i) => {
+      const n = deckList.length;
+      return n === 0 ? 0 : (i + dir + n) % n;
+    });
+  };
+
+  const deckShuffle = () => {
+    if (deckList.length === 0) return;
+    sfx.paperTear();
+    setDeckIdx(Math.floor(Math.random() * deckList.length));
+  };
+
+  const deckNextBlank = () => {
+    const n = deckList.length;
+    if (n === 0) return;
+    for (let step = 1; step <= n; step += 1) {
+      const idx = (deckIdx + step) % n;
+      if (!isFilled(deckList[idx].id)) {
+        sfx.cardFlip();
+        setDeckIdx(idx);
+        return;
+      }
+    }
+    sfx.bloom();
+  };
+
+  const closeDeck = () => {
+    setDeckOpen(false);
+    onFlush();
+  };
+
+  /* Escape closes the deck; arrows page it. */
+  useEffect(() => {
+    if (!deckOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      const typing = (e.target as HTMLElement)?.tagName === "TEXTAREA";
+      if (e.key === "Escape") closeDeck();
+      if (!typing && e.key === "ArrowRight") deckStep(1);
+      if (!typing && e.key === "ArrowLeft") deckStep(-1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckOpen, deckList.length]);
+
+  /* ------------------------------------------------------------ draw one */
+
+  const drawCard = () => {
+    const blanks = livePrompts.filter((p) => !isFilled(p.id));
+    if (blanks.length === 0) {
+      sfx.bloom();
+      setSpotlight(null);
+      return;
+    }
+    const pick = blanks[Math.floor(Math.random() * blanks.length)];
+    sfx.paperTear();
+    jumpTo(pick.id);
+  };
+
+  const spotlitPrompt = spotlight ? promptById.get(spotlight) : undefined;
+  const pct = totalCount ? Math.round((answeredCount / totalCount) * 100) : 0;
+  const deckPrompt = deckList[deckIdx];
+  const pgRecord = interview.polygraph;
+
+  return (
+    <section className="dsr-panel dsr-interview" aria-labelledby="dsr-iv-head">
+      <div className="dsr-panel-head">
+        <h2 id="dsr-iv-head" className="dsr-panel-title">
+          The Field Interview
+        </h2>
+        <span className="dsr-panel-kicker">SUBJECT PROFILE &middot; VOLS. I&ndash;VI</span>
+      </div>
+
+      <p className="dsr-iv-lede">
+        {TOTAL_PROMPTS} questions about one person, and room for your own. Nobody
+        fills this in one sitting &mdash; that is the point. Deal yourself a hand
+        when you are together, and once there is something on record, let the
+        machine test how much of it you were actually listening to.
+      </p>
+
+      {/* Until the panel is read, every tally below would read zero, which is
+          indistinguishable from "you have answered nothing". Show nothing
+          rather than something false. */}
+      {loading ? (
+        <p className="dsr-iv-loading" role="status">
+          Retrieving transcript&hellip;
+        </p>
+      ) : (
+        <>
+          <div className="dsr-iv-meter">
+            <div className="dsr-iv-meter-bar">
+              <span className="dsr-iv-meter-fill" style={{ width: pct + "%" }} />
+            </div>
+            <span className="dsr-iv-meter-read">
+              {answeredCount} / {totalCount} ON RECORD &middot; {pct}%
+            </span>
+          </div>
+
+          {/* The polygraph is the headline, so it gets its own plate on the
+              sheet rather than becoming a fifth identical button in the row
+              underneath it. */}
+          <div className="dsr-pg-callout">
+            <div className="dsr-pg-callout-text">
+              <span className="dsr-pg-callout-kicker">EARTH-616 VERIFICATION UNIT</span>
+              <h3 className="dsr-pg-callout-title">The Polygraph</h3>
+              <p className="dsr-pg-callout-lede">
+                {PG_ROUNDS} questions they have already answered. You state what you
+                think they said, the machine puts the two statements side by side, and
+                somebody gets stamped.
+              </p>
+              {pgRecord.tests > 0 && (
+                <p className="dsr-pg-callout-record">
+                  {pgRecord.tests} TEST{pgRecord.tests === 1 ? "" : "S"} ON FILE &middot; BEST{" "}
+                  {pgRecord.best}% &middot; LAST {pgRecord.last}%
+                </p>
+              )}
+            </div>
+            <button type="button" className="dsr-pg-callout-btn" onClick={startPolygraph}>
+              <span className="dsr-pg-callout-btn-dot" aria-hidden />
+              Hook me up
+            </button>
+          </div>
+          {pgNotice && <p className="dsr-error">{pgNotice}</p>}
+
+          {/* the other ways to play this */}
+          <div className="dsr-iv-modesbar">
+            <button type="button" className="dsr-tool-btn dsr-iv-primary" onClick={() => openDeck(false)}>
+              🎴 Interview mode
+            </button>
+            <button type="button" className="dsr-tool-btn" onClick={() => openDeck(true)}>
+              ♾️ All volumes
+            </button>
+            <button type="button" className="dsr-tool-btn" onClick={drawCard}>
+              🎲 Draw a blank one
+            </button>
+            <button
+              type="button"
+              className={"dsr-tool-btn dsr-iv-quiztoggle" + (quiz ? " is-on" : "")}
+              aria-pressed={quiz}
+              onClick={() => {
+                sfx.dialClick();
+                setQuiz((q) => !q);
+                setRevealed([]);
+              }}
+            >
+              {quiz ? "🙈 Quiz mode on" : "🧠 Quiz me"}
+            </button>
+          </div>
+
+          {quiz && (
+            <p className="dsr-iv-quiznote">
+              Answers already on record are covered. Say yours out loud first, then tap
+              the card to check.
+            </p>
+          )}
+
+          {pinnedPrompts.length > 0 && (
+            <div className="dsr-iv-highlights">
+              <span className="dsr-field-label">Starred</span>
+              <div className="dsr-iv-highlight-row">
+                {pinnedPrompts.map((p) => (
+                  <button
+                    type="button"
+                    key={p.id}
+                    className="dsr-iv-highlight"
+                    onClick={() => jumpTo(p.id)}
+                  >
+                    <span className="dsr-iv-highlight-q">{p.q}</span>
+                    <span className="dsr-iv-highlight-a">
+                      {(answers[p.id] ?? "").trim() || "still blank"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* volume dividers */}
+          <div className="dsr-iv-tabs" role="tablist" aria-label="Interview volumes">
+            {INTERVIEW_VOLUMES.map((v) => {
+              const c = volumeCounts[v.id];
+              const done = c && c.total > 0 && c.done === c.total;
+              return (
+                <button
+                  key={v.id}
+                  role="tab"
+                  type="button"
+                  aria-selected={v.id === volId}
+                  className={"dsr-tool-btn dsr-iv-tab" + (v.id === volId ? " is-on" : "")}
+                  style={{ "--iv-ink": VOLUME_INK[v.id] } as CSSProperties}
+                  onClick={() => {
+                    sfx.dialClick();
+                    setVolId(v.id);
+                    setSpotlight(null);
+                  }}
+                >
+                  <span className="dsr-iv-tab-mark" aria-hidden>
+                    {v.mark}
+                  </span>
+                  <span className="dsr-iv-tab-text">
+                    <span className="dsr-iv-tab-roman">{v.roman}</span>
+                    <span className="dsr-iv-tab-title">{v.title}</span>
+                  </span>
+                  <span className={"dsr-iv-tab-count" + (done ? " is-done" : "")}>
+                    {done ? "✓ ALL" : (c ? c.done + "/" + c.total : "")}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* controls */}
+          <div className="dsr-iv-controls">
+            <input
+              className="dsr-input dsr-iv-search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={"Search " + volume.title + "…"}
+              aria-label={"Search prompts in " + volume.title}
+            />
+            <div className="dsr-iv-modes" role="group" aria-label="Filter prompts">
+              {(["all", "filled", "blank"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  className={"dsr-tool-btn dsr-iv-mode" + (mode === m ? " is-on" : "")}
+                  aria-pressed={mode === m}
+                  onClick={() => setMode(m)}
+                >
+                  {m === "all" ? "All" : m === "filled" ? "On record" : "Blank"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* spotlight */}
+          {spotlitPrompt && (
+            <div className="dsr-iv-spotlight" style={{ "--iv-ink": ink } as CSSProperties}>
+              <div className="dsr-iv-spotlight-head">
+                <span className="dsr-panel-kicker">ONE QUESTION &middot; ANSWER IT TOGETHER</span>
+                <button
+                  type="button"
+                  className="dsr-iv-spotlight-x"
+                  onClick={() => setSpotlight(null)}
+                  aria-label="Dismiss this card"
+                >
+                  ✕
+                </button>
+              </div>
+              <InterviewCard
+                prompt={spotlitPrompt}
+                value={answers[spotlitPrompt.id] ?? ""}
+                pinned={interview.pinned.includes(spotlitPrompt.id)}
+                ink={ink}
+                spotlit
+                onSet={setAnswer}
+                onCommit={onFlush}
+                onTogglePin={togglePin}
+              />
+            </div>
+          )}
+
+          {/* the volume itself */}
+          <div className="dsr-iv-volhead" style={{ "--iv-ink": ink } as CSSProperties}>
+            <span className="dsr-iv-volroman">{volume.roman}</span>
+            <div className="dsr-iv-volheadtext">
+              <h3 className="dsr-iv-voltitle">{volume.title}</h3>
+              <span className="dsr-panel-kicker">{volume.kicker}</span>
+            </div>
+          </div>
+
+          {/* their own question */}
+          <div className="dsr-iv-addrow">
+            <input
+              className="dsr-input dsr-iv-addinput"
+              value={newQ}
+              onChange={(e) => setNewQ(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addOwnQuestion();
+                }
+              }}
+              placeholder={"Add your own question to " + volume.title + "…"}
+              aria-label={"Add your own question to " + volume.title}
+            />
+            <button
+              type="button"
+              className="dsr-tool-btn"
+              onClick={addOwnQuestion}
+              disabled={!newQ.trim()}
+            >
+              + Add
+            </button>
+          </div>
+
+          {visible.length === 0 ? (
+            <p className="dsr-iv-empty">
+              {mode === "blank"
+                ? "Every prompt in this volume is on record. All of it."
+                : mode === "filled"
+                  ? "Nothing answered in this volume yet — deal yourself a hand and start it."
+                  : "No prompt here matches that search."}
+            </p>
+          ) : (
+            <div className="dsr-iv-grid">
+              {visible.map((p) => (
+                <InterviewCard
+                  key={p.id}
+                  prompt={p}
+                  value={answers[p.id] ?? ""}
+                  pinned={interview.pinned.includes(p.id)}
+                  ink={ink}
+                  quiz={quiz}
+                  revealed={revealed.includes(p.id)}
+                  onSet={setAnswer}
+                  onCommit={onFlush}
+                  onTogglePin={togglePin}
+                  onReveal={reveal}
+                  onDelete={deleteOwnQuestion}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* --------------------------------------------------- the polygraph */}
+      {pgSeed && (
+        <PolygraphTest
+          seed={pgSeed}
+          previousBest={pgRecord.best}
+          isStarred={(id) => interview.pinned.includes(id)}
+          onStar={togglePin}
+          onJump={(id) => {
+            setPgSeed(null);
+            jumpTo(id);
+          }}
+          onFinish={finishPolygraph}
+          onClose={() => setPgSeed(null)}
+        />
+      )}
+
+      {/* ------------------------------------------------------- the deck */}
+      {deckOpen && deckPrompt && (
+        <ChapterOverlay>
+        <div className="dsr-iv-deck" role="dialog" aria-modal="true" aria-label="Interview mode">
+          <div
+            className="dsr-iv-deck-card"
+            style={
+              {
+                "--iv-ink":
+                  VOLUME_INK[
+                    (volumeOfPrompt(deckPrompt.id) ?? { id: volId }).id ?? volId
+                  ] ?? ink,
+              } as CSSProperties
+            }
+          >
+            <div className="dsr-iv-deck-head">
+              <span className="dsr-panel-kicker">
+                {deckAll ? "ALL VOLUMES" : volume.title.toUpperCase()} &middot;{" "}
+                {deckIdx + 1} / {deckList.length}
+              </span>
+              <button
+                type="button"
+                className="dsr-iv-spotlight-x"
+                onClick={closeDeck}
+                aria-label="Close interview mode"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="dsr-iv-deck-q">{deckPrompt.q}</p>
+
+            <textarea
+              className="dsr-textarea dsr-iv-deck-input"
+              rows={4}
+              value={answers[deckPrompt.id] ?? ""}
+              placeholder="Say it out loud, then write it down…"
+              onChange={(e) => setAnswer(deckPrompt.id, e.target.value)}
+              onBlur={onFlush}
+            />
+
+            <div className="dsr-iv-deck-foot">
+              <button type="button" className="dsr-tool-btn" onClick={() => deckStep(-1)}>
+                ← Back
+              </button>
+              <button type="button" className="dsr-tool-btn" onClick={deckShuffle}>
+                🔀 Shuffle
+              </button>
+              <button type="button" className="dsr-tool-btn" onClick={deckNextBlank}>
+                ⏭ Next blank
+              </button>
+              <button type="button" className="dsr-tool-btn dsr-iv-primary" onClick={() => deckStep(1)}>
+                Next →
+              </button>
+            </div>
+          </div>
+        </div>
+        </ChapterOverlay>
+      )}
+    </section>
+  );
+}
+
+/* ============================================================================
    THE CHAPTER
    ========================================================================== */
 
@@ -3072,6 +4737,9 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
   const sizing = usePanel<SizingBlueprintData>(userId, "sizing", EMPTY_SIZING);
   const peeveIndex = usePanel<PeeveIndexData>(userId, "peeves", EMPTY_PEEVE_INDEX);
   const timeCapsule = usePanel<TimeCapsuleData>(userId, "capsule", EMPTY_TIME_CAPSULE);
+  /* Longer debounce than the rest: this panel is typed into continuously, and
+     every keystroke would otherwise queue a rewrite of the whole interview. */
+  const interview = usePanel<InterviewData>(userId, "interview", EMPTY_INTERVIEW, 1100, migrateInterview);
 
   const rootRef = useRef<HTMLElement>(null);
   const [muted, setMutedState] = useState(false);
@@ -3267,6 +4935,7 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
     sizing.flush();
     peeveIndex.flush();
     timeCapsule.flush();
+    interview.flush();
     sfx.stopAmbient();
     onBack();
   };
@@ -3293,7 +4962,8 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
     travelogue.error ??
     sizing.error ??
     peeveIndex.error ??
-    timeCapsule.error;
+    timeCapsule.error ??
+    interview.error;
 
   const busySaving =
     identity.saving ||
@@ -3305,7 +4975,8 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
     travelogue.saving ||
     sizing.saving ||
     peeveIndex.saving ||
-    timeCapsule.saving;
+    timeCapsule.saving ||
+    interview.saving;
 
   /* A full takeover, not just a spinner in the content area - the same
      "gate the whole chapter behind something on-theme" convention every
@@ -3444,6 +5115,18 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
             capsule={timeCapsule.value}
             onChange={timeCapsule.update}
             onFlush={timeCapsule.flush}
+            onGlitch={glitch}
+          />
+
+          {/* Deliberately NOT part of the chapter-wide `loading` gate above:
+              it is the largest panel and the last section on the page, so
+              waiting on it would delay everything above it for nothing. It
+              reports its own retrieval state instead. */}
+          <FieldInterview
+            interview={interview.value}
+            loading={interview.loading}
+            onChange={interview.update}
+            onFlush={interview.flush}
             onGlitch={glitch}
           />
         </div>
@@ -3725,6 +5408,15 @@ const DOSSIER_CSS = `
     0 0 28px -14px var(--dsr-accent);
   transition: box-shadow 500ms ease;
 }
+
+/* .dsr-stack is a grid, so every panel is a grid item and defaults to
+   min-width:auto - it will not shrink below its widest content. Any panel
+   holding something that does not wrap (a horizontally scrolling strip, a
+   wide table, a long unbroken string) therefore inflates past the viewport,
+   and .dsr-root's overflow-x:hidden means that shows up as content silently
+   sliced off the right edge on a phone rather than as a scrollbar. Releasing
+   it here covers every panel, present and future. */
+.dsr-panel { min-width: 0; }
 
 .dsr-panel-head {
   display: flex;
@@ -4137,6 +5829,146 @@ const DOSSIER_CSS = `
 .dsr-back-fields { display: grid; gap: 10px; }
 .dsr-back-field { display: grid; }
 .dsr-flip-back { margin-top: 12px; }
+
+/* re-filing the card ---------------------------------------------------- */
+
+.dsr-fields-col { min-width: 0; }
+
+.dsr-fields-tools {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin: 0 0 9px;
+}
+
+.dsr-arrange-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 11px;
+  background: rgba(21, 27, 35, .9);
+  border: 1.5px dashed var(--dsr-line);
+  border-radius: 8px;
+  color: var(--dsr-dim);
+  font-family: var(--dsr-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease;
+}
+.dsr-arrange-btn:hover { color: var(--dsr-accent); border-color: var(--dsr-accent); }
+.dsr-arrange-btn.is-on {
+  background: var(--dsr-accent);
+  border-style: solid;
+  border-color: var(--dsr-accent);
+  color: #080C11;
+}
+
+.dsr-arrange-hint {
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--dsr-dim);
+}
+
+/* A loose card sits slightly off-square, the way a photo does when it is not
+   glued down yet. */
+@keyframes dsr-loose {
+  0%, 100% { rotate: -.55deg; }
+  50%      { rotate: .55deg; }
+}
+
+.dsr-field.is-arranging {
+  position: relative;
+  padding: 9px 9px 7px;
+  border: 1.5px dashed rgba(63, 224, 240, .55);
+  border-radius: 10px;
+  background: rgba(63, 224, 240, .06);
+  cursor: grab;
+  /* Without this a drag on a phone scrolls the page instead of moving the
+     card - the same trap the letter jar pile hit. */
+  touch-action: none;
+  animation: dsr-loose 2.6s ease-in-out infinite;
+}
+.dsr-field.is-arranging:nth-child(even) { animation-delay: -1.3s; }
+.dsr-field.is-arranging:nth-child(3n) { animation-duration: 3.1s; }
+/* The row itself is the handle, so nothing inside it may take the pointer -
+   a drag that lands in a text field drops a caret instead of lifting the
+   card. */
+.dsr-field.is-arranging .dsr-input,
+.dsr-field.is-arranging .dsr-textarea,
+.dsr-field.is-arranging .dsr-field-label-input { pointer-events: none; }
+.dsr-field.is-arranging .dsr-input,
+.dsr-field.is-arranging .dsr-textarea { border-color: rgba(63, 224, 240, .3); }
+
+.dsr-field.is-dragging {
+  border-style: solid;
+  border-color: var(--dsr-accent);
+  background: rgba(63, 224, 240, .14);
+  box-shadow: 0 12px 26px -12px var(--dsr-accent);
+  cursor: grabbing;
+  animation: none;
+  rotate: 1.6deg;
+  z-index: 4;
+}
+/* A drag must not select the label text it passes over. */
+.dsr-fields.is-arranging, .dsr-back-fields.is-arranging { user-select: none; }
+
+.dsr-field-ord {
+  position: absolute;
+  top: -9px;
+  left: -7px;
+  width: 19px;
+  height: 19px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--dsr-accent);
+  color: #080C11;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  font-weight: 700;
+  box-shadow: 0 2px 0 rgba(0, 0, 0, .5);
+}
+
+.dsr-field-grip {
+  flex-shrink: 0;
+  color: rgba(63, 224, 240, .7);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.dsr-field-movers { display: flex; gap: 5px; margin-top: 7px; }
+.dsr-field-move {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 13, 18, .65);
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 7px;
+  color: var(--dsr-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.dsr-field-move:hover:not(:disabled) { color: var(--dsr-accent); border-color: var(--dsr-accent); }
+.dsr-field-move:disabled { opacity: .3; cursor: not-allowed; }
+
+@media (max-width: 480px) {
+  .dsr-field-move { width: 40px; height: 40px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsr-field.is-arranging { animation: none; }
+  .dsr-field.is-dragging { rotate: none; }
+}
 
 /* ==================================================== 2. SPIDEY-SENSE ==== */
 
@@ -5237,5 +7069,1032 @@ const DOSSIER_CSS = `
   .dsr-root.is-glitching .dsr-stack,
   .dsr-root.is-chaos .dsr-stack { animation: none; }
   .dsr-cursor { display: none; }
+}
+
+/* ------------------------------------ 8b. sizing blueprint, free pins --- */
+
+.dsr-sizing-placing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  background: color-mix(in srgb, var(--dsr-accent) 12%, rgba(9, 13, 18, .7));
+  border: 1.5px dashed var(--dsr-accent);
+  border-radius: 10px;
+  font-family: var(--dsr-mono);
+  font-size: 11px;
+  color: var(--dsr-text);
+}
+.dsr-sizing-placing strong { color: var(--dsr-accent); }
+
+.dsr-sizing-placing-x {
+  margin-left: auto;
+  background: none;
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 7px;
+  padding: 5px 10px;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--dsr-dim);
+  cursor: pointer;
+}
+.dsr-sizing-placing-x:hover { color: var(--dsr-text); border-color: var(--dsr-accent); }
+
+/* While placing, the figure itself is the control - say so. */
+.dsr-sizing-figure.is-placing {
+  outline: 1.5px dashed var(--dsr-accent);
+  outline-offset: 6px;
+  border-radius: 8px;
+}
+
+.dsr-sizing-pinbtn {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 13, 18, .6);
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  /* An unpinned measurement's marker is dimmed until it has somewhere to be. */
+  filter: grayscale(1);
+  opacity: .55;
+  transition: opacity 140ms ease, border-color 140ms ease, filter 140ms ease;
+}
+.dsr-sizing-pinbtn:hover { opacity: 1; border-color: var(--dsr-accent); }
+.dsr-sizing-pinbtn.is-pinned { filter: none; opacity: 1; }
+.dsr-sizing-pinbtn.is-placing {
+  filter: none;
+  opacity: 1;
+  border-color: var(--dsr-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsr-accent) 22%, transparent);
+}
+
+/* ------------------------------------------------- 11. field interview -- */
+
+/* .dsr-stack is a grid, so its items default to min-width:auto and refuse to
+   shrink below their max-content width. This panel's tab strip is six tabs
+   wide (~1110px) and its highlight strip scrolls, so without this the whole
+   section stayed ~1110px on a 375px phone - and because .dsr-root sets
+   overflow-x:hidden, that did not even show as a scrollbar. It was silently
+   guillotined off the right edge. Every horizontally-scrolling child needs
+   the same release or it re-inflates the parent it lives in. */
+.dsr-interview { min-width: 0; }
+.dsr-iv-tabs,
+.dsr-iv-highlight-row,
+.dsr-iv-highlights,
+.dsr-iv-controls,
+.dsr-iv-meter,
+.dsr-iv-grid { min-width: 0; }
+
+.dsr-iv-lede {
+  margin: 0 0 16px;
+  max-width: 62ch;
+  font-family: var(--dsr-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--dsr-dim);
+}
+
+.dsr-iv-loading {
+  margin: 0;
+  padding: 18px 0;
+  font-family: var(--dsr-mono);
+  font-size: 11px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--dsr-dim);
+}
+
+/* progress ------------------------------------------------------------- */
+
+.dsr-iv-meter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.dsr-iv-meter-bar {
+  position: relative;
+  flex: 1 1 200px;
+  height: 8px;
+  min-width: 140px;
+  background: rgba(9, 13, 18, .8);
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.dsr-iv-meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--dsr-accent);
+  box-shadow: 0 0 14px -2px var(--dsr-accent);
+  transition: width 420ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.dsr-iv-meter-read {
+  font-family: var(--dsr-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .18em;
+  color: var(--dsr-accent);
+  white-space: nowrap;
+}
+
+/* starred highlights --------------------------------------------------- */
+
+.dsr-iv-highlights { margin-bottom: 18px; }
+
+.dsr-iv-highlight-row {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scrollbar-width: thin;
+}
+
+.dsr-iv-highlight {
+  flex: 0 0 auto;
+  max-width: 240px;
+  text-align: left;
+  padding: 8px 12px;
+  background: rgba(21, 27, 35, .92);
+  border: 1.5px solid var(--dsr-accent);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.dsr-iv-highlight:hover { transform: translateY(-2px); box-shadow: 0 6px 18px -8px var(--dsr-accent); }
+
+.dsr-iv-highlight-q {
+  display: block;
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--dsr-accent);
+  margin-bottom: 3px;
+}
+
+.dsr-iv-highlight-a {
+  display: block;
+  font-family: 'Caveat', cursive;
+  font-size: 17px;
+  line-height: 1.25;
+  color: var(--dsr-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* volume dividers ------------------------------------------------------ */
+
+.dsr-iv-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  margin-bottom: 14px;
+  scrollbar-width: thin;
+}
+
+/* Built on .dsr-tool-btn, NOT .dsr-tab - despite the name, .dsr-tab is the
+   protocol folder's manila index tab (it repaints background, colour and
+   border further up this sheet), so borrowing it here put dark folder-brown
+   text on a dark panel. Background and colour are restated explicitly so a
+   future rule up there cannot bleed into this section either. */
+.dsr-iv-tab {
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  /* File-divider silhouette: square shoulders at the bottom, tabbed top. */
+  border-radius: 10px 10px 4px 4px;
+  min-height: 44px;
+  background: rgba(21, 27, 35, .9);
+  color: var(--dsr-text);
+  border: 1.5px solid var(--dsr-line);
+}
+.dsr-iv-tab.is-on {
+  border-color: var(--dsr-accent);
+  background: color-mix(in srgb, var(--dsr-accent) 16%, rgba(21, 27, 35, .95));
+  color: var(--dsr-text);
+  box-shadow: 0 -3px 0 0 var(--dsr-accent) inset;
+}
+
+.dsr-iv-tab-mark { font-size: 14px; line-height: 1; }
+
+.dsr-iv-tab-text { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.15; }
+
+.dsr-iv-tab-roman {
+  font-family: var(--dsr-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .2em;
+  color: var(--dsr-accent);
+}
+
+.dsr-iv-tab-title {
+  font-family: var(--dsr-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--dsr-text);
+  white-space: nowrap;
+}
+
+.dsr-iv-tab-count {
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  color: var(--dsr-dim);
+  padding-left: 2px;
+}
+
+/* controls ------------------------------------------------------------- */
+
+.dsr-iv-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.dsr-iv-search { flex: 1 1 200px; min-width: 0; }
+
+.dsr-iv-modes { display: flex; gap: 4px; }
+
+.dsr-iv-mode {
+  min-height: 40px;
+  font-size: 10.5px;
+  background: rgba(21, 27, 35, .9);
+  color: var(--dsr-text);
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 9px;
+}
+.dsr-iv-mode.is-on {
+  border-color: var(--dsr-accent);
+  color: var(--dsr-accent);
+  background: color-mix(in srgb, var(--dsr-accent) 14%, rgba(21, 27, 35, .95));
+}
+
+.dsr-iv-draw { min-height: 40px; white-space: nowrap; }
+
+/* the drawn card ------------------------------------------------------- */
+
+.dsr-iv-spotlight {
+  margin-bottom: 18px;
+  padding: 12px;
+  border: 1.5px dashed var(--dsr-accent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--dsr-accent) 8%, rgba(9, 13, 18, .6));
+  animation: dsrDrawIn 300ms cubic-bezier(.2, .8, .2, 1) both;
+}
+
+@keyframes dsrDrawIn {
+  from { opacity: 0; transform: translateY(-8px) rotate(-.6deg); }
+  to   { opacity: 1; transform: none; }
+}
+
+.dsr-iv-spotlight-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.dsr-iv-spotlight-x {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 8px;
+  color: var(--dsr-dim);
+  cursor: pointer;
+  font-size: 12px;
+}
+.dsr-iv-spotlight-x:hover { color: var(--dsr-text); border-color: var(--dsr-accent); }
+
+/* volume heading ------------------------------------------------------- */
+
+.dsr-iv-volhead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding-top: 6px;
+  border-top: 1.5px solid var(--dsr-line);
+}
+
+.dsr-iv-volroman {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  font-family: 'Permanent Marker', cursive;
+  font-size: 17px;
+  color: var(--dsr-accent);
+  border: 1.5px solid var(--dsr-accent);
+  border-radius: 50%;
+}
+
+.dsr-iv-voltitle {
+  margin: 0;
+  font-family: 'Permanent Marker', cursive;
+  font-size: 1.15rem;
+  color: #FFF;
+  line-height: 1.1;
+}
+
+.dsr-iv-empty {
+  margin: 0;
+  padding: 22px 4px;
+  font-family: 'Caveat', cursive;
+  font-size: 19px;
+  color: var(--dsr-dim);
+}
+
+/* the cards ------------------------------------------------------------ */
+
+.dsr-iv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr));
+  gap: 10px;
+}
+
+.dsr-iv-card {
+  position: relative;
+  padding: 10px 12px;
+  background: rgba(9, 13, 18, .5);
+  border: 1.5px solid var(--dsr-line);
+  /* Ruled left edge, like the margin line on an index card. */
+  border-left-width: 3px;
+  border-radius: 10px;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+.dsr-iv-card:focus-within { border-color: var(--dsr-accent); }
+.dsr-iv-card.is-filled {
+  border-left-color: var(--dsr-accent);
+  background: rgba(21, 27, 35, .72);
+}
+.dsr-iv-card.is-spotlit { border-color: var(--dsr-accent); background: rgba(21, 27, 35, .85); }
+
+.dsr-iv-cardhead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.dsr-iv-q {
+  font-family: var(--dsr-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--dsr-dim);
+  line-height: 1.45;
+  cursor: pointer;
+}
+.dsr-iv-card.is-filled .dsr-iv-q { color: var(--dsr-accent); }
+
+.dsr-iv-pin {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  margin: -4px -4px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  color: rgba(147, 163, 178, .5);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 140ms ease, transform 140ms ease;
+}
+.dsr-iv-pin:hover { color: var(--dsr-accent); transform: scale(1.15); }
+.dsr-iv-pin.is-on { color: var(--dsr-accent); }
+
+/* The answer reads as handwriting on the card, not as form input. */
+.dsr-iv-input {
+  font-family: 'Caveat', cursive;
+  font-size: 18px;
+  line-height: 1.35;
+  padding: 5px 8px;
+}
+.dsr-iv-input::placeholder { font-family: var(--dsr-mono); font-size: 12px; }
+
+/* the play bar --------------------------------------------------------- */
+
+.dsr-iv-modesbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.dsr-iv-modesbar .dsr-tool-btn { min-height: 42px; }
+
+.dsr-iv-primary {
+  background: color-mix(in srgb, var(--dsr-accent) 20%, rgba(21, 27, 35, .95));
+  border-color: var(--dsr-accent);
+  color: var(--dsr-text);
+}
+
+.dsr-iv-quiztoggle.is-on {
+  background: color-mix(in srgb, var(--dsr-accent) 22%, rgba(21, 27, 35, .95));
+  border-color: var(--dsr-accent);
+  color: var(--dsr-accent);
+}
+
+.dsr-iv-quiznote,
+.dsr-iv-note {
+  margin: -6px 0 14px;
+  font-family: var(--dsr-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--dsr-dim);
+}
+.dsr-iv-note { margin: 12px 0 0; }
+
+/* volume ink: each divider carries its own colour so six stacks of index
+   cards do not read as one wall. */
+.dsr-iv-tab.is-on {
+  border-color: var(--iv-ink, var(--dsr-accent));
+  background: color-mix(in srgb, var(--iv-ink, var(--dsr-accent)) 16%, rgba(21, 27, 35, .95));
+  box-shadow: 0 -3px 0 0 var(--iv-ink, var(--dsr-accent)) inset;
+}
+.dsr-iv-tab.is-on .dsr-iv-tab-roman { color: var(--iv-ink, var(--dsr-accent)); }
+.dsr-iv-tab-count.is-done { color: var(--iv-ink, var(--dsr-accent)); }
+
+/* their own questions -------------------------------------------------- */
+
+.dsr-iv-addrow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.dsr-iv-addinput { flex: 1 1 auto; min-width: 0; }
+.dsr-iv-addrow .dsr-tool-btn { min-height: 40px; white-space: nowrap; }
+
+.dsr-iv-ours {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--iv-ink, var(--dsr-accent));
+  border-radius: 999px;
+  font-size: 7.5px;
+  letter-spacing: .12em;
+  color: var(--iv-ink, var(--dsr-accent));
+  vertical-align: middle;
+}
+
+.dsr-iv-volheadtext { min-width: 0; }
+
+.dsr-iv-cardfoot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.dsr-iv-del {
+  margin-left: auto;
+  background: none;
+  border: none;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: rgba(255, 107, 107, .75);
+  cursor: pointer;
+}
+.dsr-iv-del:hover { color: #FF6B6B; text-decoration: underline; }
+
+.dsr-iv-card.is-custom { border-style: dashed; }
+
+/* quiz cover ----------------------------------------------------------- */
+
+.dsr-iv-cover {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 9px 10px;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(9, 13, 18, .85),
+    rgba(9, 13, 18, .85) 6px,
+    rgba(30, 40, 50, .85) 6px,
+    rgba(30, 40, 50, .85) 12px
+  );
+  border: 1.5px solid var(--iv-ink, var(--dsr-accent));
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.dsr-iv-cover:hover { background: rgba(21, 27, 35, .9); }
+
+.dsr-iv-cover-tag {
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .18em;
+  color: var(--iv-ink, var(--dsr-accent));
+}
+.dsr-iv-cover-hint {
+  font-family: 'Caveat', cursive;
+  font-size: 15px;
+  color: var(--dsr-dim);
+}
+
+/* interview mode (the deck) -------------------------------------------- */
+
+.dsr-iv-deck {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(5, 8, 11, .88);
+  backdrop-filter: blur(6px);
+  animation: dsrDrawIn 240ms ease-out both;
+}
+
+.dsr-iv-deck-card {
+  width: min(560px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  /* Pairing overflow-y:auto with the default visible x gives a stray
+     horizontal scrollbar along the bottom of the card. */
+  overflow-x: hidden;
+  box-sizing: border-box;
+  padding: clamp(16px, 4vw, 26px);
+  background: rgba(19, 25, 32, .96);
+  border: 2px solid var(--iv-ink, var(--dsr-accent));
+  border-radius: 18px;
+  box-shadow: 0 30px 70px rgba(0, 0, 0, .6), 0 0 40px -18px var(--iv-ink, var(--dsr-accent));
+}
+
+.dsr-iv-deck-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.dsr-iv-deck-q {
+  margin: 0 0 16px;
+  font-family: 'Permanent Marker', cursive;
+  font-size: clamp(1.2rem, 4.5vw, 1.75rem);
+  line-height: 1.25;
+  color: #FFF;
+}
+
+.dsr-iv-deck-input {
+  font-family: 'Caveat', cursive;
+  font-size: 21px;
+  line-height: 1.4;
+  margin-bottom: 14px;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+.dsr-iv-deck-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dsr-iv-deck-foot .dsr-tool-btn { flex: 1 1 auto; justify-content: center; min-height: 44px; }
+
+/* the polygraph -------------------------------------------------------- */
+
+.dsr-pg-callout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin: 14px 0 4px;
+  padding: 15px 17px;
+  background:
+    repeating-linear-gradient(90deg, rgba(255, 61, 200, .07) 0 1px, transparent 1px 13px),
+    linear-gradient(140deg, rgba(255, 61, 200, .14), rgba(9, 13, 18, .9) 62%);
+  border: 1.5px solid rgba(255, 61, 200, .45);
+  border-radius: 14px;
+  box-shadow: inset 0 0 34px -18px #FF3DC8;
+}
+
+.dsr-pg-callout-text { flex: 1 1 240px; min-width: 0; }
+
+.dsr-pg-callout-kicker {
+  display: block;
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+  color: rgba(255, 61, 200, .85);
+}
+
+.dsr-pg-callout-title {
+  margin: 3px 0 5px;
+  font-family: 'Permanent Marker', cursive;
+  font-size: clamp(1.15rem, 3.4vw, 1.45rem);
+  line-height: 1.1;
+  color: #FFF;
+}
+
+.dsr-pg-callout-lede {
+  margin: 0;
+  font-family: 'Caveat', cursive;
+  font-size: 17px;
+  line-height: 1.35;
+  color: var(--dsr-text);
+}
+
+.dsr-pg-callout-record {
+  margin: 7px 0 0;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  letter-spacing: .14em;
+  color: var(--dsr-dim);
+}
+
+.dsr-pg-callout-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 46px;
+  padding: 11px 18px;
+  background: #FF3DC8;
+  border: 2px solid #FF3DC8;
+  border-radius: 11px;
+  color: #0B0E13;
+  font-family: var(--dsr-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, .55);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.dsr-pg-callout-btn:hover { transform: translate(-1px, -1px); box-shadow: 6px 6px 0 rgba(0, 0, 0, .55); }
+.dsr-pg-callout-btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 rgba(0, 0, 0, .55); }
+
+/* The idle lamp on the front of the machine. */
+@keyframes dsr-pg-lamp {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 3px rgba(11, 14, 19, .35); }
+  50%      { opacity: .35; box-shadow: 0 0 0 6px rgba(11, 14, 19, .18); }
+}
+.dsr-pg-callout-btn-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #0B0E13;
+  animation: dsr-pg-lamp 1.9s ease-in-out infinite;
+}
+
+/* the test itself ------------------------------------------------------- */
+
+.dsr-pg {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(5, 8, 11, .9);
+  backdrop-filter: blur(6px);
+  animation: dsrDrawIn 240ms ease-out both;
+}
+
+.dsr-pg-sheet {
+  width: min(560px, 100%);
+  max-height: 92vh;
+  overflow-y: auto;
+  /* Pairing overflow-y:auto with the default visible x gives a stray
+     horizontal scrollbar along the bottom of the sheet. */
+  overflow-x: hidden;
+  box-sizing: border-box;
+  padding: clamp(15px, 4vw, 24px);
+  background: rgba(19, 25, 32, .97);
+  border: 2px solid rgba(255, 61, 200, .55);
+  border-radius: 18px;
+  box-shadow: 0 30px 70px rgba(0, 0, 0, .65), 0 0 40px -16px #FF3DC8;
+}
+
+.dsr-pg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+/* chart paper: a magenta grid the pens run across */
+.dsr-pg-chart {
+  position: relative;
+  height: 62px;
+  margin-bottom: 16px;
+  overflow: hidden;
+  border: 1.5px solid rgba(255, 61, 200, .34);
+  border-radius: 9px;
+  background:
+    repeating-linear-gradient(90deg, rgba(255, 61, 200, .16) 0 1px, transparent 1px 15px),
+    repeating-linear-gradient(0deg, rgba(255, 61, 200, .12) 0 1px, transparent 1px 12px),
+    #0B0E13;
+}
+
+.dsr-pg-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* The amplitude, not the speed, is what reads as "the subject reacted". */
+  transform: scaleY(1);
+  transform-origin: center;
+  transition: transform 240ms ease;
+}
+.dsr-pg-chart.is-hot .dsr-pg-svg { transform: scaleY(2.15); }
+
+@keyframes dsr-pg-roll { to { transform: translateX(-600px); } }
+/* Two copies of each trace sit end to end, so a -600 unit roll loops with no
+   seam. CSS transforms on an SVG child work in user units, which is why this
+   matches the viewBox width exactly. */
+.dsr-pg-roll { animation: dsr-pg-roll 7s linear infinite; }
+.dsr-pg-chart.is-hot .dsr-pg-roll { animation-duration: 2.4s; }
+
+.dsr-pg-line { fill: none; stroke: #FF3DC8; stroke-width: 1.4; opacity: .9; }
+.dsr-pg-line-b { stroke: #3FE0F0; stroke-width: 1.1; opacity: .72; }
+
+/* the pen head, parked where the trace is being written */
+.dsr-pg-pen {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 22%;
+  width: 2px;
+  background: rgba(255, 255, 255, .82);
+  box-shadow: 0 0 10px 2px rgba(255, 61, 200, .7);
+}
+
+.dsr-pg-bpm {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  color: rgba(255, 61, 200, .9);
+}
+
+.dsr-pg-qrow { display: flex; gap: 11px; margin-bottom: 14px; }
+
+.dsr-pg-vol {
+  flex: 0 0 auto;
+  font-family: var(--dsr-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  color: var(--iv-ink, #FF3DC8);
+  padding-top: 4px;
+}
+
+.dsr-pg-q {
+  margin: 0;
+  min-width: 0;
+  font-family: 'Permanent Marker', cursive;
+  font-size: clamp(1.1rem, 4.2vw, 1.5rem);
+  line-height: 1.25;
+  color: #FFF;
+}
+
+.dsr-pg-input {
+  margin: 5px 0 14px;
+  font-family: 'Caveat', cursive;
+  font-size: 20px;
+  line-height: 1.4;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+/* the read-out ---------------------------------------------------------- */
+
+@keyframes dsr-pg-slam {
+  0%   { transform: scale(2.2) rotate(-16deg); opacity: 0; }
+  55%  { transform: scale(.93) rotate(-5deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+
+.dsr-pg-tape {
+  position: relative;
+  margin-bottom: 14px;
+  padding: 13px 14px 12px;
+  border: 1.5px dashed rgba(255, 90, 90, .55);
+  border-radius: 11px;
+  background: rgba(255, 90, 90, .07);
+  animation: dsrDrawIn 220ms ease-out both;
+}
+.dsr-pg-tape.is-match {
+  border-color: rgba(59, 209, 122, .55);
+  background: rgba(59, 209, 122, .07);
+}
+
+.dsr-pg-stamp {
+  position: absolute;
+  top: -20px;
+  right: 6px;
+  pointer-events: none;
+  /* The slam opens at 2.2x. Growing from the centre would push the stamp
+     ~65px past the sheet's right edge for a third of a second, and the sheet
+     clips its own x-overflow - so it lands half-cut. Pinning the origin to
+     its own right edge makes it grow inward instead. */
+  transform-origin: 100% 50%;
+  animation: dsr-pg-slam 340ms cubic-bezier(.2, 1.4, .4, 1) both;
+}
+
+.dsr-pg-truth {
+  margin: 3px 0 9px;
+  font-family: 'Caveat', cursive;
+  font-size: 21px;
+  line-height: 1.35;
+  color: #FFF;
+  overflow-wrap: anywhere;
+}
+
+.dsr-pg-reading {
+  margin: 0 0 10px;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  color: var(--dsr-dim);
+}
+.dsr-pg-reading-note { font-weight: 400; letter-spacing: .08em; text-transform: none; }
+
+.dsr-pg-overrule { display: flex; flex-wrap: wrap; gap: 8px; }
+.dsr-pg-overrule .dsr-tool-btn { flex: 1 1 auto; justify-content: center; min-height: 42px; }
+
+.dsr-pg-foot { display: flex; flex-wrap: wrap; gap: 8px; }
+.dsr-pg-foot .dsr-tool-btn { flex: 1 1 auto; justify-content: center; min-height: 44px; }
+
+/* how far through the tape you are */
+.dsr-pg-pips { display: flex; gap: 6px; justify-content: center; margin-top: 14px; }
+.dsr-pg-pip {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--dsr-line);
+  background: rgba(9, 13, 18, .8);
+}
+.dsr-pg-pip.is-match { background: #3BD17A; border-color: #3BD17A; }
+.dsr-pg-pip.is-miss { background: #FF5A5A; border-color: #FF5A5A; }
+.dsr-pg-pip.is-now { box-shadow: 0 0 0 3px rgba(255, 61, 200, .3); border-color: #FF3DC8; }
+
+/* the final tape -------------------------------------------------------- */
+
+.dsr-pg-score { text-align: center; margin-bottom: 14px; }
+
+.dsr-pg-score-num {
+  display: block;
+  font-family: 'Permanent Marker', cursive;
+  font-size: clamp(2.6rem, 12vw, 3.6rem);
+  line-height: 1;
+  color: #FF3DC8;
+  text-shadow: 3px 3px 0 rgba(0, 0, 0, .5);
+}
+
+.dsr-pg-score-lab {
+  display: block;
+  margin-top: 5px;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .2em;
+  color: var(--dsr-dim);
+}
+
+.dsr-pg-verdict {
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 1.5px solid rgba(255, 90, 90, .5);
+  border-radius: 11px;
+  background: rgba(255, 90, 90, .07);
+}
+.dsr-pg-verdict.is-good { border-color: rgba(59, 209, 122, .5); background: rgba(59, 209, 122, .07); }
+.dsr-pg-verdict strong {
+  display: block;
+  margin-bottom: 5px;
+  font-family: var(--dsr-mono);
+  font-size: 11px;
+  letter-spacing: .2em;
+  color: #FFF;
+}
+.dsr-pg-verdict span {
+  font-family: 'Caveat', cursive;
+  font-size: 19px;
+  line-height: 1.35;
+  color: var(--dsr-text);
+}
+
+.dsr-pg-record {
+  margin: 0 0 12px;
+  font-family: var(--dsr-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  color: #FFC93F;
+  text-align: center;
+}
+
+.dsr-pg-misses { display: grid; gap: 8px; margin-bottom: 14px; }
+
+.dsr-pg-miss {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  background: rgba(9, 13, 18, .6);
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 140ms ease;
+}
+.dsr-pg-miss:hover { border-color: #FF3DC8; }
+
+.dsr-pg-miss-q {
+  font-family: var(--dsr-mono);
+  font-size: 10px;
+  letter-spacing: .04em;
+  color: var(--dsr-text);
+  overflow-wrap: anywhere;
+}
+.dsr-pg-miss-a {
+  font-family: 'Caveat', cursive;
+  font-size: 18px;
+  color: var(--dsr-dim);
+  overflow-wrap: anywhere;
+}
+.dsr-pg-miss-go {
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: rgba(255, 61, 200, .8);
+}
+
+@media (max-width: 480px) {
+  .dsr-pg-callout-btn { flex: 1 1 100%; justify-content: center; }
+  .dsr-pg-overrule .dsr-tool-btn, .dsr-pg-foot .dsr-tool-btn { flex: 1 1 100%; }
+  .dsr-pg-stamp { top: -16px; right: 2px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsr-pg, .dsr-pg-tape { animation: none; }
+  .dsr-pg-roll, .dsr-pg-callout-btn-dot { animation: none; }
+  .dsr-pg-stamp { animation: none; }
+  .dsr-pg-svg { transition: none; }
+}
+
+@media (max-width: 480px) {
+  .dsr-iv-grid { grid-template-columns: 1fr; }
+  .dsr-iv-controls > * { flex: 1 1 100%; }
+  .dsr-iv-modesbar .dsr-tool-btn { flex: 1 1 100%; justify-content: center; }
+  .dsr-iv-addrow { flex-wrap: wrap; }
+  .dsr-iv-addrow .dsr-tool-btn { width: 100%; justify-content: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsr-iv-spotlight, .dsr-iv-deck { animation: none; }
+  .dsr-iv-meter-fill { transition: none; }
+  .dsr-iv-pin:hover { transform: none; }
 }
 `;
