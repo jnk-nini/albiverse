@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { clearChapterAccessCache } from "@/lib/hooks/useChapterAccess";
+import { blobKey, dropBlob, readBlob, writeBlob } from "@/lib/media/blobCache";
 import CoupleConnect from "@/components/CoupleConnect";
 import Dashboard from "@/components/Dashboard";
 import { 
@@ -32,6 +33,24 @@ type CoupleRow = {
   cover_image_data?: string | null;
 };
 
+/* The cover has no per-row version column to key a cache on, so entries carry
+   a fixed stamp and freshness is handled by the timed revalidation in
+   loadCoverImage. Bump this to force every client to re-download once. */
+const COVER_VERSION = "v1";
+const COVER_CHECK_KEY = "albiverse:cover-checked:";
+
+/* How long a cached cover is trusted before it is checked against the
+   database again.
+
+   localStorage rather than sessionStorage, and a clock rather than a session:
+   sessionStorage is per-TAB, so every new tab and every cold launch of the
+   installed PWA counted as a fresh session and paid the full 9.3MB again.
+   Twelve hours bounds that to roughly twice a day per device in the worst
+   case, while keeping the window short enough that a cover your partner
+   changed shows up the same day. Whoever makes the change sees it instantly -
+   Dashboard writes through to the cache. */
+const COVER_REVALIDATE_MS = 12 * 60 * 60 * 1000;
+
 export default function AuthPage() {
   const [isSignUp, setIsSignUp] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -53,6 +72,77 @@ export default function AuthPage() {
   const [authChecking, setAuthChecking] = useState(true);
 
   const supabase = createClient();
+
+  /* EGRESS: the cover photo is the single most expensive thing this app
+     reads. It is a base64 blob on `couples` (9.3MB on this account), and
+     because BACK out of every chapter routes to `/?from=<spread>`, this page
+     re-mounts constantly - so it used to be re-downloaded on every single
+     return to the book. That one query is what put the project over its
+     Supabase egress quota.
+
+     It is cached in IndexedDB now. `couples` has no `updated_at` to version
+     it against, so instead of checking on every mount the cache is trusted
+     for COVER_REVALIDATE_MS, and the upload/reset paths in Dashboard write
+     straight through so your own changes are never stale. The bounded
+     staleness is therefore: a cover your partner changes on their device
+     reaches you within half a day, or immediately if they changed it here. */
+  const loadCoverImage = async (coupleId: string) => {
+    const key = blobKey.coupleCover(coupleId);
+
+    const applyCover = (bytes: string) =>
+      setCoupleData((prev: CoupleRow | null) =>
+        prev && prev.id === coupleId ? { ...prev, cover_image_data: bytes } : prev
+      );
+
+    /* Revalidation is timed, but a cache HIT still paints instantly on every
+       mount - that is the whole point. */
+    let checkedRecently = false;
+    try {
+      const last = Number(localStorage.getItem(COVER_CHECK_KEY + coupleId) ?? 0);
+      checkedRecently = Number.isFinite(last) && Date.now() - last < COVER_REVALIDATE_MS;
+    } catch {
+      /* localStorage throws outright when site data is blocked. Treat it as
+         "not checked" - worst case is today's behaviour. */
+    }
+
+    const cached = await readBlob(key, COVER_VERSION);
+    if (cached) {
+      applyCover(cached);
+      if (checkedRecently) return;
+    }
+
+    const { data: cover } = await supabase
+      .from("couples")
+      .select("cover_image_data")
+      .eq("id", coupleId)
+      .maybeSingle();
+
+    try {
+      localStorage.setItem(COVER_CHECK_KEY + coupleId, String(Date.now()));
+    } catch {
+      /* see above */
+    }
+
+    const bytes = cover?.cover_image_data ?? null;
+
+    if (!bytes) {
+      /* Reset to the default cover, probably on the other partner's device.
+         Without this the cached copy would keep painting a cover that no
+         longer exists, on every mount, forever. */
+      if (cached) {
+        void dropBlob(key);
+        setCoupleData((prev: CoupleRow | null) =>
+          prev && prev.id === coupleId ? { ...prev, cover_image_data: null } : prev
+        );
+      }
+      return;
+    }
+
+    if (bytes !== cached) {
+      applyCover(bytes);
+      void writeBlob(key, COVER_VERSION, bytes);
+    }
+  };
 
   const fetchProfileAndCouple = async (userId: string, userEmail?: string) => {
     try {
@@ -99,21 +189,7 @@ export default function AuthPage() {
 
         setCoupleData(couple);
 
-        if (couple?.id) {
-          void supabase
-            .from("couples")
-            .select("cover_image_data")
-            .eq("id", couple.id)
-            .maybeSingle()
-            .then(({ data: cover }) => {
-              if (!cover?.cover_image_data) return;
-              setCoupleData((prev: CoupleRow | null) =>
-                prev && prev.id === couple.id
-                  ? { ...prev, cover_image_data: cover.cover_image_data }
-                  : prev
-              );
-            });
-        }
+        if (couple?.id) void loadCoverImage(couple.id);
 
         const partnerId = couple?.partner_1_id === userId
           ? couple.partner_2_id

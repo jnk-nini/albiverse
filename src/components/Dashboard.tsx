@@ -7,6 +7,7 @@ import SpideyBackground from "./SpideyBackground";
 import { Typewriter } from "./DiaryArt";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import { createClient } from "@/lib/supabase/client";
+import { blobKey, dropBlob, writeBlob } from "@/lib/media/blobCache";
 import { compressImage } from "@/lib/media/mediaPrep";
 import { clearChapterAccessCache } from "@/lib/hooks/useChapterAccess";
 import {
@@ -40,6 +41,10 @@ import {
 
 /* The size a cover photo may be when PICKED. It is downscaled before it is
    stored, so this only bounds what gets read into memory. */
+/* Must match COVER_VERSION in src/app/page.tsx - the two sides of the same
+   cache entry. */
+const COVER_CACHE_VERSION = "v1";
+
 const COVER_MAX_IMAGE_BYTES = 40 * 1024 * 1024;
 
 interface DashboardProps {
@@ -267,6 +272,12 @@ export default function Dashboard({
       return;
     }
 
+    /* Write straight through to the blob cache. The book cover is only
+       re-checked against the database every COVER_REVALIDATE_MS (see
+       loadCoverImage in page.tsx), so without this your own new cover would
+       keep losing to the cached old one for up to half a day. */
+    if (coupleId) void writeBlob(blobKey.coupleCover(coupleId), COVER_CACHE_VERSION, dataUrl);
+
     setCoverOverride(dataUrl);
     setHasCoverImageError(false);
   }, 800);
@@ -284,6 +295,8 @@ export default function Dashboard({
       setCoverUploadError(error.message);
       return;
     }
+
+    if (coupleId) void dropBlob(blobKey.coupleCover(coupleId));
 
     setCoverOverride(null);
     setHasCoverImageError(false);

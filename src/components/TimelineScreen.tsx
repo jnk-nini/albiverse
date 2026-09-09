@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+import { blobKey, dropBlob, readBlobs, writeBlobs } from "@/lib/media/blobCache";
 import { compressImage } from "@/lib/media/mediaPrep";
 import SpideyBackground from "./SpideyBackground";
 import { 
@@ -42,6 +43,8 @@ export interface PolaroidMemory {
   photo_rotation?: number;
   photo_flip_h?: boolean;
   photo_flip_v?: boolean;
+  /* Not rendered - the blob cache's version stamp for this row's photo. */
+  updatedAt?: string;
 }
 
 /* PERFORMANCE: `url` is deliberately NOT in this list. It holds the whole
@@ -54,7 +57,7 @@ export interface PolaroidMemory {
 
    This is the same two-stage load Ch.04 Digicam already uses. */
 const MEMORY_SELECT_COLUMNS =
-  "id, caption, notes, memory_date, created_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v";
+  "id, caption, notes, memory_date, created_at, updated_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v";
 
 /* How many photos to pull in the first burst. The rest follow immediately
    after, so a long timeline still fills in without one giant request. */
@@ -84,6 +87,7 @@ function normalizeMemory(item: any): PolaroidMemory {
     photo_rotation: item.photo_rotation ?? 0,
     photo_flip_h: item.photo_flip_h ?? false,
     photo_flip_v: item.photo_flip_v ?? false,
+    updatedAt: item.updated_at ?? item.created_at ?? "v0",
   };
 }
 
@@ -162,9 +166,30 @@ export default function TimelineScreen({
   /* Pull the actual photo bytes for a set of rows and merge them in. Split
      into batches so the first few polaroids can develop while the rest are
      still in flight, rather than the whole gallery landing at once. */
-  const loadPhotos = async (ids: string[]) => {
+  const loadPhotos = async (ids: string[], versions: Map<string, string>) => {
     if (ids.length === 0) return;
     try {
+      /* EGRESS: these blobs are ~3MB each and a database row is never
+         CDN-cached, so every visit used to re-download the whole gallery.
+         Anything already held at the same `updated_at` costs nothing now. */
+      const cached = await readBlobs(
+        ids.map((id) => ({ key: blobKey.timelinePhoto(id), version: versions.get(id) ?? "v0" }))
+      );
+
+      if (cached.size > 0) {
+        setPhotoUrls((prev) => {
+          const next = { ...prev };
+          for (const id of ids) {
+            const hit = cached.get(blobKey.timelinePhoto(id));
+            if (hit) next[id] = hit;
+          }
+          return next;
+        });
+      }
+
+      const missing = ids.filter((id) => !cached.has(blobKey.timelinePhoto(id)));
+      if (missing.length === 0) return;
+
       /* `url` only. `file_url` is a legacy duplicate that has always been
          written alongside it - verified on every row: neither is ever null
          and the two never differ - so asking for both would send every
@@ -172,7 +197,7 @@ export default function TimelineScreen({
       const { data, error: photoErr } = await supabase
         .from("media_items")
         .select("id, url")
-        .in("id", ids);
+        .in("id", missing);
 
       if (photoErr) throw photoErr;
 
@@ -184,6 +209,16 @@ export default function TimelineScreen({
         }
         return next;
       });
+
+      void writeBlobs(
+        (data || [])
+          .filter((row) => typeof (row as any).url === "string")
+          .map((row) => ({
+            key: blobKey.timelinePhoto((row as any).id),
+            version: versions.get((row as any).id) ?? "v0",
+            value: (row as any).url as string,
+          }))
+      );
     } catch {
       /* A photo that won't load is not worth blocking the chapter over - the
          frame keeps its "developing" state and the caption/notes still read.
@@ -215,10 +250,11 @@ export default function TimelineScreen({
          JSON arriving in one lump, so nothing would appear until all of it
          landed. */
       const ids = rows.map((m) => m.id);
-      await loadPhotos(ids.slice(0, PHOTO_BATCH));
+      const versions = new Map(rows.map((m) => [m.id, m.updatedAt ?? "v0"]));
+      await loadPhotos(ids.slice(0, PHOTO_BATCH), versions);
       void (async () => {
         for (let i = PHOTO_BATCH; i < ids.length; i += PHOTO_BATCH) {
-          await loadPhotos(ids.slice(i, i + PHOTO_BATCH));
+          await loadPhotos(ids.slice(i, i + PHOTO_BATCH), versions);
         }
       })();
     } catch (err: any) {
@@ -277,7 +313,7 @@ export default function TimelineScreen({
           if (row.url) {
             setPhotoUrls((prev) => ({ ...prev, [row.id]: row.url }));
           } else {
-            void loadPhotos([row.id]);
+            void loadPhotos([row.id], new Map([[row.id, row.updatedAt ?? "v0"]]));
           }
         }
       )
@@ -427,6 +463,13 @@ export default function TimelineScreen({
         media_type: "image",
         file_url: formImagePreview,
         url: formImagePreview,
+        /* Load-bearing: `updated_at` is the version stamp the blob cache keys
+           on, and this payload can carry NEW bytes for an existing row. There
+           is no trigger maintaining it (checked - this schema has no triggers
+           at all), so without this line a replaced photo would keep the old
+           stamp and every other device would go on serving the old photo out
+           of its cache indefinitely. */
+        updated_at: new Date().toISOString(),
         caption: formCaption.trim() || "Timeline Memory ❤️",
         notes: formNotes.trim() || "",
         memory_date: formDate || new Date().toISOString().slice(0, 10),
@@ -454,9 +497,16 @@ export default function TimelineScreen({
         if (updateErr) throw updateErr;
         const row = normalizeMemory(saved);
         /* The saved row comes back metadata-only, but the bytes we just sent
-           are right here - seed the cache so the card doesn't have to
-           re-download its own photo. */
+           are right here - seed both caches so the card doesn't have to
+           re-download its own photo, this mount or any later one. */
         setPhotoUrls((prev) => ({ ...prev, [row.id]: formImagePreview }));
+        void writeBlobs([
+          {
+            key: blobKey.timelinePhoto(row.id),
+            version: row.updatedAt ?? "v0",
+            value: formImagePreview,
+          },
+        ]);
         setMemories((prev) => sortByDate(prev.map((m) => (m.id === row.id ? row : m))));
       } else {
         const { data: saved, error: insertErr } = await supabase
@@ -468,6 +518,13 @@ export default function TimelineScreen({
         if (insertErr) throw insertErr;
         const row = normalizeMemory(saved);
         setPhotoUrls((prev) => ({ ...prev, [row.id]: formImagePreview }));
+        void writeBlobs([
+          {
+            key: blobKey.timelinePhoto(row.id),
+            version: row.updatedAt ?? "v0",
+            value: formImagePreview,
+          },
+        ]);
         setMemories((prev) => sortByDate([...prev, row]));
       }
 
@@ -494,6 +551,9 @@ export default function TimelineScreen({
         .eq("id", id);
 
       if (delErr) throw delErr;
+      /* The row is gone - free the cache slot rather than waiting for
+         eviction to notice. */
+      void dropBlob(blobKey.timelinePhoto(id));
       setMemories((prev) => prev.filter((m) => m.id !== id));
     } catch (err: any) {
       setError(err.message || "Failed to delete polaroid.");
