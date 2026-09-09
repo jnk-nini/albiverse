@@ -474,32 +474,55 @@ interface CustomPrompt {
   long: boolean;
 }
 
+/** The running record of polygraph tests. Written once per completed test. */
+interface PolygraphRecord {
+  /** Tests taken all the way to a verdict. */
+  tests: number;
+  /** Best truth rating so far, 0-100. */
+  best: number;
+  /** The most recent rating, and when it was filed. */
+  last: number | null;
+  lastAt: string | null;
+}
+
 interface InterviewData {
   /** prompt id -> answer. Absent or "" both mean unanswered. */
   answers: Record<string, string>;
   /** Prompt ids the reader starred, surfaced in the highlights strip. */
   pinned: string[];
-  /* Display order per volume, as prompt ids. The CATALOGUE order never
-     changes (ids are positional - see dossierInterview.ts), so re-arranging
-     is stored here as data instead. A volume missing from this map, or an id
-     missing from its list, falls back to catalogue order, which is what lets
-     new prompts appear for someone who already re-arranged that volume. */
-  order: Record<string, string[]>;
   /** Their own questions. Ids are prefixed so they cannot collide with the catalogue. */
   custom: CustomPrompt[];
+  polygraph: PolygraphRecord;
 }
 
-const EMPTY_INTERVIEW: InterviewData = { answers: {}, pinned: [], order: {}, custom: [] };
+const EMPTY_POLYGRAPH: PolygraphRecord = { tests: 0, best: 0, last: null, lastAt: null };
 
-/* Older saved panels predate `pinned`, `order` and `custom`; spreading an
-   undefined over the fallback would break every .includes()/.map() below. */
+const EMPTY_INTERVIEW: InterviewData = {
+  answers: {},
+  pinned: [],
+  custom: [],
+  polygraph: EMPTY_POLYGRAPH,
+};
+
+/* Older saved panels predate `pinned`, `custom` and `polygraph`; spreading an
+   undefined over the fallback would break every .includes()/.map() below.
+   Panels saved with the short-lived per-volume `order` key still load - the
+   key is simply not read any more, so their prompts come back in catalogue
+   order. */
 function migrateInterview(raw: unknown, fallback: InterviewData): InterviewData {
   const r = (raw ?? {}) as Partial<InterviewData>;
+  const pg = (r.polygraph ?? {}) as Partial<PolygraphRecord>;
+  const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
   return {
     answers: r.answers && typeof r.answers === "object" ? r.answers : fallback.answers,
     pinned: Array.isArray(r.pinned) ? r.pinned : fallback.pinned,
-    order: r.order && typeof r.order === "object" ? r.order : fallback.order,
     custom: Array.isArray(r.custom) ? r.custom : fallback.custom,
+    polygraph: {
+      tests: num(pg.tests, 0),
+      best: num(pg.best, 0),
+      last: typeof pg.last === "number" && Number.isFinite(pg.last) ? pg.last : null,
+      lastAt: typeof pg.lastAt === "string" ? pg.lastAt : null,
+    },
   };
 }
 
@@ -697,6 +720,147 @@ function usePanel<T extends object>(
    1. HERO IDENTIFICATION CARD
    ========================================================================== */
 
+type FieldListKey = "frontFields" | "backFields";
+
+/**
+ * One label + value row on the ID card.
+ *
+ * In re-file mode the WHOLE row is the drag handle, not a small grip: these
+ * tiles are 140px wide and a 19px grip is a miserable target on a phone. The
+ * inputs go inert for the same reason - a drag that starts on a text field
+ * would drop a caret in the middle of somebody's name instead of picking the
+ * card up. The nudge buttons stay, because a drag is unreachable by keyboard.
+ */
+const IdentityFieldRow = memo(function IdentityFieldRow({
+  field,
+  index,
+  total,
+  listKey,
+  multiline,
+  arranging,
+  dragging,
+  onValue,
+  onLabel,
+  onRemove,
+  onFlush,
+  onNudge,
+  onDragStart,
+}: {
+  field: IdentityField;
+  index: number;
+  total: number;
+  listKey: FieldListKey;
+  multiline?: boolean;
+  arranging: boolean;
+  dragging: boolean;
+  onValue: (id: string, value: string) => void;
+  onLabel: (id: string, label: string) => void;
+  onRemove: (id: string) => void;
+  onFlush: () => void;
+  onNudge: (listKey: FieldListKey, id: string, dir: -1 | 1) => void;
+  onDragStart: (listKey: FieldListKey, id: string, e: ReactPointerEvent) => void;
+}) {
+  const name = field.label || "field";
+  return (
+    <div
+      data-field={field.id}
+      data-field-list={listKey}
+      className={
+        (multiline ? "dsr-field dsr-back-field" : "dsr-field") +
+        (arranging ? " is-arranging" : "") +
+        (dragging ? " is-dragging" : "")
+      }
+      onPointerDown={arranging ? (e) => onDragStart(listKey, field.id, e) : undefined}
+    >
+      {arranging && (
+        <span className="dsr-field-ord" aria-hidden>
+          {index + 1}
+        </span>
+      )}
+
+      <div className="dsr-field-headrow">
+        <input
+          className="dsr-field-label-input"
+          value={field.label}
+          onChange={(e) => onLabel(field.id, e.target.value)}
+          onBlur={onFlush}
+          placeholder="Field name"
+          maxLength={40}
+          readOnly={arranging}
+          tabIndex={arranging ? -1 : undefined}
+        />
+        {arranging ? (
+          <span className="dsr-field-grip" aria-hidden>
+            &#10303;
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="dsr-field-x"
+            onClick={() => onRemove(field.id)}
+            aria-label={"Remove " + name}
+          >
+            <X className="w-3 h-3" aria-hidden />
+          </button>
+        )}
+      </div>
+
+      {multiline ? (
+        <textarea
+          className="dsr-textarea"
+          rows={2}
+          value={field.value}
+          onChange={(e) => onValue(field.id, e.target.value)}
+          onBlur={onFlush}
+          placeholder={field.placeholder ?? "Type it in"}
+          readOnly={arranging}
+          tabIndex={arranging ? -1 : undefined}
+        />
+      ) : (
+        <input
+          className="dsr-input"
+          value={field.value}
+          onChange={(e) => onValue(field.id, e.target.value)}
+          onBlur={onFlush}
+          placeholder={field.placeholder ?? "Type it in"}
+          maxLength={200}
+          readOnly={arranging}
+          tabIndex={arranging ? -1 : undefined}
+        />
+      )}
+
+      {arranging && (
+        <div className="dsr-field-movers">
+          {/* stopPropagation, or pressing a nudge button also starts a drag
+              on the row underneath it. */}
+          <button
+            type="button"
+            className="dsr-field-move"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => onNudge(listKey, field.id, -1)}
+            disabled={index === 0}
+            aria-label={"Move " + name + " earlier"}
+            title="Move earlier"
+          >
+            {multiline ? "↑" : "←"}
+          </button>
+          <button
+            type="button"
+            className="dsr-field-move"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => onNudge(listKey, field.id, 1)}
+            disabled={index === total - 1}
+            aria-label={"Move " + name + " later"}
+            title="Move later"
+          >
+            {multiline ? "↓" : "→"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+});
+
 const HeroBadge = memo(function HeroBadge({
   identity,
   onChange,
@@ -762,6 +926,9 @@ const HeroBadge = memo(function HeroBadge({
      throw away the one bit of theatre this panel has. */
   const runScan = () => {
     if (scanning) return;
+    /* Re-filing is a per-face mode; carrying it across the flip would land
+       you on the back of the card with its rows already loose. */
+    setArranging(false);
     setScanning(true);
     sfx.scan();
     window.setTimeout(() => {
@@ -824,6 +991,106 @@ const HeroBadge = memo(function HeroBadge({
   });
   const frontOps = makeFieldOps("frontFields");
   const backOps = makeFieldOps("backFields");
+
+  /* ------------------------------------------------------------ re-filing */
+
+  /* One flag for both faces - only one of them is ever on screen - and the
+     drag is keyed by the list it started in, so a pointer wandering onto the
+     other face's rows can never splice a field across. */
+  const [arranging, setArranging] = useState(false);
+  const [dragField, setDragField] = useState<{ list: FieldListKey; id: string } | null>(null);
+  const dragFieldRef = useRef<{ list: FieldListKey; id: string } | null>(null);
+
+  const moveField = useCallback(
+    (listKey: FieldListKey, id: string, toIndex: number) => {
+      onChange((prev) => {
+        const list = prev[listKey];
+        const from = list.findIndex((f) => f.id === id);
+        const to = Math.max(0, Math.min(list.length - 1, toIndex));
+        if (from < 0 || from === to) return prev;
+        const next = list.slice();
+        next.splice(to, 0, next.splice(from, 1)[0]);
+        return { ...prev, [listKey]: next };
+      });
+    },
+    [onChange]
+  );
+
+  const nudgeField = useCallback(
+    (listKey: FieldListKey, id: string, dir: -1 | 1) => {
+      const from = identity[listKey].findIndex((f) => f.id === id);
+      if (from < 0) return;
+      sfx.dialClick();
+      moveField(listKey, id, from + dir);
+      onFlush();
+    },
+    [identity, moveField, onFlush]
+  );
+
+  const startFieldDrag = useCallback((listKey: FieldListKey, id: string, e: ReactPointerEvent) => {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    dragFieldRef.current = { list: listKey, id };
+    setDragField({ list: listKey, id });
+    sfx.dialClick();
+  }, []);
+
+  /* Pointer events cover mouse, touch and pen in one path, matching the rest
+     of the app. The row sets touch-action:none in CSS or a drag on a phone
+     scrolls the page instead of moving anything - the trap the letter jar
+     pile hit. */
+  useEffect(() => {
+    if (!dragField) return;
+
+    const onPointerMove = (e: PointerEvent) => {
+      const held = dragFieldRef.current;
+      if (!held) return;
+      const row = (
+        document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null
+      )?.closest?.("[data-field]") as HTMLElement | null;
+      const overId = row?.dataset.field;
+      if (!overId || overId === held.id || row?.dataset.fieldList !== held.list) return;
+      const to = identity[held.list].findIndex((f) => f.id === overId);
+      if (to >= 0) moveField(held.list, held.id, to);
+    };
+
+    const onPointerUp = () => {
+      dragFieldRef.current = null;
+      setDragField(null);
+      sfx.webSnap();
+      onFlush();
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    };
+  }, [dragField, identity, moveField, onFlush]);
+
+  const toggleArranging = () => {
+    sfx.dialClick();
+    setArranging((a) => !a);
+  };
+
+  const arrangeBar = (
+    <div className="dsr-fields-tools">
+      <button
+        type="button"
+        className={"dsr-arrange-btn" + (arranging ? " is-on" : "")}
+        aria-pressed={arranging}
+        onClick={toggleArranging}
+      >
+        {arranging ? "✓ Done re-filing" : "⠿ Re-file"}
+      </button>
+      {arranging && (
+        <span className="dsr-arrange-hint">Drag a field anywhere in the card</span>
+      )}
+    </div>
+  );
 
   return (
     <section className="dsr-panel dsr-badge-panel" aria-labelledby="dsr-badge-head">
@@ -896,40 +1163,34 @@ const HeroBadge = memo(function HeroBadge({
               </button>
             </div>
 
-            <div className="dsr-fields">
-              {identity.frontFields.map((f) => (
-                <div key={f.id} className="dsr-field">
-                  <div className="dsr-field-headrow">
-                    <input
-                      className="dsr-field-label-input"
-                      value={f.label}
-                      onChange={(e) => frontOps.rename(f.id, e.target.value)}
-                      onBlur={onFlush}
-                      placeholder="Field name"
-                      maxLength={40}
-                    />
-                    <button
-                      type="button"
-                      className="dsr-field-x"
-                      onClick={() => frontOps.remove(f.id)}
-                      aria-label={"Remove " + (f.label || "field")}
-                    >
-                      <X className="w-3 h-3" aria-hidden />
-                    </button>
-                  </div>
-                  <input
-                    className="dsr-input"
-                    value={f.value}
-                    onChange={(e) => frontOps.setValue(f.id, e.target.value)}
-                    onBlur={onFlush}
-                    placeholder={f.placeholder ?? "Type it in"}
-                    maxLength={200}
+            <div className="dsr-fields-col">
+              {arrangeBar}
+              <div className={"dsr-fields" + (arranging ? " is-arranging" : "")}>
+                {identity.frontFields.map((f, i) => (
+                  <IdentityFieldRow
+                    key={f.id}
+                    field={f}
+                    index={i}
+                    total={identity.frontFields.length}
+                    listKey="frontFields"
+                    arranging={arranging}
+                    dragging={dragField?.id === f.id}
+                    onValue={frontOps.setValue}
+                    onLabel={frontOps.rename}
+                    onRemove={frontOps.remove}
+                    onFlush={onFlush}
+                    onNudge={nudgeField}
+                    onDragStart={startFieldDrag}
                   />
-                </div>
-              ))}
-              <button type="button" className="dsr-field-add" onClick={frontOps.add}>
-                <Plus className="w-3.5 h-3.5" aria-hidden /> Add field
-              </button>
+                ))}
+                {/* Adding a field mid-re-file would drop a new row into an
+                    order you are in the middle of setting. */}
+                {!arranging && (
+                  <button type="button" className="dsr-field-add" onClick={frontOps.add}>
+                    <Plus className="w-3.5 h-3.5" aria-hidden /> Add field
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -945,40 +1206,33 @@ const HeroBadge = memo(function HeroBadge({
             <h3 className="dsr-badge-title">Not for the file room</h3>
           </header>
 
-          <div className="dsr-back-fields">
-            {identity.backFields.map((f) => (
-              <div key={f.id} className="dsr-back-field">
-                <div className="dsr-field-headrow">
-                  <input
-                    className="dsr-field-label-input"
-                    value={f.label}
-                    onChange={(e) => backOps.rename(f.id, e.target.value)}
-                    onBlur={onFlush}
-                    placeholder="Field name"
-                    maxLength={40}
-                  />
-                  <button
-                    type="button"
-                    className="dsr-field-x"
-                    onClick={() => backOps.remove(f.id)}
-                    aria-label={"Remove " + (f.label || "field")}
-                  >
-                    <X className="w-3 h-3" aria-hidden />
-                  </button>
-                </div>
-                <textarea
-                  className="dsr-textarea"
-                  rows={2}
-                  value={f.value}
-                  onChange={(e) => backOps.setValue(f.id, e.target.value)}
-                  onBlur={onFlush}
-                  placeholder={f.placeholder ?? "Type it in"}
+          <div className="dsr-fields-col">
+            {arrangeBar}
+            <div className={"dsr-back-fields" + (arranging ? " is-arranging" : "")}>
+              {identity.backFields.map((f, i) => (
+                <IdentityFieldRow
+                  key={f.id}
+                  field={f}
+                  index={i}
+                  total={identity.backFields.length}
+                  listKey="backFields"
+                  multiline
+                  arranging={arranging}
+                  dragging={dragField?.id === f.id}
+                  onValue={backOps.setValue}
+                  onLabel={backOps.rename}
+                  onRemove={backOps.remove}
+                  onFlush={onFlush}
+                  onNudge={nudgeField}
+                  onDragStart={startFieldDrag}
                 />
-              </div>
-            ))}
-            <button type="button" className="dsr-field-add" onClick={backOps.add}>
-              <Plus className="w-3.5 h-3.5" aria-hidden /> Add field
-            </button>
+              ))}
+              {!arranging && (
+                <button type="button" className="dsr-field-add" onClick={backOps.add}>
+                  <Plus className="w-3.5 h-3.5" aria-hidden /> Add field
+                </button>
+              )}
+            </div>
           </div>
 
           <button type="button" className="dsr-flip-back" onClick={runScan}>
@@ -3235,12 +3489,14 @@ function TimeCapsule({
    269 prompts is a wall if you present it as a form, so it deliberately is
    not one:
 
+   - THE POLYGRAPH is the reason to come back to a questionnaire you have
+     already filled in. It reads out a question that is on record, takes YOUR
+     guess at what they said, then puts the two statements side by side and
+     rules on it. Every answer in the file becomes a question about how well
+     you were listening.
    - INTERVIEW MODE deals the questions one at a time as a full-screen deck,
      which is how this actually gets filled in - together, out loud.
-   - QUIZ MODE hides the answers already on record and makes you say them
-     first. The same data, read back as a game.
-   - Every card can be RE-ARRANGED by dragging (or with its move buttons, for
-     touch and keyboard), so the questions that matter float to the top.
+   - QUIZ MODE covers the answers already on record, in place.
    - Any volume takes THEIR OWN QUESTIONS, because no stock list covers a
      specific person.
    ========================================================================== */
@@ -3259,36 +3515,465 @@ const VOLUME_INK: Record<string, string> = {
   us: "#FF6B6B",
 };
 
-/**
- * A volume's prompts: catalogue entries plus their own questions, in the
- * saved display order.
- *
- * Anything not named in the saved order keeps its catalogue position at the
- * end, so prompts added to the module later still appear for someone who has
- * already re-arranged that volume.
- */
-function resolveVolumePrompts(
-  volId: string,
-  custom: CustomPrompt[],
-  order: Record<string, string[]>
-): LivePrompt[] {
+/** A volume's prompts: catalogue entries first, then their own questions. */
+function resolveVolumePrompts(volId: string, custom: CustomPrompt[]): LivePrompt[] {
   const catalogue = INTERVIEW_VOLUMES.find((v) => v.id === volId)?.prompts ?? [];
   const theirs: LivePrompt[] = custom
     .filter((c) => c.volume === volId)
     .map((c) => ({ id: c.id, q: c.q, long: c.long, custom: true }));
-  const all: LivePrompt[] = [...catalogue, ...theirs];
+  return [...catalogue, ...theirs];
+}
 
-  const saved = order[volId];
-  if (!saved || saved.length === 0) return all;
+/** Which volume a prompt belongs to - catalogue or one of theirs. */
+function volumeIdOf(promptId: string, custom: CustomPrompt[]): string | undefined {
+  return volumeOfPrompt(promptId)?.id ?? custom.find((c) => c.id === promptId)?.volume;
+}
 
-  const rank = new Map(saved.map((id, i) => [id, i]));
-  const natural = new Map(all.map((p, i) => [p.id, i]));
-  return all.slice().sort((a, b) => {
-    const ra = rank.has(a.id) ? (rank.get(a.id) as number) : Number.MAX_SAFE_INTEGER;
-    const rb = rank.has(b.id) ? (rank.get(b.id) as number) : Number.MAX_SAFE_INTEGER;
-    if (ra !== rb) return ra - rb;
-    return (natural.get(a.id) as number) - (natural.get(b.id) as number);
+/* ============================================================================
+   THE POLYGRAPH
+
+   Everything else in this chapter collects answers. This is the only thing
+   that spends them: it picks questions THEY have already answered, asks YOU
+   to state what they said, and rules on the two statements together.
+   ========================================================================== */
+
+/* Words carrying no signal when two people phrase the same answer differently
+   - "his mum" against "mum" should not read as half a miss. */
+const PG_STOPWORDS = new Set([
+  "a", "an", "and", "the", "of", "to", "in", "on", "at", "it", "is", "was", "be",
+  "i", "im", "my", "me", "we", "our", "us", "you", "your", "he", "she", "they",
+  "him", "her", "his", "hers", "them", "their", "that", "this", "with", "for",
+  "or", "but", "so", "if", "as", "by", "from", "just", "really", "very", "too",
+  "probably", "maybe", "always", "usually", "when", "then", "than", "about",
+]);
+
+function pgNormalise(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function pgTokens(text: string): string[] {
+  return pgNormalise(text)
+    .split(" ")
+    .filter((w) => w.length > 0 && !PG_STOPWORDS.has(w));
+}
+
+function pgBigrams(text: string): Set<string> {
+  const flat = pgNormalise(text).replace(/\s/g, "");
+  const out = new Set<string>();
+  for (let i = 0; i < flat.length - 1; i += 1) out.add(flat.slice(i, i + 2));
+  return out;
+}
+
+function pgDice(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let hit = 0;
+  a.forEach((x) => {
+    if (b.has(x)) hit += 1;
   });
+  return (2 * hit) / (a.size + b.size);
+}
+
+/**
+ * How close a statement is to what is on record, 0..1.
+ *
+ * Word overlap is the honest signal for a sentence, but it collapses to 0 or
+ * 1 on one-word answers ("pancakes" against "pancake"), so character bigrams
+ * carry those instead and the better of the two wins. The machine only ever
+ * SUGGESTS a verdict: no ratio knows that "his mum's" and "mama dell" are the
+ * same answer, so the reader always gets to overrule it.
+ */
+function pgSimilarity(guess: string, truth: string): number {
+  const g = pgTokens(guess);
+  const t = pgTokens(truth);
+  if (g.length === 0 || t.length === 0) return 0;
+  const byWord = pgDice(new Set(g), new Set(t));
+  const byShape = pgDice(pgBigrams(guess), pgBigrams(truth));
+  return Math.min(1, Math.max(byWord, byShape * 0.92));
+}
+
+/** Where the machine stops calling it a match. */
+const PG_MATCH = 0.5;
+
+/** How many questions one test runs, when there are that many on record. */
+const PG_ROUNDS = 7;
+
+const PG_VERDICTS: { min: number; head: string; line: string }[] = [
+  {
+    min: 100,
+    head: "TOTAL CONSISTENCY",
+    line: "Every statement checks out. Either you know this person, or you wrote their answers for them.",
+  },
+  {
+    min: 80,
+    head: "CLEARED",
+    line: "Earth-616 has no further questions. Whatever you have been doing, keep doing it.",
+  },
+  {
+    min: 60,
+    head: "MOSTLY CONSISTENT",
+    line: "A solid file with a couple of smudged pages. You know the shape of them.",
+  },
+  {
+    min: 40,
+    head: "INCONCLUSIVE",
+    line: "Recommend further surveillance. Out loud, together, preferably tonight.",
+  },
+  {
+    min: 20,
+    head: "DECEPTION DETECTED",
+    line: "The machine is not impressed. Good news: every answer you missed is right there in the file.",
+  },
+  {
+    min: 0,
+    head: "FLAT LINE",
+    line: "Nothing checked out. Either a very bad night, or you have been dating a stranger.",
+  },
+];
+
+function pgVerdict(pct: number) {
+  return PG_VERDICTS.find((v) => pct >= v.min) ?? PG_VERDICTS[PG_VERDICTS.length - 1];
+}
+
+/* One deterministic sweep of chart paper per channel, generated once at
+   module load rather than per render - and with no Math.random in them, so
+   the server and the client draw the same line. Two channels, because one
+   wobbling line reads as a heart monitor and two read as a polygraph. */
+function pgTrace(fn: (x: number) => number): string {
+  const pts: string[] = [];
+  for (let x = 0; x <= 600; x += 5) pts.push(x + "," + fn(x).toFixed(1));
+  return pts.join(" ");
+}
+
+const PG_TRACE_A = pgTrace(
+  (x) => 20 + Math.sin(x / 43) * 7.5 + Math.sin(x / 17.3) * 3.6 + Math.sin(x / 6.1) * 1.6
+);
+const PG_TRACE_B = pgTrace(
+  (x) => 44 + Math.sin(x / 29 + 1.4) * 5.2 + Math.sin(x / 9.7) * 2.8 + Math.sin(x / 3.9) * 1.1
+);
+
+/** One question inside a running test. */
+interface PgRound {
+  prompt: LivePrompt;
+  /** What is on record, captured when the test was dealt. */
+  truth: string;
+  /** What the reader said it was. */
+  guess: string;
+  /** null until the tape has been read. */
+  verdict: "match" | "miss" | null;
+  /** The machine's reading, 0..1. */
+  score: number;
+}
+
+function PolygraphTest({
+  seed,
+  previousBest,
+  isStarred,
+  onStar,
+  onJump,
+  onFinish,
+  onClose,
+}: {
+  seed: PgRound[];
+  previousBest: number;
+  isStarred: (id: string) => boolean;
+  onStar: (id: string) => void;
+  onJump: (id: string) => void;
+  onFinish: (pct: number) => void;
+  onClose: () => void;
+}) {
+  /* The hand is dealt once, on open. Re-deriving it from props mid-run would
+     re-shuffle the questions under the reader every time an answer saved. */
+  const [rounds, setRounds] = useState<PgRound[]>(seed);
+  /* Snapshot, not the live prop: finishing the test writes the new best into
+     the panel in the same commit that shows the tape, so comparing against
+     the prop would always be comparing the score against itself and the
+     "new best" line could never appear. */
+  const [bestBefore] = useState(previousBest);
+  const [idx, setIdx] = useState(0);
+  const [phase, setPhase] = useState<"ask" | "read" | "done">("ask");
+
+  /* The needle only reacts to activity - a flat trace while somebody is
+     typing their statement is the one thing a polygraph would never do. */
+  const [hot, setHot] = useState(false);
+  const hotTimer = useRef<number | null>(null);
+  const pulseFor = useCallback((ms: number) => {
+    setHot(true);
+    if (hotTimer.current) window.clearTimeout(hotTimer.current);
+    hotTimer.current = window.setTimeout(() => setHot(false), ms);
+  }, []);
+  useEffect(
+    () => () => {
+      if (hotTimer.current) window.clearTimeout(hotTimer.current);
+    },
+    []
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const round = rounds[idx];
+  const matches = rounds.reduce((n, r) => n + (r.verdict === "match" ? 1 : 0), 0);
+  const pct = rounds.length ? Math.round((matches / rounds.length) * 100) : 0;
+
+  const setGuess = (value: string) => {
+    pulseFor(460);
+    setRounds((rs) => rs.map((r, i) => (i === idx ? { ...r, guess: value } : r)));
+  };
+
+  /* Reading the tape is the whole beat: the needle spikes, the recorded
+     answer comes up underneath yours, and the machine rules on it. */
+  const readTape = (skipped: boolean) => {
+    if (phase !== "ask") return;
+    const guess = skipped ? "" : round.guess.trim();
+    const score = guess ? pgSimilarity(guess, round.truth) : 0;
+    const verdict: "match" | "miss" = score >= PG_MATCH ? "match" : "miss";
+    setRounds((rs) =>
+      rs.map((r, i) => (i === idx ? { ...r, guess: skipped ? "" : r.guess, score, verdict } : r))
+    );
+    setPhase("read");
+    pulseFor(900);
+    sfx.stamp();
+    if (verdict === "miss") window.setTimeout(() => sfx.glitch(), 170);
+  };
+
+  /* The machine is confident, not right. "His mum's" and "mama dell" are the
+     same answer and no ratio will ever know that, so the reader overrules. */
+  const overrule = () => {
+    sfx.dialClick();
+    setRounds((rs) =>
+      rs.map((r, i) => (i === idx ? { ...r, verdict: r.verdict === "match" ? "miss" : "match" } : r))
+    );
+  };
+
+  const advance = () => {
+    if (idx + 1 < rounds.length) {
+      sfx.cardFlip();
+      setIdx(idx + 1);
+      setPhase("ask");
+      return;
+    }
+    setPhase("done");
+    if (pct >= 80) sfx.bloom();
+    else if (pct < 40) sfx.alarm();
+    else sfx.paperTear();
+    onFinish(pct);
+  };
+
+  const misses = rounds.filter((r) => r.verdict === "miss");
+  const verdict = pgVerdict(pct);
+  const ink = VOLUME_INK[volumeOfPrompt(round?.prompt.id ?? "")?.id ?? ""] ?? "#FF3DC8";
+  /* Derived, not timed: a pulse ticking on its own would re-render the whole
+     overlay several times a second for a decorative number. */
+  const bpm = 68 + (hot ? 34 : 0) + ((idx * 7) % 9);
+
+  return (
+    <ChapterOverlay>
+      <div
+        className="dsr-pg"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Polygraph test"
+        style={{ "--iv-ink": ink } as CSSProperties}
+      >
+        <div className="dsr-pg-sheet">
+          <div className="dsr-pg-head">
+            <span className="dsr-panel-kicker">
+              EARTH-616 VERIFICATION UNIT &middot;{" "}
+              {phase === "done" ? "TAPE COMPLETE" : "STATEMENT " + (idx + 1) + " / " + rounds.length}
+            </span>
+            <button
+              type="button"
+              className="dsr-iv-spotlight-x"
+              onClick={onClose}
+              aria-label="Abandon the test"
+            >
+              &#10005;
+            </button>
+          </div>
+
+          {/* the machine itself */}
+          <div className={"dsr-pg-chart" + (hot ? " is-hot" : "")}>
+            <svg className="dsr-pg-svg" viewBox="0 0 600 60" preserveAspectRatio="none" aria-hidden>
+              <g className="dsr-pg-roll">
+                <polyline className="dsr-pg-line" points={PG_TRACE_A} />
+                <polyline className="dsr-pg-line" points={PG_TRACE_A} transform="translate(600 0)" />
+                <polyline className="dsr-pg-line dsr-pg-line-b" points={PG_TRACE_B} />
+                <polyline
+                  className="dsr-pg-line dsr-pg-line-b"
+                  points={PG_TRACE_B}
+                  transform="translate(600 0)"
+                />
+              </g>
+            </svg>
+            <span className="dsr-pg-pen" aria-hidden />
+            <span className="dsr-pg-bpm" aria-hidden>
+              {bpm} BPM
+            </span>
+          </div>
+
+          {phase === "done" ? (
+            /* ------------------------------------------------ the tape --- */
+            <div className="dsr-pg-result">
+              <div className="dsr-pg-score">
+                <span className="dsr-pg-score-num">{pct}%</span>
+                <span className="dsr-pg-score-lab">
+                  TRUTH RATING &middot; {matches} OF {rounds.length}
+                </span>
+              </div>
+
+              <div className={"dsr-pg-verdict" + (pct >= 60 ? " is-good" : "")}>
+                <strong>{verdict.head}</strong>
+                <span>{verdict.line}</span>
+              </div>
+
+              {pct > bestBefore && (
+                <p className="dsr-pg-record">&#9733; New personal best on file.</p>
+              )}
+
+              {misses.length > 0 && (
+                <div className="dsr-pg-misses">
+                  <span className="dsr-field-label">Statements that did not check out</span>
+                  {misses.map((r) => (
+                    <button
+                      key={r.prompt.id}
+                      type="button"
+                      className="dsr-pg-miss"
+                      onClick={() => onJump(r.prompt.id)}
+                    >
+                      <span className="dsr-pg-miss-q">{r.prompt.q}</span>
+                      <span className="dsr-pg-miss-a">On record: {r.truth.trim() || "—"}</span>
+                      <span className="dsr-pg-miss-go">open the file &rarr;</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="dsr-pg-foot">
+                <button type="button" className="dsr-tool-btn dsr-iv-primary" onClick={onClose}>
+                  Close the file
+                </button>
+              </div>
+            </div>
+          ) : (
+            round && (
+              <>
+                <div className="dsr-pg-qrow">
+                  <span className="dsr-pg-vol" aria-hidden>
+                    {volumeOfPrompt(round.prompt.id)?.roman ?? "✴"}
+                  </span>
+                  <p className="dsr-pg-q">{round.prompt.q}</p>
+                </div>
+
+                <label className="dsr-field-label" htmlFor="dsr-pg-guess">
+                  Your statement &mdash; what did they say?
+                </label>
+                <textarea
+                  id="dsr-pg-guess"
+                  className="dsr-textarea dsr-pg-input"
+                  rows={2}
+                  value={round.guess}
+                  placeholder="Say it out loud first. No peeking."
+                  onChange={(e) => setGuess(e.target.value)}
+                  readOnly={phase === "read"}
+                />
+
+                {phase === "read" && (
+                  <div className={"dsr-pg-tape" + (round.verdict === "match" ? " is-match" : "")}>
+                    <div className="dsr-pg-stamp" aria-hidden>
+                      <RubberStamp
+                        label={round.verdict === "match" ? "CONSISTENT" : "DECEPTION"}
+                        color={round.verdict === "match" ? "#3BD17A" : "#FF5A5A"}
+                        rotate={-7}
+                        scale={0.7}
+                      />
+                    </div>
+
+                    <span className="dsr-field-label">On record</span>
+                    <p className="dsr-pg-truth">{round.truth.trim() || "—"}</p>
+
+                    <p className="dsr-pg-reading">
+                      MACHINE READS {Math.round(round.score * 100)}% CONSISTENT
+                      <span className="dsr-pg-reading-note">
+                        {round.verdict === "match"
+                          ? " · close enough to call it"
+                          : " · not close enough to call it"}
+                      </span>
+                    </p>
+
+                    <div className="dsr-pg-overrule">
+                      <button type="button" className="dsr-tool-btn" onClick={overrule}>
+                        {round.verdict === "match"
+                          ? "✖ No, I had that wrong"
+                          : "✔ No, that was right"}
+                      </button>
+                      {round.verdict === "miss" && (
+                        <button
+                          type="button"
+                          className={
+                            "dsr-tool-btn" + (isStarred(round.prompt.id) ? " dsr-iv-primary" : "")
+                          }
+                          onClick={() => onStar(round.prompt.id)}
+                        >
+                          {isStarred(round.prompt.id) ? "★ Starred" : "☆ Star for later"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div className="dsr-pg-foot">
+                  {phase === "ask" ? (
+                    <>
+                      <button type="button" className="dsr-tool-btn" onClick={() => readTape(true)}>
+                        No idea
+                      </button>
+                      <button
+                        type="button"
+                        className="dsr-tool-btn dsr-iv-primary"
+                        onClick={() => readTape(false)}
+                        disabled={!round.guess.trim()}
+                      >
+                        Run verification
+                      </button>
+                    </>
+                  ) : (
+                    <button type="button" className="dsr-tool-btn dsr-iv-primary" onClick={advance}>
+                      {idx + 1 < rounds.length ? "Next statement →" : "Read the tape"}
+                    </button>
+                  )}
+                </div>
+
+                <div className="dsr-pg-pips" aria-hidden>
+                  {rounds.map((r, i) => (
+                    <span
+                      key={r.prompt.id}
+                      className={
+                        "dsr-pg-pip" +
+                        (r.verdict === "match" ? " is-match" : "") +
+                        (r.verdict === "miss" ? " is-miss" : "") +
+                        (i === idx ? " is-now" : "")
+                      }
+                    />
+                  ))}
+                </div>
+              </>
+            )
+          )}
+        </div>
+      </div>
+    </ChapterOverlay>
+  );
 }
 
 /* Each card owns its own render. Without memo, one keystroke re-renders every
@@ -3302,14 +3987,11 @@ const InterviewCard = memo(function InterviewCard({
   spotlit,
   quiz,
   revealed,
-  dragging,
   onSet,
   onCommit,
   onTogglePin,
   onReveal,
   onDelete,
-  onMove,
-  onDragStart,
 }: {
   prompt: LivePrompt;
   value: string;
@@ -3318,14 +4000,11 @@ const InterviewCard = memo(function InterviewCard({
   spotlit?: boolean;
   quiz?: boolean;
   revealed?: boolean;
-  dragging?: boolean;
   onSet: (id: string, value: string) => void;
   onCommit: () => void;
   onTogglePin: (id: string) => void;
   onReveal?: (id: string) => void;
   onDelete?: (id: string) => void;
-  onMove?: (id: string, dir: -1 | 1) => void;
-  onDragStart?: (id: string, e: ReactPointerEvent) => void;
 }) {
   const filled = value.trim().length > 0;
   const inputId = "dsr-iv-" + prompt.id;
@@ -3340,23 +4019,11 @@ const InterviewCard = memo(function InterviewCard({
         "dsr-iv-card" +
         (filled ? " is-filled" : "") +
         (spotlit ? " is-spotlit" : "") +
-        (dragging ? " is-dragging" : "") +
         (prompt.custom ? " is-custom" : "")
       }
       style={{ "--iv-ink": ink } as CSSProperties}
     >
       <div className="dsr-iv-cardhead">
-        {onDragStart && (
-          <button
-            type="button"
-            className="dsr-iv-grip"
-            aria-label={"Re-arrange " + prompt.q}
-            title="Drag to re-arrange"
-            onPointerDown={(e) => onDragStart(prompt.id, e)}
-          >
-            ⠿
-          </button>
-        )}
         <label className="dsr-iv-q" htmlFor={inputId}>
           {prompt.q}
           {prompt.custom && <span className="dsr-iv-ours">OURS</span>}
@@ -3399,42 +4066,16 @@ const InterviewCard = memo(function InterviewCard({
         />
       )}
 
-      {(onMove || onDelete) && (
+      {onDelete && prompt.custom && (
         <div className="dsr-iv-cardfoot">
-          {onMove && (
-            <>
-              {/* The reliable path. Dragging is the nice one, but it is not
-                  reachable by keyboard and is fiddly on a small screen. */}
-              <button
-                type="button"
-                className="dsr-iv-move"
-                onClick={() => onMove(prompt.id, -1)}
-                aria-label={"Move " + prompt.q + " earlier"}
-                title="Move earlier"
-              >
-                ↑
-              </button>
-              <button
-                type="button"
-                className="dsr-iv-move"
-                onClick={() => onMove(prompt.id, 1)}
-                aria-label={"Move " + prompt.q + " later"}
-                title="Move later"
-              >
-                ↓
-              </button>
-            </>
-          )}
-          {onDelete && prompt.custom && (
-            <button
-              type="button"
-              className="dsr-iv-del"
-              onClick={() => onDelete(prompt.id)}
-              aria-label={"Delete our question: " + prompt.q}
-            >
-              delete
-            </button>
-          )}
+          <button
+            type="button"
+            className="dsr-iv-del"
+            onClick={() => onDelete(prompt.id)}
+            aria-label={"Delete our question: " + prompt.q}
+          >
+            delete
+          </button>
         </div>
       )}
     </div>
@@ -3460,11 +4101,12 @@ function FieldInterview({
   const [spotlight, setSpotlight] = useState<string | null>(null);
   const [quiz, setQuiz] = useState(false);
   const [revealed, setRevealed] = useState<string[]>([]);
-  const [dragId, setDragId] = useState<string | null>(null);
   const [newQ, setNewQ] = useState("");
   const [deckOpen, setDeckOpen] = useState(false);
   const [deckIdx, setDeckIdx] = useState(0);
   const [deckAll, setDeckAll] = useState(false);
+  const [pgSeed, setPgSeed] = useState<PgRound[] | null>(null);
+  const [pgNotice, setPgNotice] = useState<string | null>(null);
 
   const answers = interview.answers;
   const ink = VOLUME_INK[volId] ?? "#3FE0F0";
@@ -3474,15 +4116,14 @@ function FieldInterview({
     [volId]
   );
 
-  /* Every prompt in play, catalogue + theirs, so counts and the deck cover
-     their own questions too rather than silently ignoring them. */
+  /* Every prompt in play, catalogue + theirs, so the counts, the deck and the
+     polygraph cover their own questions too rather than silently ignoring
+     them. */
   const livePrompts = useMemo(() => {
     const out: LivePrompt[] = [];
-    for (const v of INTERVIEW_VOLUMES) {
-      out.push(...resolveVolumePrompts(v.id, interview.custom, interview.order));
-    }
+    for (const v of INTERVIEW_VOLUMES) out.push(...resolveVolumePrompts(v.id, interview.custom));
     return out;
-  }, [interview.custom, interview.order]);
+  }, [interview.custom]);
 
   const isFilled = useCallback((id: string) => (answers[id] ?? "").trim().length > 0, [answers]);
 
@@ -3493,18 +4134,18 @@ function FieldInterview({
   const totalCount = livePrompts.length;
 
   const volumePrompts = useMemo(
-    () => resolveVolumePrompts(volId, interview.custom, interview.order),
-    [volId, interview.custom, interview.order]
+    () => resolveVolumePrompts(volId, interview.custom),
+    [volId, interview.custom]
   );
 
   const volumeCounts = useMemo(() => {
     const out: Record<string, { done: number; total: number }> = {};
     for (const v of INTERVIEW_VOLUMES) {
-      const ps = resolveVolumePrompts(v.id, interview.custom, interview.order);
+      const ps = resolveVolumePrompts(v.id, interview.custom);
       out[v.id] = { done: ps.reduce((n, p) => n + (isFilled(p.id) ? 1 : 0), 0), total: ps.length };
     }
     return out;
-  }, [interview.custom, interview.order, isFilled]);
+  }, [interview.custom, isFilled]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -3515,11 +4156,6 @@ function FieldInterview({
       return true;
     });
   }, [volumePrompts, query, mode, isFilled]);
-
-  /* Re-arranging is only coherent against the whole volume. With a search or
-     a filter narrowing it, "move earlier" would jump a card past rows that
-     are not on screen, so the controls come off instead. */
-  const canReorder = query.trim() === "" && mode === "all";
 
   const promptById = useMemo(() => {
     const m = new Map<string, LivePrompt>();
@@ -3557,93 +4193,17 @@ function FieldInterview({
     setRevealed((r) => (r.includes(id) ? r : [...r, id]));
   }, []);
 
-  /* ------------------------------------------------------------ ordering */
-
-  const moveWithin = useCallback(
-    (id: string, toIndex: number) => {
-      onChange((prev) => {
-        const ids = resolveVolumePrompts(volId, prev.custom, prev.order).map((p) => p.id);
-        const from = ids.indexOf(id);
-        const to = Math.max(0, Math.min(ids.length - 1, toIndex));
-        if (from < 0 || from === to) return prev;
-        const next = ids.slice();
-        next.splice(to, 0, next.splice(from, 1)[0]);
-        return { ...prev, order: { ...prev.order, [volId]: next } };
-      });
+  /** Bring one prompt to the front: its own volume, unfiltered, spotlit. */
+  const jumpTo = useCallback(
+    (id: string) => {
+      const vol = volumeIdOf(id, interview.custom);
+      if (vol) setVolId(vol);
+      setQuery("");
+      setMode("all");
+      setSpotlight(id);
     },
-    [onChange, volId]
+    [interview.custom]
   );
-
-  const moveBy = useCallback(
-    (id: string, dir: -1 | 1) => {
-      const ids = volumePrompts.map((p) => p.id);
-      const from = ids.indexOf(id);
-      if (from < 0) return;
-      sfx.dialClick();
-      moveWithin(id, from + dir);
-      onFlush();
-    },
-    [volumePrompts, moveWithin, onFlush]
-  );
-
-  /* Pointer-based drag. Pointer events cover mouse, touch and pen in one
-     path, matching the rest of the app; the grip sets touch-action:none in
-     CSS so a drag on a phone does not scroll the page instead (the exact bug
-     the letter jar hit). */
-  const dragRef = useRef<string | null>(null);
-
-  const handleDragStart = useCallback(
-    (id: string, e: ReactPointerEvent) => {
-      e.preventDefault();
-      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-      dragRef.current = id;
-      setDragId(id);
-      sfx.dialClick();
-    },
-    []
-  );
-
-  useEffect(() => {
-    if (!dragId) return;
-
-    const onMove = (e: PointerEvent) => {
-      const held = dragRef.current;
-      if (!held) return;
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      const card = el?.closest?.("[data-prompt]") as HTMLElement | null;
-      const overId = card?.dataset.prompt;
-      if (!overId || overId === held) return;
-      const ids = resolveVolumePrompts(volId, interview.custom, interview.order).map((p) => p.id);
-      const target = ids.indexOf(overId);
-      if (target >= 0) moveWithin(held, target);
-    };
-
-    const onUp = () => {
-      dragRef.current = null;
-      setDragId(null);
-      sfx.webSnap();
-      onFlush();
-    };
-
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
-    };
-  }, [dragId, volId, interview.custom, interview.order, moveWithin, onFlush]);
-
-  const resetOrder = () => {
-    onGlitch();
-    onChange((prev) => {
-      const next = { ...prev.order };
-      delete next[volId];
-      return { ...prev, order: next };
-    });
-    onFlush();
-  };
 
   /* ------------------------------------------------------ their questions */
 
@@ -3667,19 +4227,67 @@ function FieldInterview({
       onChange((prev) => {
         const answers2 = { ...prev.answers };
         delete answers2[id];
-        const order2: Record<string, string[]> = {};
-        for (const k of Object.keys(prev.order)) order2[k] = prev.order[k].filter((x) => x !== id);
         return {
           ...prev,
           answers: answers2,
           custom: prev.custom.filter((c) => c.id !== id),
           pinned: prev.pinned.filter((p) => p !== id),
-          order: order2,
         };
       });
       onFlush();
     },
     [onChange, onFlush, onGlitch]
+  );
+
+  /* ----------------------------------------------------------- polygraph */
+
+  const onRecord = useMemo(() => livePrompts.filter((p) => isFilled(p.id)), [livePrompts, isFilled]);
+
+  const startPolygraph = () => {
+    if (onRecord.length < 3) {
+      sfx.alarm();
+      setPgNotice(
+        "The machine needs at least three answers on record before it can test you on them. Deal yourself a hand first."
+      );
+      return;
+    }
+    /* Fisher-Yates over a copy: taking the head of a sort-by-random draw is
+       biased, and a biased draw shows up as the same questions every night. */
+    const pool = onRecord.slice();
+    for (let i = pool.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    setPgNotice(null);
+    sfx.scan();
+    setPgSeed(
+      pool.slice(0, Math.min(PG_ROUNDS, pool.length)).map((prompt) => ({
+        prompt,
+        truth: answers[prompt.id] ?? "",
+        guess: "",
+        verdict: null,
+        score: 0,
+      }))
+    );
+  };
+
+  /* One write, at the end of a test - not per round. This panel is the
+     largest row in the vault, and a debounced save per question would push
+     the whole answer map up the wire seven times for a game. */
+  const finishPolygraph = useCallback(
+    (finalPct: number) => {
+      onChange((prev) => ({
+        ...prev,
+        polygraph: {
+          tests: prev.polygraph.tests + 1,
+          best: Math.max(prev.polygraph.best, finalPct),
+          last: finalPct,
+          lastAt: new Date().toISOString(),
+        },
+      }));
+      onFlush();
+    },
+    [onChange, onFlush]
   );
 
   /* --------------------------------------------------------------- deck */
@@ -3758,17 +4366,14 @@ function FieldInterview({
       return;
     }
     const pick = blanks[Math.floor(Math.random() * blanks.length)];
-    const vol = volumeOfPrompt(pick.id) ?? INTERVIEW_VOLUMES.find((v) => v.id === (interview.custom.find((c) => c.id === pick.id)?.volume ?? ""));
     sfx.paperTear();
-    if (vol) setVolId(vol.id);
-    setQuery("");
-    setMode("all");
-    setSpotlight(pick.id);
+    jumpTo(pick.id);
   };
 
   const spotlitPrompt = spotlight ? promptById.get(spotlight) : undefined;
   const pct = totalCount ? Math.round((answeredCount / totalCount) * 100) : 0;
   const deckPrompt = deckList[deckIdx];
+  const pgRecord = interview.polygraph;
 
   return (
     <section className="dsr-panel dsr-interview" aria-labelledby="dsr-iv-head">
@@ -3782,7 +4387,8 @@ function FieldInterview({
       <p className="dsr-iv-lede">
         {TOTAL_PROMPTS} questions about one person, and room for your own. Nobody
         fills this in one sitting &mdash; that is the point. Deal yourself a hand
-        when you are together and answer whatever comes up.
+        when you are together, and once there is something on record, let the
+        machine test how much of it you were actually listening to.
       </p>
 
       {/* Until the panel is read, every tally below would read zero, which is
@@ -3803,7 +4409,33 @@ function FieldInterview({
             </span>
           </div>
 
-          {/* the two ways to actually play this */}
+          {/* The polygraph is the headline, so it gets its own plate on the
+              sheet rather than becoming a fifth identical button in the row
+              underneath it. */}
+          <div className="dsr-pg-callout">
+            <div className="dsr-pg-callout-text">
+              <span className="dsr-pg-callout-kicker">EARTH-616 VERIFICATION UNIT</span>
+              <h3 className="dsr-pg-callout-title">The Polygraph</h3>
+              <p className="dsr-pg-callout-lede">
+                {PG_ROUNDS} questions they have already answered. You state what you
+                think they said, the machine puts the two statements side by side, and
+                somebody gets stamped.
+              </p>
+              {pgRecord.tests > 0 && (
+                <p className="dsr-pg-callout-record">
+                  {pgRecord.tests} TEST{pgRecord.tests === 1 ? "" : "S"} ON FILE &middot; BEST{" "}
+                  {pgRecord.best}% &middot; LAST {pgRecord.last}%
+                </p>
+              )}
+            </div>
+            <button type="button" className="dsr-pg-callout-btn" onClick={startPolygraph}>
+              <span className="dsr-pg-callout-btn-dot" aria-hidden />
+              Hook me up
+            </button>
+          </div>
+          {pgNotice && <p className="dsr-error">{pgNotice}</p>}
+
+          {/* the other ways to play this */}
           <div className="dsr-iv-modesbar">
             <button type="button" className="dsr-tool-btn dsr-iv-primary" onClick={() => openDeck(false)}>
               🎴 Interview mode
@@ -3844,17 +4476,7 @@ function FieldInterview({
                     type="button"
                     key={p.id}
                     className="dsr-iv-highlight"
-                    onClick={() => {
-                      const vol =
-                        volumeOfPrompt(p.id) ??
-                        INTERVIEW_VOLUMES.find(
-                          (v) => v.id === interview.custom.find((c) => c.id === p.id)?.volume
-                        );
-                      if (vol) setVolId(vol.id);
-                      setQuery("");
-                      setMode("all");
-                      setSpotlight(p.id);
-                    }}
+                    onClick={() => jumpTo(p.id)}
                   >
                     <span className="dsr-iv-highlight-q">{p.q}</span>
                     <span className="dsr-iv-highlight-a">
@@ -3958,11 +4580,6 @@ function FieldInterview({
               <h3 className="dsr-iv-voltitle">{volume.title}</h3>
               <span className="dsr-panel-kicker">{volume.kicker}</span>
             </div>
-            {interview.order[volId] && (
-              <button type="button" className="dsr-iv-reset" onClick={resetOrder}>
-                reset order
-              </button>
-            )}
           </div>
 
           {/* their own question */}
@@ -3999,7 +4616,7 @@ function FieldInterview({
                   : "No prompt here matches that search."}
             </p>
           ) : (
-            <div className={"dsr-iv-grid" + (dragId ? " is-dragging" : "")}>
+            <div className="dsr-iv-grid">
               {visible.map((p) => (
                 <InterviewCard
                   key={p.id}
@@ -4009,25 +4626,32 @@ function FieldInterview({
                   ink={ink}
                   quiz={quiz}
                   revealed={revealed.includes(p.id)}
-                  dragging={dragId === p.id}
                   onSet={setAnswer}
                   onCommit={onFlush}
                   onTogglePin={togglePin}
                   onReveal={reveal}
                   onDelete={deleteOwnQuestion}
-                  onMove={canReorder ? moveBy : undefined}
-                  onDragStart={canReorder ? handleDragStart : undefined}
                 />
               ))}
             </div>
           )}
-
-          {!canReorder && (
-            <p className="dsr-iv-note">
-              Clear the search and filter to re-arrange this volume.
-            </p>
-          )}
         </>
+      )}
+
+      {/* --------------------------------------------------- the polygraph */}
+      {pgSeed && (
+        <PolygraphTest
+          seed={pgSeed}
+          previousBest={pgRecord.best}
+          isStarred={(id) => interview.pinned.includes(id)}
+          onStar={togglePin}
+          onJump={(id) => {
+            setPgSeed(null);
+            jumpTo(id);
+          }}
+          onFinish={finishPolygraph}
+          onClose={() => setPgSeed(null)}
+        />
       )}
 
       {/* ------------------------------------------------------- the deck */}
@@ -5205,6 +5829,146 @@ const DOSSIER_CSS = `
 .dsr-back-fields { display: grid; gap: 10px; }
 .dsr-back-field { display: grid; }
 .dsr-flip-back { margin-top: 12px; }
+
+/* re-filing the card ---------------------------------------------------- */
+
+.dsr-fields-col { min-width: 0; }
+
+.dsr-fields-tools {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin: 0 0 9px;
+}
+
+.dsr-arrange-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 11px;
+  background: rgba(21, 27, 35, .9);
+  border: 1.5px dashed var(--dsr-line);
+  border-radius: 8px;
+  color: var(--dsr-dim);
+  font-family: var(--dsr-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease;
+}
+.dsr-arrange-btn:hover { color: var(--dsr-accent); border-color: var(--dsr-accent); }
+.dsr-arrange-btn.is-on {
+  background: var(--dsr-accent);
+  border-style: solid;
+  border-color: var(--dsr-accent);
+  color: #080C11;
+}
+
+.dsr-arrange-hint {
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--dsr-dim);
+}
+
+/* A loose card sits slightly off-square, the way a photo does when it is not
+   glued down yet. */
+@keyframes dsr-loose {
+  0%, 100% { rotate: -.55deg; }
+  50%      { rotate: .55deg; }
+}
+
+.dsr-field.is-arranging {
+  position: relative;
+  padding: 9px 9px 7px;
+  border: 1.5px dashed rgba(63, 224, 240, .55);
+  border-radius: 10px;
+  background: rgba(63, 224, 240, .06);
+  cursor: grab;
+  /* Without this a drag on a phone scrolls the page instead of moving the
+     card - the same trap the letter jar pile hit. */
+  touch-action: none;
+  animation: dsr-loose 2.6s ease-in-out infinite;
+}
+.dsr-field.is-arranging:nth-child(even) { animation-delay: -1.3s; }
+.dsr-field.is-arranging:nth-child(3n) { animation-duration: 3.1s; }
+/* The row itself is the handle, so nothing inside it may take the pointer -
+   a drag that lands in a text field drops a caret instead of lifting the
+   card. */
+.dsr-field.is-arranging .dsr-input,
+.dsr-field.is-arranging .dsr-textarea,
+.dsr-field.is-arranging .dsr-field-label-input { pointer-events: none; }
+.dsr-field.is-arranging .dsr-input,
+.dsr-field.is-arranging .dsr-textarea { border-color: rgba(63, 224, 240, .3); }
+
+.dsr-field.is-dragging {
+  border-style: solid;
+  border-color: var(--dsr-accent);
+  background: rgba(63, 224, 240, .14);
+  box-shadow: 0 12px 26px -12px var(--dsr-accent);
+  cursor: grabbing;
+  animation: none;
+  rotate: 1.6deg;
+  z-index: 4;
+}
+/* A drag must not select the label text it passes over. */
+.dsr-fields.is-arranging, .dsr-back-fields.is-arranging { user-select: none; }
+
+.dsr-field-ord {
+  position: absolute;
+  top: -9px;
+  left: -7px;
+  width: 19px;
+  height: 19px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--dsr-accent);
+  color: #080C11;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  font-weight: 700;
+  box-shadow: 0 2px 0 rgba(0, 0, 0, .5);
+}
+
+.dsr-field-grip {
+  flex-shrink: 0;
+  color: rgba(63, 224, 240, .7);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.dsr-field-movers { display: flex; gap: 5px; margin-top: 7px; }
+.dsr-field-move {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 13, 18, .65);
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 7px;
+  color: var(--dsr-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.dsr-field-move:hover:not(:disabled) { color: var(--dsr-accent); border-color: var(--dsr-accent); }
+.dsr-field-move:disabled { opacity: .3; cursor: not-allowed; }
+
+@media (max-width: 480px) {
+  .dsr-field-move { width: 40px; height: 40px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsr-field.is-arranging { animation: none; }
+  .dsr-field.is-dragging { rotate: none; }
+}
 
 /* ==================================================== 2. SPIDEY-SENSE ==== */
 
@@ -6805,56 +7569,7 @@ const DOSSIER_CSS = `
   vertical-align: middle;
 }
 
-.dsr-iv-reset {
-  margin-left: auto;
-  background: none;
-  border: 1.5px solid var(--dsr-line);
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-family: var(--dsr-mono);
-  font-size: 9px;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-  color: var(--dsr-dim);
-  cursor: pointer;
-}
-.dsr-iv-reset:hover { color: var(--dsr-text); border-color: var(--iv-ink, var(--dsr-accent)); }
-
 .dsr-iv-volheadtext { min-width: 0; }
-
-/* re-arranging --------------------------------------------------------- */
-
-.dsr-iv-grip {
-  flex: 0 0 auto;
-  width: 26px;
-  height: 30px;
-  margin: -4px 0 0 -4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  color: rgba(147, 163, 178, .45);
-  font-size: 13px;
-  line-height: 1;
-  cursor: grab;
-  /* Without this a drag on a phone scrolls the page instead of moving the
-     card - the same trap the letter jar pile hit. */
-  touch-action: none;
-}
-.dsr-iv-grip:hover { color: var(--iv-ink, var(--dsr-accent)); }
-.dsr-iv-grip:active { cursor: grabbing; }
-
-.dsr-iv-card.is-dragging {
-  border-color: var(--iv-ink, var(--dsr-accent));
-  box-shadow: 0 10px 26px -10px var(--iv-ink, var(--dsr-accent));
-  opacity: .92;
-  transform: scale(1.02);
-  z-index: 5;
-}
-.dsr-iv-grid.is-dragging { cursor: grabbing; }
-/* A drag must not select the question text it passes over. */
-.dsr-iv-grid.is-dragging .dsr-iv-card { user-select: none; }
 
 .dsr-iv-cardfoot {
   display: flex;
@@ -6862,21 +7577,6 @@ const DOSSIER_CSS = `
   gap: 4px;
   margin-top: 6px;
 }
-
-.dsr-iv-move {
-  width: 30px;
-  height: 30px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(9, 13, 18, .6);
-  border: 1.5px solid var(--dsr-line);
-  border-radius: 7px;
-  color: var(--dsr-dim);
-  font-size: 11px;
-  cursor: pointer;
-}
-.dsr-iv-move:hover { color: var(--iv-ink, var(--dsr-accent)); border-color: var(--iv-ink, var(--dsr-accent)); }
 
 .dsr-iv-del {
   margin-left: auto;
@@ -6991,6 +7691,399 @@ const DOSSIER_CSS = `
 }
 .dsr-iv-deck-foot .dsr-tool-btn { flex: 1 1 auto; justify-content: center; min-height: 44px; }
 
+/* the polygraph -------------------------------------------------------- */
+
+.dsr-pg-callout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin: 14px 0 4px;
+  padding: 15px 17px;
+  background:
+    repeating-linear-gradient(90deg, rgba(255, 61, 200, .07) 0 1px, transparent 1px 13px),
+    linear-gradient(140deg, rgba(255, 61, 200, .14), rgba(9, 13, 18, .9) 62%);
+  border: 1.5px solid rgba(255, 61, 200, .45);
+  border-radius: 14px;
+  box-shadow: inset 0 0 34px -18px #FF3DC8;
+}
+
+.dsr-pg-callout-text { flex: 1 1 240px; min-width: 0; }
+
+.dsr-pg-callout-kicker {
+  display: block;
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+  color: rgba(255, 61, 200, .85);
+}
+
+.dsr-pg-callout-title {
+  margin: 3px 0 5px;
+  font-family: 'Permanent Marker', cursive;
+  font-size: clamp(1.15rem, 3.4vw, 1.45rem);
+  line-height: 1.1;
+  color: #FFF;
+}
+
+.dsr-pg-callout-lede {
+  margin: 0;
+  font-family: 'Caveat', cursive;
+  font-size: 17px;
+  line-height: 1.35;
+  color: var(--dsr-text);
+}
+
+.dsr-pg-callout-record {
+  margin: 7px 0 0;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  letter-spacing: .14em;
+  color: var(--dsr-dim);
+}
+
+.dsr-pg-callout-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 46px;
+  padding: 11px 18px;
+  background: #FF3DC8;
+  border: 2px solid #FF3DC8;
+  border-radius: 11px;
+  color: #0B0E13;
+  font-family: var(--dsr-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, .55);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.dsr-pg-callout-btn:hover { transform: translate(-1px, -1px); box-shadow: 6px 6px 0 rgba(0, 0, 0, .55); }
+.dsr-pg-callout-btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 rgba(0, 0, 0, .55); }
+
+/* The idle lamp on the front of the machine. */
+@keyframes dsr-pg-lamp {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 3px rgba(11, 14, 19, .35); }
+  50%      { opacity: .35; box-shadow: 0 0 0 6px rgba(11, 14, 19, .18); }
+}
+.dsr-pg-callout-btn-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #0B0E13;
+  animation: dsr-pg-lamp 1.9s ease-in-out infinite;
+}
+
+/* the test itself ------------------------------------------------------- */
+
+.dsr-pg {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(5, 8, 11, .9);
+  backdrop-filter: blur(6px);
+  animation: dsrDrawIn 240ms ease-out both;
+}
+
+.dsr-pg-sheet {
+  width: min(560px, 100%);
+  max-height: 92vh;
+  overflow-y: auto;
+  /* Pairing overflow-y:auto with the default visible x gives a stray
+     horizontal scrollbar along the bottom of the sheet. */
+  overflow-x: hidden;
+  box-sizing: border-box;
+  padding: clamp(15px, 4vw, 24px);
+  background: rgba(19, 25, 32, .97);
+  border: 2px solid rgba(255, 61, 200, .55);
+  border-radius: 18px;
+  box-shadow: 0 30px 70px rgba(0, 0, 0, .65), 0 0 40px -16px #FF3DC8;
+}
+
+.dsr-pg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+/* chart paper: a magenta grid the pens run across */
+.dsr-pg-chart {
+  position: relative;
+  height: 62px;
+  margin-bottom: 16px;
+  overflow: hidden;
+  border: 1.5px solid rgba(255, 61, 200, .34);
+  border-radius: 9px;
+  background:
+    repeating-linear-gradient(90deg, rgba(255, 61, 200, .16) 0 1px, transparent 1px 15px),
+    repeating-linear-gradient(0deg, rgba(255, 61, 200, .12) 0 1px, transparent 1px 12px),
+    #0B0E13;
+}
+
+.dsr-pg-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* The amplitude, not the speed, is what reads as "the subject reacted". */
+  transform: scaleY(1);
+  transform-origin: center;
+  transition: transform 240ms ease;
+}
+.dsr-pg-chart.is-hot .dsr-pg-svg { transform: scaleY(2.15); }
+
+@keyframes dsr-pg-roll { to { transform: translateX(-600px); } }
+/* Two copies of each trace sit end to end, so a -600 unit roll loops with no
+   seam. CSS transforms on an SVG child work in user units, which is why this
+   matches the viewBox width exactly. */
+.dsr-pg-roll { animation: dsr-pg-roll 7s linear infinite; }
+.dsr-pg-chart.is-hot .dsr-pg-roll { animation-duration: 2.4s; }
+
+.dsr-pg-line { fill: none; stroke: #FF3DC8; stroke-width: 1.4; opacity: .9; }
+.dsr-pg-line-b { stroke: #3FE0F0; stroke-width: 1.1; opacity: .72; }
+
+/* the pen head, parked where the trace is being written */
+.dsr-pg-pen {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 22%;
+  width: 2px;
+  background: rgba(255, 255, 255, .82);
+  box-shadow: 0 0 10px 2px rgba(255, 61, 200, .7);
+}
+
+.dsr-pg-bpm {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  color: rgba(255, 61, 200, .9);
+}
+
+.dsr-pg-qrow { display: flex; gap: 11px; margin-bottom: 14px; }
+
+.dsr-pg-vol {
+  flex: 0 0 auto;
+  font-family: var(--dsr-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  color: var(--iv-ink, #FF3DC8);
+  padding-top: 4px;
+}
+
+.dsr-pg-q {
+  margin: 0;
+  min-width: 0;
+  font-family: 'Permanent Marker', cursive;
+  font-size: clamp(1.1rem, 4.2vw, 1.5rem);
+  line-height: 1.25;
+  color: #FFF;
+}
+
+.dsr-pg-input {
+  margin: 5px 0 14px;
+  font-family: 'Caveat', cursive;
+  font-size: 20px;
+  line-height: 1.4;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+/* the read-out ---------------------------------------------------------- */
+
+@keyframes dsr-pg-slam {
+  0%   { transform: scale(2.2) rotate(-16deg); opacity: 0; }
+  55%  { transform: scale(.93) rotate(-5deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+
+.dsr-pg-tape {
+  position: relative;
+  margin-bottom: 14px;
+  padding: 13px 14px 12px;
+  border: 1.5px dashed rgba(255, 90, 90, .55);
+  border-radius: 11px;
+  background: rgba(255, 90, 90, .07);
+  animation: dsrDrawIn 220ms ease-out both;
+}
+.dsr-pg-tape.is-match {
+  border-color: rgba(59, 209, 122, .55);
+  background: rgba(59, 209, 122, .07);
+}
+
+.dsr-pg-stamp {
+  position: absolute;
+  top: -20px;
+  right: 6px;
+  pointer-events: none;
+  /* The slam opens at 2.2x. Growing from the centre would push the stamp
+     ~65px past the sheet's right edge for a third of a second, and the sheet
+     clips its own x-overflow - so it lands half-cut. Pinning the origin to
+     its own right edge makes it grow inward instead. */
+  transform-origin: 100% 50%;
+  animation: dsr-pg-slam 340ms cubic-bezier(.2, 1.4, .4, 1) both;
+}
+
+.dsr-pg-truth {
+  margin: 3px 0 9px;
+  font-family: 'Caveat', cursive;
+  font-size: 21px;
+  line-height: 1.35;
+  color: #FFF;
+  overflow-wrap: anywhere;
+}
+
+.dsr-pg-reading {
+  margin: 0 0 10px;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  color: var(--dsr-dim);
+}
+.dsr-pg-reading-note { font-weight: 400; letter-spacing: .08em; text-transform: none; }
+
+.dsr-pg-overrule { display: flex; flex-wrap: wrap; gap: 8px; }
+.dsr-pg-overrule .dsr-tool-btn { flex: 1 1 auto; justify-content: center; min-height: 42px; }
+
+.dsr-pg-foot { display: flex; flex-wrap: wrap; gap: 8px; }
+.dsr-pg-foot .dsr-tool-btn { flex: 1 1 auto; justify-content: center; min-height: 44px; }
+
+/* how far through the tape you are */
+.dsr-pg-pips { display: flex; gap: 6px; justify-content: center; margin-top: 14px; }
+.dsr-pg-pip {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--dsr-line);
+  background: rgba(9, 13, 18, .8);
+}
+.dsr-pg-pip.is-match { background: #3BD17A; border-color: #3BD17A; }
+.dsr-pg-pip.is-miss { background: #FF5A5A; border-color: #FF5A5A; }
+.dsr-pg-pip.is-now { box-shadow: 0 0 0 3px rgba(255, 61, 200, .3); border-color: #FF3DC8; }
+
+/* the final tape -------------------------------------------------------- */
+
+.dsr-pg-score { text-align: center; margin-bottom: 14px; }
+
+.dsr-pg-score-num {
+  display: block;
+  font-family: 'Permanent Marker', cursive;
+  font-size: clamp(2.6rem, 12vw, 3.6rem);
+  line-height: 1;
+  color: #FF3DC8;
+  text-shadow: 3px 3px 0 rgba(0, 0, 0, .5);
+}
+
+.dsr-pg-score-lab {
+  display: block;
+  margin-top: 5px;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .2em;
+  color: var(--dsr-dim);
+}
+
+.dsr-pg-verdict {
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 1.5px solid rgba(255, 90, 90, .5);
+  border-radius: 11px;
+  background: rgba(255, 90, 90, .07);
+}
+.dsr-pg-verdict.is-good { border-color: rgba(59, 209, 122, .5); background: rgba(59, 209, 122, .07); }
+.dsr-pg-verdict strong {
+  display: block;
+  margin-bottom: 5px;
+  font-family: var(--dsr-mono);
+  font-size: 11px;
+  letter-spacing: .2em;
+  color: #FFF;
+}
+.dsr-pg-verdict span {
+  font-family: 'Caveat', cursive;
+  font-size: 19px;
+  line-height: 1.35;
+  color: var(--dsr-text);
+}
+
+.dsr-pg-record {
+  margin: 0 0 12px;
+  font-family: var(--dsr-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  color: #FFC93F;
+  text-align: center;
+}
+
+.dsr-pg-misses { display: grid; gap: 8px; margin-bottom: 14px; }
+
+.dsr-pg-miss {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  background: rgba(9, 13, 18, .6);
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 140ms ease;
+}
+.dsr-pg-miss:hover { border-color: #FF3DC8; }
+
+.dsr-pg-miss-q {
+  font-family: var(--dsr-mono);
+  font-size: 10px;
+  letter-spacing: .04em;
+  color: var(--dsr-text);
+  overflow-wrap: anywhere;
+}
+.dsr-pg-miss-a {
+  font-family: 'Caveat', cursive;
+  font-size: 18px;
+  color: var(--dsr-dim);
+  overflow-wrap: anywhere;
+}
+.dsr-pg-miss-go {
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: rgba(255, 61, 200, .8);
+}
+
+@media (max-width: 480px) {
+  .dsr-pg-callout-btn { flex: 1 1 100%; justify-content: center; }
+  .dsr-pg-overrule .dsr-tool-btn, .dsr-pg-foot .dsr-tool-btn { flex: 1 1 100%; }
+  .dsr-pg-stamp { top: -16px; right: 2px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsr-pg, .dsr-pg-tape { animation: none; }
+  .dsr-pg-roll, .dsr-pg-callout-btn-dot { animation: none; }
+  .dsr-pg-stamp { animation: none; }
+  .dsr-pg-svg { transition: none; }
+}
+
 @media (max-width: 480px) {
   .dsr-iv-grid { grid-template-columns: 1fr; }
   .dsr-iv-controls > * { flex: 1 1 100%; }
@@ -7003,6 +8096,5 @@ const DOSSIER_CSS = `
   .dsr-iv-spotlight, .dsr-iv-deck { animation: none; }
   .dsr-iv-meter-fill { transition: none; }
   .dsr-iv-pin:hover { transform: none; }
-  .dsr-iv-card.is-dragging { transform: none; }
 }
 `;
