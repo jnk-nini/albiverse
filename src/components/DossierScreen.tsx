@@ -37,12 +37,20 @@ import {
   STAMPS,
   ThumbScanner,
   VectorFigure,
+  FIGURE_VIEWBOX,
   hashString,
   resolveFigurePart,
   seeded,
   type StampId,
 } from "./DossierArt";
+import { createPortal } from "react-dom";
 import * as sfx from "@/lib/dossierAudio";
+import {
+  INTERVIEW_VOLUMES,
+  TOTAL_PROMPTS,
+  volumeOfPrompt,
+  type InterviewPrompt,
+} from "@/lib/dossierInterview";
 
 /* ============================================================================
    CH.11 — CLASSIFIED PERSONNEL DOSSIER: SUBJECT EARTH-65
@@ -397,6 +405,12 @@ interface SizingField {
   part: string;
   value: string;
   unit: string;
+  /* Where this measurement is pinned on the figure, in VectorFigure's viewBox
+     units (160x320). Absent means it has no pin yet - the four defaults below
+     are named regions the figure already knows how to light up, so they only
+     get coordinates if someone deliberately places them. */
+  x?: number;
+  y?: number;
 }
 
 /* Ids matching VectorFigure's `data-part` highlight names light the figure up
@@ -442,6 +456,83 @@ interface TimeCapsuleData {
 }
 
 const EMPTY_TIME_CAPSULE: TimeCapsuleData = { items: [] };
+
+/* ============================================================================
+   SECTION 11 — THE FIELD INTERVIEW (types)
+
+   The 269-prompt profile questionnaire, keyed by prompt id. Answers live in a
+   flat map rather than per-volume rows so progress, search and the "ask me
+   one" draw can all read the whole interview without six round trips.
+   ========================================================================== */
+
+/** A question the couple wrote themselves, living alongside the catalogue. */
+interface CustomPrompt {
+  id: string;
+  /** Which volume it was filed under. */
+  volume: string;
+  q: string;
+  long: boolean;
+}
+
+interface InterviewData {
+  /** prompt id -> answer. Absent or "" both mean unanswered. */
+  answers: Record<string, string>;
+  /** Prompt ids the reader starred, surfaced in the highlights strip. */
+  pinned: string[];
+  /* Display order per volume, as prompt ids. The CATALOGUE order never
+     changes (ids are positional - see dossierInterview.ts), so re-arranging
+     is stored here as data instead. A volume missing from this map, or an id
+     missing from its list, falls back to catalogue order, which is what lets
+     new prompts appear for someone who already re-arranged that volume. */
+  order: Record<string, string[]>;
+  /** Their own questions. Ids are prefixed so they cannot collide with the catalogue. */
+  custom: CustomPrompt[];
+}
+
+const EMPTY_INTERVIEW: InterviewData = { answers: {}, pinned: [], order: {}, custom: [] };
+
+/* Older saved panels predate `pinned`, `order` and `custom`; spreading an
+   undefined over the fallback would break every .includes()/.map() below. */
+function migrateInterview(raw: unknown, fallback: InterviewData): InterviewData {
+  const r = (raw ?? {}) as Partial<InterviewData>;
+  return {
+    answers: r.answers && typeof r.answers === "object" ? r.answers : fallback.answers,
+    pinned: Array.isArray(r.pinned) ? r.pinned : fallback.pinned,
+    order: r.order && typeof r.order === "object" ? r.order : fallback.order,
+    custom: Array.isArray(r.custom) ? r.custom : fallback.custom,
+  };
+}
+
+/* ============================================================================
+   FULL-SCREEN OVERLAYS
+   ========================================================================== */
+
+/**
+ * Renders an overlay up at the chapter root instead of where it was written.
+ *
+ * `position: fixed` does NOT reach the viewport from inside a panel: every
+ * `.dsr-panel` sets `backdrop-filter`, and a backdrop-filter makes an element
+ * a containing block for its fixed-position descendants. An overlay written
+ * inside a panel therefore anchors to that panel — measured at y = -6032 on a
+ * long page, i.e. scrolled far off the top of the screen.
+ *
+ * The host is `.dsr-root` rather than `<body>` on purpose: it is not a
+ * containing block (verified), and it carries the chapter's CSS custom
+ * properties, which a portal to <body> would leave behind — the overlay would
+ * lose its accent colour and every var()-driven style with it.
+ */
+function ChapterOverlay({ children }: { children: React.ReactNode }) {
+  /* Lazy initialiser, not an effect: these overlays only ever mount in
+     response to a user action, so the document and .dsr-root both exist by
+     the time this first renders, and there is no SSR pass to mismatch. */
+  const [host] = useState<HTMLElement | null>(() =>
+    typeof document === "undefined" ? null : document.querySelector<HTMLElement>(".dsr-root")
+  );
+  /* No host (SSR, or the chapter root somehow absent): fall back to rendering
+     in place, which is the old behaviour rather than a blank screen. */
+  if (!host) return <>{children}</>;
+  return createPortal(children, host);
+}
 
 /* ============================================================================
    PANEL PERSISTENCE
@@ -898,6 +989,7 @@ const HeroBadge = memo(function HeroBadge({
       </div>
 
       {adjustOpen && (
+        <ChapterOverlay>
         <div className="dsr-lightbox" role="dialog" aria-modal="true" aria-label="Adjust the portrait">
           <div className="dsr-portrait-adjust-sheet">
             <h3 className="dsr-notes-sheet-head">Adjust the portrait</h3>
@@ -953,6 +1045,7 @@ const HeroBadge = memo(function HeroBadge({
             </div>
           </div>
         </div>
+        </ChapterOverlay>
       )}
     </section>
   );
@@ -1662,6 +1755,7 @@ function Corkboard({
 
       {/* --------------------------------------------- slide projector ---- */}
       {lightboxItem?.url && (
+        <ChapterOverlay>
         <div
           className="dsr-lightbox"
           role="dialog"
@@ -1692,6 +1786,7 @@ function Corkboard({
             </button>
           </div>
         </div>
+        </ChapterOverlay>
       )}
 
       {/* --------------------------------------------- evidence notes ----
@@ -1704,6 +1799,7 @@ function Corkboard({
           rendered outside the clipped corkboard entirely, sized off the
           viewport instead of the pin. */}
       {notesItem && (
+        <ChapterOverlay>
         <div
           className="dsr-lightbox"
           role="dialog"
@@ -1767,6 +1863,7 @@ function Corkboard({
             </button>
           </div>
         </div>
+        </ChapterOverlay>
       )}
     </section>
   );
@@ -2619,19 +2716,56 @@ function SizingBlueprint({
   const [highlight, setHighlight] = useState<string | null>(null);
   const fieldInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const pendingFocusRef = useRef<string | null>(null);
+  /* The measurement waiting to be pinned. While this is set the whole figure
+     is a target and the next click on it drops the marker. */
+  const [placingId, setPlacingId] = useState<string | null>(null);
 
   const setField = (id: string, patch: Partial<SizingField>) =>
     onChange((prev) => ({ items: prev.items.map((f) => (f.id === id ? { ...f, ...patch } : f)) }));
 
+  /* A new measurement goes straight into placing mode, so "add" and "put it
+     where I mean" are one gesture rather than two unrelated ones. */
   const addField = () => {
-    onChange((prev) => ({ items: [...prev.items, { id: uid("size"), part: "", value: "", unit: "" }] }));
+    const id = uid("size");
+    pendingFocusRef.current = id;
+    onChange((prev) => ({ items: [...prev.items, { id, part: "", value: "", unit: "" }] }));
     onFlush();
+    setPlacingId(id);
   };
 
   const removeField = (id: string) => {
     onChange((prev) => ({ items: prev.items.filter((f) => f.id !== id) }));
+    if (placingId === id) setPlacingId(null);
     onFlush();
   };
+
+  /* Drop the pin wherever they clicked, in viewBox units. Clamped so a click
+     right on the edge cannot park a marker half outside the drawing. */
+  const placePin = (x: number, y: number) => {
+    if (!placingId) return;
+    sfx.stamp();
+    const cx = Math.max(8, Math.min(FIGURE_VIEWBOX.w - 8, x));
+    const cy = Math.max(8, Math.min(FIGURE_VIEWBOX.h - 8, y));
+    setField(placingId, { x: cx, y: cy });
+    onFlush();
+    const id = placingId;
+    setPlacingId(null);
+    fieldInputRefs.current[id]?.focus();
+  };
+
+  const pins = useMemo(
+    () =>
+      sizing.items
+        .filter((f) => typeof f.x === "number" && typeof f.y === "number")
+        .map((f) => ({
+          id: f.id,
+          label: f.part,
+          x: f.x as number,
+          y: f.y as number,
+          active: highlight === f.part && Boolean(f.part),
+        })),
+    [sizing.items, highlight]
+  );
 
   /* Makes the mannequin an actual control instead of a passive readout that
      only ever reacted to whichever field you happened to already be in:
@@ -2670,11 +2804,32 @@ function SizingBlueprint({
         <span className="dsr-panel-kicker">FOR WHEN YOU&apos;RE BUYING SOMETHING</span>
       </div>
 
+      {placingId && (
+        <p className="dsr-sizing-placing" role="status">
+          Tap anywhere on the figure to pin{" "}
+          <strong>{sizing.items.find((f) => f.id === placingId)?.part || "this measurement"}</strong> there.
+          <button type="button" className="dsr-sizing-placing-x" onClick={() => setPlacingId(null)}>
+            cancel
+          </button>
+        </p>
+      )}
+
       <div className="dsr-sizing-body">
         <VectorFigure
           highlight={highlight}
           onPartClick={handlePartClick}
-          className="dsr-sizing-figure dsr-sizing-figure-interactive"
+          pins={pins}
+          placing={Boolean(placingId)}
+          onCanvasClick={placePin}
+          onPinClick={(id) => {
+            const f = sizing.items.find((i) => i.id === id);
+            if (f) setHighlight(f.part);
+            fieldInputRefs.current[id]?.focus();
+          }}
+          className={
+            "dsr-sizing-figure dsr-sizing-figure-interactive" +
+            (placingId ? " is-placing" : "")
+          }
         />
 
         <div className="dsr-sizing-fields">
@@ -2713,6 +2868,24 @@ function SizingBlueprint({
                   placeholder="Unit"
                   maxLength={12}
                 />
+                <button
+                  type="button"
+                  className={
+                    "dsr-sizing-pinbtn" +
+                    (placingId === f.id ? " is-placing" : "") +
+                    (typeof f.x === "number" ? " is-pinned" : "")
+                  }
+                  onClick={() => setPlacingId((p) => (p === f.id ? null : f.id))}
+                  aria-pressed={placingId === f.id}
+                  aria-label={
+                    (typeof f.x === "number" ? "Move the pin for " : "Pin ") +
+                    (f.part || "this measurement") +
+                    " on the figure"
+                  }
+                  title={typeof f.x === "number" ? "Move pin" : "Pin on the figure"}
+                >
+                  📍
+                </button>
                 <button
                   type="button"
                   className="dsr-field-x"
@@ -3053,6 +3226,874 @@ function TimeCapsule({
 }
 
 /* ============================================================================
+   11. THE FIELD INTERVIEW
+
+   The whole "A Little World About Them" questionnaire, rendered as the case
+   file's interview transcript: six numbered volumes of index cards behind
+   divider tabs, in the source document's own running order.
+
+   269 prompts is a wall if you present it as a form, so it deliberately is
+   not one:
+
+   - INTERVIEW MODE deals the questions one at a time as a full-screen deck,
+     which is how this actually gets filled in - together, out loud.
+   - QUIZ MODE hides the answers already on record and makes you say them
+     first. The same data, read back as a game.
+   - Every card can be RE-ARRANGED by dragging (or with its move buttons, for
+     touch and keyboard), so the questions that matter float to the top.
+   - Any volume takes THEIR OWN QUESTIONS, because no stock list covers a
+     specific person.
+   ========================================================================== */
+
+/** A catalogue prompt or one they wrote themselves, once resolved for display. */
+type LivePrompt = InterviewPrompt & { custom?: boolean };
+
+/* Each volume gets its own ink so six stacks of index cards do not read as
+   one undifferentiated wall. Presentation only - kept out of the data module. */
+const VOLUME_INK: Record<string, string> = {
+  who: "#3FE0F0",
+  fav: "#FFC93F",
+  per: "#FF3DC8",
+  mem: "#8BE06B",
+  drm: "#7B6BF0",
+  us: "#FF6B6B",
+};
+
+/**
+ * A volume's prompts: catalogue entries plus their own questions, in the
+ * saved display order.
+ *
+ * Anything not named in the saved order keeps its catalogue position at the
+ * end, so prompts added to the module later still appear for someone who has
+ * already re-arranged that volume.
+ */
+function resolveVolumePrompts(
+  volId: string,
+  custom: CustomPrompt[],
+  order: Record<string, string[]>
+): LivePrompt[] {
+  const catalogue = INTERVIEW_VOLUMES.find((v) => v.id === volId)?.prompts ?? [];
+  const theirs: LivePrompt[] = custom
+    .filter((c) => c.volume === volId)
+    .map((c) => ({ id: c.id, q: c.q, long: c.long, custom: true }));
+  const all: LivePrompt[] = [...catalogue, ...theirs];
+
+  const saved = order[volId];
+  if (!saved || saved.length === 0) return all;
+
+  const rank = new Map(saved.map((id, i) => [id, i]));
+  const natural = new Map(all.map((p, i) => [p.id, i]));
+  return all.slice().sort((a, b) => {
+    const ra = rank.has(a.id) ? (rank.get(a.id) as number) : Number.MAX_SAFE_INTEGER;
+    const rb = rank.has(b.id) ? (rank.get(b.id) as number) : Number.MAX_SAFE_INTEGER;
+    if (ra !== rb) return ra - rb;
+    return (natural.get(a.id) as number) - (natural.get(b.id) as number);
+  });
+}
+
+/* Each card owns its own render. Without memo, one keystroke re-renders every
+   card in the volume (79 of them in Their Favorites), which is exactly the
+   kind of typing lag that shows up first on a phone. */
+const InterviewCard = memo(function InterviewCard({
+  prompt,
+  value,
+  pinned,
+  ink,
+  spotlit,
+  quiz,
+  revealed,
+  dragging,
+  onSet,
+  onCommit,
+  onTogglePin,
+  onReveal,
+  onDelete,
+  onMove,
+  onDragStart,
+}: {
+  prompt: LivePrompt;
+  value: string;
+  pinned: boolean;
+  ink: string;
+  spotlit?: boolean;
+  quiz?: boolean;
+  revealed?: boolean;
+  dragging?: boolean;
+  onSet: (id: string, value: string) => void;
+  onCommit: () => void;
+  onTogglePin: (id: string) => void;
+  onReveal?: (id: string) => void;
+  onDelete?: (id: string) => void;
+  onMove?: (id: string, dir: -1 | 1) => void;
+  onDragStart?: (id: string, e: ReactPointerEvent) => void;
+}) {
+  const filled = value.trim().length > 0;
+  const inputId = "dsr-iv-" + prompt.id;
+  /* In quiz mode an answer already on record stays hidden until you say it
+     out loud and tap to check. A blank one has nothing to hide. */
+  const hidden = Boolean(quiz && filled && !revealed);
+
+  return (
+    <div
+      data-prompt={prompt.id}
+      className={
+        "dsr-iv-card" +
+        (filled ? " is-filled" : "") +
+        (spotlit ? " is-spotlit" : "") +
+        (dragging ? " is-dragging" : "") +
+        (prompt.custom ? " is-custom" : "")
+      }
+      style={{ "--iv-ink": ink } as CSSProperties}
+    >
+      <div className="dsr-iv-cardhead">
+        {onDragStart && (
+          <button
+            type="button"
+            className="dsr-iv-grip"
+            aria-label={"Re-arrange " + prompt.q}
+            title="Drag to re-arrange"
+            onPointerDown={(e) => onDragStart(prompt.id, e)}
+          >
+            ⠿
+          </button>
+        )}
+        <label className="dsr-iv-q" htmlFor={inputId}>
+          {prompt.q}
+          {prompt.custom && <span className="dsr-iv-ours">OURS</span>}
+        </label>
+        <button
+          type="button"
+          className={"dsr-iv-pin" + (pinned ? " is-on" : "")}
+          onClick={() => onTogglePin(prompt.id)}
+          aria-pressed={pinned}
+          aria-label={(pinned ? "Unpin " : "Pin ") + prompt.q}
+          title={pinned ? "Unpin" : "Pin to highlights"}
+        >
+          {pinned ? "★" : "☆"}
+        </button>
+      </div>
+
+      {hidden ? (
+        <button type="button" className="dsr-iv-cover" onClick={() => onReveal?.(prompt.id)}>
+          <span className="dsr-iv-cover-tag">ON RECORD</span>
+          <span className="dsr-iv-cover-hint">say it, then tap to check</span>
+        </button>
+      ) : prompt.long ? (
+        <textarea
+          id={inputId}
+          className="dsr-textarea dsr-iv-input"
+          rows={2}
+          value={value}
+          placeholder="—"
+          onChange={(e) => onSet(prompt.id, e.target.value)}
+          onBlur={onCommit}
+        />
+      ) : (
+        <input
+          id={inputId}
+          className="dsr-input dsr-iv-input"
+          value={value}
+          placeholder="—"
+          onChange={(e) => onSet(prompt.id, e.target.value)}
+          onBlur={onCommit}
+        />
+      )}
+
+      {(onMove || onDelete) && (
+        <div className="dsr-iv-cardfoot">
+          {onMove && (
+            <>
+              {/* The reliable path. Dragging is the nice one, but it is not
+                  reachable by keyboard and is fiddly on a small screen. */}
+              <button
+                type="button"
+                className="dsr-iv-move"
+                onClick={() => onMove(prompt.id, -1)}
+                aria-label={"Move " + prompt.q + " earlier"}
+                title="Move earlier"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                className="dsr-iv-move"
+                onClick={() => onMove(prompt.id, 1)}
+                aria-label={"Move " + prompt.q + " later"}
+                title="Move later"
+              >
+                ↓
+              </button>
+            </>
+          )}
+          {onDelete && prompt.custom && (
+            <button
+              type="button"
+              className="dsr-iv-del"
+              onClick={() => onDelete(prompt.id)}
+              aria-label={"Delete our question: " + prompt.q}
+            >
+              delete
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+
+function FieldInterview({
+  interview,
+  loading,
+  onChange,
+  onFlush,
+  onGlitch,
+}: {
+  interview: InterviewData;
+  loading: boolean;
+  onChange: (next: InterviewData | ((p: InterviewData) => InterviewData)) => void;
+  onFlush: () => void;
+  onGlitch: () => void;
+}) {
+  const [volId, setVolId] = useState(INTERVIEW_VOLUMES[0].id);
+  const [query, setQuery] = useState("");
+  const [mode, setMode] = useState<"all" | "filled" | "blank">("all");
+  const [spotlight, setSpotlight] = useState<string | null>(null);
+  const [quiz, setQuiz] = useState(false);
+  const [revealed, setRevealed] = useState<string[]>([]);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [newQ, setNewQ] = useState("");
+  const [deckOpen, setDeckOpen] = useState(false);
+  const [deckIdx, setDeckIdx] = useState(0);
+  const [deckAll, setDeckAll] = useState(false);
+
+  const answers = interview.answers;
+  const ink = VOLUME_INK[volId] ?? "#3FE0F0";
+
+  const volume = useMemo(
+    () => INTERVIEW_VOLUMES.find((v) => v.id === volId) ?? INTERVIEW_VOLUMES[0],
+    [volId]
+  );
+
+  /* Every prompt in play, catalogue + theirs, so counts and the deck cover
+     their own questions too rather than silently ignoring them. */
+  const livePrompts = useMemo(() => {
+    const out: LivePrompt[] = [];
+    for (const v of INTERVIEW_VOLUMES) {
+      out.push(...resolveVolumePrompts(v.id, interview.custom, interview.order));
+    }
+    return out;
+  }, [interview.custom, interview.order]);
+
+  const isFilled = useCallback((id: string) => (answers[id] ?? "").trim().length > 0, [answers]);
+
+  const answeredCount = useMemo(
+    () => livePrompts.reduce((n, p) => n + (isFilled(p.id) ? 1 : 0), 0),
+    [livePrompts, isFilled]
+  );
+  const totalCount = livePrompts.length;
+
+  const volumePrompts = useMemo(
+    () => resolveVolumePrompts(volId, interview.custom, interview.order),
+    [volId, interview.custom, interview.order]
+  );
+
+  const volumeCounts = useMemo(() => {
+    const out: Record<string, { done: number; total: number }> = {};
+    for (const v of INTERVIEW_VOLUMES) {
+      const ps = resolveVolumePrompts(v.id, interview.custom, interview.order);
+      out[v.id] = { done: ps.reduce((n, p) => n + (isFilled(p.id) ? 1 : 0), 0), total: ps.length };
+    }
+    return out;
+  }, [interview.custom, interview.order, isFilled]);
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return volumePrompts.filter((p) => {
+      if (q && !p.q.toLowerCase().includes(q)) return false;
+      if (mode === "filled" && !isFilled(p.id)) return false;
+      if (mode === "blank" && isFilled(p.id)) return false;
+      return true;
+    });
+  }, [volumePrompts, query, mode, isFilled]);
+
+  /* Re-arranging is only coherent against the whole volume. With a search or
+     a filter narrowing it, "move earlier" would jump a card past rows that
+     are not on screen, so the controls come off instead. */
+  const canReorder = query.trim() === "" && mode === "all";
+
+  const promptById = useMemo(() => {
+    const m = new Map<string, LivePrompt>();
+    for (const p of livePrompts) m.set(p.id, p);
+    return m;
+  }, [livePrompts]);
+
+  const pinnedPrompts = useMemo(
+    () => interview.pinned.map((id) => promptById.get(id)).filter((p): p is LivePrompt => Boolean(p)),
+    [interview.pinned, promptById]
+  );
+
+  /* Stable across renders so InterviewCard's memo actually holds. */
+  const setAnswer = useCallback(
+    (id: string, next: string) => {
+      onChange((prev) => ({ ...prev, answers: { ...prev.answers, [id]: next } }));
+    },
+    [onChange]
+  );
+
+  const togglePin = useCallback(
+    (id: string) => {
+      sfx.dialClick();
+      onChange((prev) => ({
+        ...prev,
+        pinned: prev.pinned.includes(id) ? prev.pinned.filter((p) => p !== id) : [...prev.pinned, id],
+      }));
+      onFlush();
+    },
+    [onChange, onFlush]
+  );
+
+  const reveal = useCallback((id: string) => {
+    sfx.cardFlip();
+    setRevealed((r) => (r.includes(id) ? r : [...r, id]));
+  }, []);
+
+  /* ------------------------------------------------------------ ordering */
+
+  const moveWithin = useCallback(
+    (id: string, toIndex: number) => {
+      onChange((prev) => {
+        const ids = resolveVolumePrompts(volId, prev.custom, prev.order).map((p) => p.id);
+        const from = ids.indexOf(id);
+        const to = Math.max(0, Math.min(ids.length - 1, toIndex));
+        if (from < 0 || from === to) return prev;
+        const next = ids.slice();
+        next.splice(to, 0, next.splice(from, 1)[0]);
+        return { ...prev, order: { ...prev.order, [volId]: next } };
+      });
+    },
+    [onChange, volId]
+  );
+
+  const moveBy = useCallback(
+    (id: string, dir: -1 | 1) => {
+      const ids = volumePrompts.map((p) => p.id);
+      const from = ids.indexOf(id);
+      if (from < 0) return;
+      sfx.dialClick();
+      moveWithin(id, from + dir);
+      onFlush();
+    },
+    [volumePrompts, moveWithin, onFlush]
+  );
+
+  /* Pointer-based drag. Pointer events cover mouse, touch and pen in one
+     path, matching the rest of the app; the grip sets touch-action:none in
+     CSS so a drag on a phone does not scroll the page instead (the exact bug
+     the letter jar hit). */
+  const dragRef = useRef<string | null>(null);
+
+  const handleDragStart = useCallback(
+    (id: string, e: ReactPointerEvent) => {
+      e.preventDefault();
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+      dragRef.current = id;
+      setDragId(id);
+      sfx.dialClick();
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!dragId) return;
+
+    const onMove = (e: PointerEvent) => {
+      const held = dragRef.current;
+      if (!held) return;
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const card = el?.closest?.("[data-prompt]") as HTMLElement | null;
+      const overId = card?.dataset.prompt;
+      if (!overId || overId === held) return;
+      const ids = resolveVolumePrompts(volId, interview.custom, interview.order).map((p) => p.id);
+      const target = ids.indexOf(overId);
+      if (target >= 0) moveWithin(held, target);
+    };
+
+    const onUp = () => {
+      dragRef.current = null;
+      setDragId(null);
+      sfx.webSnap();
+      onFlush();
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [dragId, volId, interview.custom, interview.order, moveWithin, onFlush]);
+
+  const resetOrder = () => {
+    onGlitch();
+    onChange((prev) => {
+      const next = { ...prev.order };
+      delete next[volId];
+      return { ...prev, order: next };
+    });
+    onFlush();
+  };
+
+  /* ------------------------------------------------------ their questions */
+
+  const addOwnQuestion = () => {
+    const q = newQ.trim();
+    if (!q) return;
+    sfx.paperTear();
+    const id = uid("cus");
+    onChange((prev) => ({
+      ...prev,
+      custom: [...prev.custom, { id, volume: volId, q, long: q.length > 46 || q.endsWith("?") }],
+    }));
+    onFlush();
+    setNewQ("");
+    setSpotlight(id);
+  };
+
+  const deleteOwnQuestion = useCallback(
+    (id: string) => {
+      onGlitch();
+      onChange((prev) => {
+        const answers2 = { ...prev.answers };
+        delete answers2[id];
+        const order2: Record<string, string[]> = {};
+        for (const k of Object.keys(prev.order)) order2[k] = prev.order[k].filter((x) => x !== id);
+        return {
+          ...prev,
+          answers: answers2,
+          custom: prev.custom.filter((c) => c.id !== id),
+          pinned: prev.pinned.filter((p) => p !== id),
+          order: order2,
+        };
+      });
+      onFlush();
+    },
+    [onChange, onFlush, onGlitch]
+  );
+
+  /* --------------------------------------------------------------- deck */
+
+  const deckList = useMemo(
+    () => (deckAll ? livePrompts : volumePrompts),
+    [deckAll, livePrompts, volumePrompts]
+  );
+
+  const openDeck = (all: boolean) => {
+    const list = all ? livePrompts : volumePrompts;
+    if (list.length === 0) return;
+    /* Open on the first thing not yet answered - being handed a question you
+       have already done is the fastest way to make this feel like a form. */
+    const firstBlank = list.findIndex((p) => !isFilled(p.id));
+    sfx.paperTear();
+    setDeckAll(all);
+    setDeckIdx(firstBlank >= 0 ? firstBlank : 0);
+    setDeckOpen(true);
+  };
+
+  const deckStep = (dir: -1 | 1) => {
+    sfx.cardFlip();
+    setDeckIdx((i) => {
+      const n = deckList.length;
+      return n === 0 ? 0 : (i + dir + n) % n;
+    });
+  };
+
+  const deckShuffle = () => {
+    if (deckList.length === 0) return;
+    sfx.paperTear();
+    setDeckIdx(Math.floor(Math.random() * deckList.length));
+  };
+
+  const deckNextBlank = () => {
+    const n = deckList.length;
+    if (n === 0) return;
+    for (let step = 1; step <= n; step += 1) {
+      const idx = (deckIdx + step) % n;
+      if (!isFilled(deckList[idx].id)) {
+        sfx.cardFlip();
+        setDeckIdx(idx);
+        return;
+      }
+    }
+    sfx.bloom();
+  };
+
+  const closeDeck = () => {
+    setDeckOpen(false);
+    onFlush();
+  };
+
+  /* Escape closes the deck; arrows page it. */
+  useEffect(() => {
+    if (!deckOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      const typing = (e.target as HTMLElement)?.tagName === "TEXTAREA";
+      if (e.key === "Escape") closeDeck();
+      if (!typing && e.key === "ArrowRight") deckStep(1);
+      if (!typing && e.key === "ArrowLeft") deckStep(-1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckOpen, deckList.length]);
+
+  /* ------------------------------------------------------------ draw one */
+
+  const drawCard = () => {
+    const blanks = livePrompts.filter((p) => !isFilled(p.id));
+    if (blanks.length === 0) {
+      sfx.bloom();
+      setSpotlight(null);
+      return;
+    }
+    const pick = blanks[Math.floor(Math.random() * blanks.length)];
+    const vol = volumeOfPrompt(pick.id) ?? INTERVIEW_VOLUMES.find((v) => v.id === (interview.custom.find((c) => c.id === pick.id)?.volume ?? ""));
+    sfx.paperTear();
+    if (vol) setVolId(vol.id);
+    setQuery("");
+    setMode("all");
+    setSpotlight(pick.id);
+  };
+
+  const spotlitPrompt = spotlight ? promptById.get(spotlight) : undefined;
+  const pct = totalCount ? Math.round((answeredCount / totalCount) * 100) : 0;
+  const deckPrompt = deckList[deckIdx];
+
+  return (
+    <section className="dsr-panel dsr-interview" aria-labelledby="dsr-iv-head">
+      <div className="dsr-panel-head">
+        <h2 id="dsr-iv-head" className="dsr-panel-title">
+          The Field Interview
+        </h2>
+        <span className="dsr-panel-kicker">SUBJECT PROFILE &middot; VOLS. I&ndash;VI</span>
+      </div>
+
+      <p className="dsr-iv-lede">
+        {TOTAL_PROMPTS} questions about one person, and room for your own. Nobody
+        fills this in one sitting &mdash; that is the point. Deal yourself a hand
+        when you are together and answer whatever comes up.
+      </p>
+
+      {/* Until the panel is read, every tally below would read zero, which is
+          indistinguishable from "you have answered nothing". Show nothing
+          rather than something false. */}
+      {loading ? (
+        <p className="dsr-iv-loading" role="status">
+          Retrieving transcript&hellip;
+        </p>
+      ) : (
+        <>
+          <div className="dsr-iv-meter">
+            <div className="dsr-iv-meter-bar">
+              <span className="dsr-iv-meter-fill" style={{ width: pct + "%" }} />
+            </div>
+            <span className="dsr-iv-meter-read">
+              {answeredCount} / {totalCount} ON RECORD &middot; {pct}%
+            </span>
+          </div>
+
+          {/* the two ways to actually play this */}
+          <div className="dsr-iv-modesbar">
+            <button type="button" className="dsr-tool-btn dsr-iv-primary" onClick={() => openDeck(false)}>
+              🎴 Interview mode
+            </button>
+            <button type="button" className="dsr-tool-btn" onClick={() => openDeck(true)}>
+              ♾️ All volumes
+            </button>
+            <button type="button" className="dsr-tool-btn" onClick={drawCard}>
+              🎲 Draw a blank one
+            </button>
+            <button
+              type="button"
+              className={"dsr-tool-btn dsr-iv-quiztoggle" + (quiz ? " is-on" : "")}
+              aria-pressed={quiz}
+              onClick={() => {
+                sfx.dialClick();
+                setQuiz((q) => !q);
+                setRevealed([]);
+              }}
+            >
+              {quiz ? "🙈 Quiz mode on" : "🧠 Quiz me"}
+            </button>
+          </div>
+
+          {quiz && (
+            <p className="dsr-iv-quiznote">
+              Answers already on record are covered. Say yours out loud first, then tap
+              the card to check.
+            </p>
+          )}
+
+          {pinnedPrompts.length > 0 && (
+            <div className="dsr-iv-highlights">
+              <span className="dsr-field-label">Starred</span>
+              <div className="dsr-iv-highlight-row">
+                {pinnedPrompts.map((p) => (
+                  <button
+                    type="button"
+                    key={p.id}
+                    className="dsr-iv-highlight"
+                    onClick={() => {
+                      const vol =
+                        volumeOfPrompt(p.id) ??
+                        INTERVIEW_VOLUMES.find(
+                          (v) => v.id === interview.custom.find((c) => c.id === p.id)?.volume
+                        );
+                      if (vol) setVolId(vol.id);
+                      setQuery("");
+                      setMode("all");
+                      setSpotlight(p.id);
+                    }}
+                  >
+                    <span className="dsr-iv-highlight-q">{p.q}</span>
+                    <span className="dsr-iv-highlight-a">
+                      {(answers[p.id] ?? "").trim() || "still blank"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* volume dividers */}
+          <div className="dsr-iv-tabs" role="tablist" aria-label="Interview volumes">
+            {INTERVIEW_VOLUMES.map((v) => {
+              const c = volumeCounts[v.id];
+              const done = c && c.total > 0 && c.done === c.total;
+              return (
+                <button
+                  key={v.id}
+                  role="tab"
+                  type="button"
+                  aria-selected={v.id === volId}
+                  className={"dsr-tool-btn dsr-iv-tab" + (v.id === volId ? " is-on" : "")}
+                  style={{ "--iv-ink": VOLUME_INK[v.id] } as CSSProperties}
+                  onClick={() => {
+                    sfx.dialClick();
+                    setVolId(v.id);
+                    setSpotlight(null);
+                  }}
+                >
+                  <span className="dsr-iv-tab-mark" aria-hidden>
+                    {v.mark}
+                  </span>
+                  <span className="dsr-iv-tab-text">
+                    <span className="dsr-iv-tab-roman">{v.roman}</span>
+                    <span className="dsr-iv-tab-title">{v.title}</span>
+                  </span>
+                  <span className={"dsr-iv-tab-count" + (done ? " is-done" : "")}>
+                    {done ? "✓ ALL" : (c ? c.done + "/" + c.total : "")}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* controls */}
+          <div className="dsr-iv-controls">
+            <input
+              className="dsr-input dsr-iv-search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={"Search " + volume.title + "…"}
+              aria-label={"Search prompts in " + volume.title}
+            />
+            <div className="dsr-iv-modes" role="group" aria-label="Filter prompts">
+              {(["all", "filled", "blank"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  className={"dsr-tool-btn dsr-iv-mode" + (mode === m ? " is-on" : "")}
+                  aria-pressed={mode === m}
+                  onClick={() => setMode(m)}
+                >
+                  {m === "all" ? "All" : m === "filled" ? "On record" : "Blank"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* spotlight */}
+          {spotlitPrompt && (
+            <div className="dsr-iv-spotlight" style={{ "--iv-ink": ink } as CSSProperties}>
+              <div className="dsr-iv-spotlight-head">
+                <span className="dsr-panel-kicker">ONE QUESTION &middot; ANSWER IT TOGETHER</span>
+                <button
+                  type="button"
+                  className="dsr-iv-spotlight-x"
+                  onClick={() => setSpotlight(null)}
+                  aria-label="Dismiss this card"
+                >
+                  ✕
+                </button>
+              </div>
+              <InterviewCard
+                prompt={spotlitPrompt}
+                value={answers[spotlitPrompt.id] ?? ""}
+                pinned={interview.pinned.includes(spotlitPrompt.id)}
+                ink={ink}
+                spotlit
+                onSet={setAnswer}
+                onCommit={onFlush}
+                onTogglePin={togglePin}
+              />
+            </div>
+          )}
+
+          {/* the volume itself */}
+          <div className="dsr-iv-volhead" style={{ "--iv-ink": ink } as CSSProperties}>
+            <span className="dsr-iv-volroman">{volume.roman}</span>
+            <div className="dsr-iv-volheadtext">
+              <h3 className="dsr-iv-voltitle">{volume.title}</h3>
+              <span className="dsr-panel-kicker">{volume.kicker}</span>
+            </div>
+            {interview.order[volId] && (
+              <button type="button" className="dsr-iv-reset" onClick={resetOrder}>
+                reset order
+              </button>
+            )}
+          </div>
+
+          {/* their own question */}
+          <div className="dsr-iv-addrow">
+            <input
+              className="dsr-input dsr-iv-addinput"
+              value={newQ}
+              onChange={(e) => setNewQ(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addOwnQuestion();
+                }
+              }}
+              placeholder={"Add your own question to " + volume.title + "…"}
+              aria-label={"Add your own question to " + volume.title}
+            />
+            <button
+              type="button"
+              className="dsr-tool-btn"
+              onClick={addOwnQuestion}
+              disabled={!newQ.trim()}
+            >
+              + Add
+            </button>
+          </div>
+
+          {visible.length === 0 ? (
+            <p className="dsr-iv-empty">
+              {mode === "blank"
+                ? "Every prompt in this volume is on record. All of it."
+                : mode === "filled"
+                  ? "Nothing answered in this volume yet — deal yourself a hand and start it."
+                  : "No prompt here matches that search."}
+            </p>
+          ) : (
+            <div className={"dsr-iv-grid" + (dragId ? " is-dragging" : "")}>
+              {visible.map((p) => (
+                <InterviewCard
+                  key={p.id}
+                  prompt={p}
+                  value={answers[p.id] ?? ""}
+                  pinned={interview.pinned.includes(p.id)}
+                  ink={ink}
+                  quiz={quiz}
+                  revealed={revealed.includes(p.id)}
+                  dragging={dragId === p.id}
+                  onSet={setAnswer}
+                  onCommit={onFlush}
+                  onTogglePin={togglePin}
+                  onReveal={reveal}
+                  onDelete={deleteOwnQuestion}
+                  onMove={canReorder ? moveBy : undefined}
+                  onDragStart={canReorder ? handleDragStart : undefined}
+                />
+              ))}
+            </div>
+          )}
+
+          {!canReorder && (
+            <p className="dsr-iv-note">
+              Clear the search and filter to re-arrange this volume.
+            </p>
+          )}
+        </>
+      )}
+
+      {/* ------------------------------------------------------- the deck */}
+      {deckOpen && deckPrompt && (
+        <ChapterOverlay>
+        <div className="dsr-iv-deck" role="dialog" aria-modal="true" aria-label="Interview mode">
+          <div
+            className="dsr-iv-deck-card"
+            style={
+              {
+                "--iv-ink":
+                  VOLUME_INK[
+                    (volumeOfPrompt(deckPrompt.id) ?? { id: volId }).id ?? volId
+                  ] ?? ink,
+              } as CSSProperties
+            }
+          >
+            <div className="dsr-iv-deck-head">
+              <span className="dsr-panel-kicker">
+                {deckAll ? "ALL VOLUMES" : volume.title.toUpperCase()} &middot;{" "}
+                {deckIdx + 1} / {deckList.length}
+              </span>
+              <button
+                type="button"
+                className="dsr-iv-spotlight-x"
+                onClick={closeDeck}
+                aria-label="Close interview mode"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="dsr-iv-deck-q">{deckPrompt.q}</p>
+
+            <textarea
+              className="dsr-textarea dsr-iv-deck-input"
+              rows={4}
+              value={answers[deckPrompt.id] ?? ""}
+              placeholder="Say it out loud, then write it down…"
+              onChange={(e) => setAnswer(deckPrompt.id, e.target.value)}
+              onBlur={onFlush}
+            />
+
+            <div className="dsr-iv-deck-foot">
+              <button type="button" className="dsr-tool-btn" onClick={() => deckStep(-1)}>
+                ← Back
+              </button>
+              <button type="button" className="dsr-tool-btn" onClick={deckShuffle}>
+                🔀 Shuffle
+              </button>
+              <button type="button" className="dsr-tool-btn" onClick={deckNextBlank}>
+                ⏭ Next blank
+              </button>
+              <button type="button" className="dsr-tool-btn dsr-iv-primary" onClick={() => deckStep(1)}>
+                Next →
+              </button>
+            </div>
+          </div>
+        </div>
+        </ChapterOverlay>
+      )}
+    </section>
+  );
+}
+
+/* ============================================================================
    THE CHAPTER
    ========================================================================== */
 
@@ -3072,6 +4113,9 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
   const sizing = usePanel<SizingBlueprintData>(userId, "sizing", EMPTY_SIZING);
   const peeveIndex = usePanel<PeeveIndexData>(userId, "peeves", EMPTY_PEEVE_INDEX);
   const timeCapsule = usePanel<TimeCapsuleData>(userId, "capsule", EMPTY_TIME_CAPSULE);
+  /* Longer debounce than the rest: this panel is typed into continuously, and
+     every keystroke would otherwise queue a rewrite of the whole interview. */
+  const interview = usePanel<InterviewData>(userId, "interview", EMPTY_INTERVIEW, 1100, migrateInterview);
 
   const rootRef = useRef<HTMLElement>(null);
   const [muted, setMutedState] = useState(false);
@@ -3267,6 +4311,7 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
     sizing.flush();
     peeveIndex.flush();
     timeCapsule.flush();
+    interview.flush();
     sfx.stopAmbient();
     onBack();
   };
@@ -3293,7 +4338,8 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
     travelogue.error ??
     sizing.error ??
     peeveIndex.error ??
-    timeCapsule.error;
+    timeCapsule.error ??
+    interview.error;
 
   const busySaving =
     identity.saving ||
@@ -3305,7 +4351,8 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
     travelogue.saving ||
     sizing.saving ||
     peeveIndex.saving ||
-    timeCapsule.saving;
+    timeCapsule.saving ||
+    interview.saving;
 
   /* A full takeover, not just a spinner in the content area - the same
      "gate the whole chapter behind something on-theme" convention every
@@ -3444,6 +4491,18 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
             capsule={timeCapsule.value}
             onChange={timeCapsule.update}
             onFlush={timeCapsule.flush}
+            onGlitch={glitch}
+          />
+
+          {/* Deliberately NOT part of the chapter-wide `loading` gate above:
+              it is the largest panel and the last section on the page, so
+              waiting on it would delay everything above it for nothing. It
+              reports its own retrieval state instead. */}
+          <FieldInterview
+            interview={interview.value}
+            loading={interview.loading}
+            onChange={interview.update}
+            onFlush={interview.flush}
             onGlitch={glitch}
           />
         </div>
@@ -3725,6 +4784,15 @@ const DOSSIER_CSS = `
     0 0 28px -14px var(--dsr-accent);
   transition: box-shadow 500ms ease;
 }
+
+/* .dsr-stack is a grid, so every panel is a grid item and defaults to
+   min-width:auto - it will not shrink below its widest content. Any panel
+   holding something that does not wrap (a horizontally scrolling strip, a
+   wide table, a long unbroken string) therefore inflates past the viewport,
+   and .dsr-root's overflow-x:hidden means that shows up as content silently
+   sliced off the right edge on a phone rather than as a scrollbar. Releasing
+   it here covers every panel, present and future. */
+.dsr-panel { min-width: 0; }
 
 .dsr-panel-head {
   display: flex;
@@ -5237,5 +6305,704 @@ const DOSSIER_CSS = `
   .dsr-root.is-glitching .dsr-stack,
   .dsr-root.is-chaos .dsr-stack { animation: none; }
   .dsr-cursor { display: none; }
+}
+
+/* ------------------------------------ 8b. sizing blueprint, free pins --- */
+
+.dsr-sizing-placing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  background: color-mix(in srgb, var(--dsr-accent) 12%, rgba(9, 13, 18, .7));
+  border: 1.5px dashed var(--dsr-accent);
+  border-radius: 10px;
+  font-family: var(--dsr-mono);
+  font-size: 11px;
+  color: var(--dsr-text);
+}
+.dsr-sizing-placing strong { color: var(--dsr-accent); }
+
+.dsr-sizing-placing-x {
+  margin-left: auto;
+  background: none;
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 7px;
+  padding: 5px 10px;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--dsr-dim);
+  cursor: pointer;
+}
+.dsr-sizing-placing-x:hover { color: var(--dsr-text); border-color: var(--dsr-accent); }
+
+/* While placing, the figure itself is the control - say so. */
+.dsr-sizing-figure.is-placing {
+  outline: 1.5px dashed var(--dsr-accent);
+  outline-offset: 6px;
+  border-radius: 8px;
+}
+
+.dsr-sizing-pinbtn {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 13, 18, .6);
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  /* An unpinned measurement's marker is dimmed until it has somewhere to be. */
+  filter: grayscale(1);
+  opacity: .55;
+  transition: opacity 140ms ease, border-color 140ms ease, filter 140ms ease;
+}
+.dsr-sizing-pinbtn:hover { opacity: 1; border-color: var(--dsr-accent); }
+.dsr-sizing-pinbtn.is-pinned { filter: none; opacity: 1; }
+.dsr-sizing-pinbtn.is-placing {
+  filter: none;
+  opacity: 1;
+  border-color: var(--dsr-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsr-accent) 22%, transparent);
+}
+
+/* ------------------------------------------------- 11. field interview -- */
+
+/* .dsr-stack is a grid, so its items default to min-width:auto and refuse to
+   shrink below their max-content width. This panel's tab strip is six tabs
+   wide (~1110px) and its highlight strip scrolls, so without this the whole
+   section stayed ~1110px on a 375px phone - and because .dsr-root sets
+   overflow-x:hidden, that did not even show as a scrollbar. It was silently
+   guillotined off the right edge. Every horizontally-scrolling child needs
+   the same release or it re-inflates the parent it lives in. */
+.dsr-interview { min-width: 0; }
+.dsr-iv-tabs,
+.dsr-iv-highlight-row,
+.dsr-iv-highlights,
+.dsr-iv-controls,
+.dsr-iv-meter,
+.dsr-iv-grid { min-width: 0; }
+
+.dsr-iv-lede {
+  margin: 0 0 16px;
+  max-width: 62ch;
+  font-family: var(--dsr-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--dsr-dim);
+}
+
+.dsr-iv-loading {
+  margin: 0;
+  padding: 18px 0;
+  font-family: var(--dsr-mono);
+  font-size: 11px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--dsr-dim);
+}
+
+/* progress ------------------------------------------------------------- */
+
+.dsr-iv-meter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.dsr-iv-meter-bar {
+  position: relative;
+  flex: 1 1 200px;
+  height: 8px;
+  min-width: 140px;
+  background: rgba(9, 13, 18, .8);
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.dsr-iv-meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--dsr-accent);
+  box-shadow: 0 0 14px -2px var(--dsr-accent);
+  transition: width 420ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.dsr-iv-meter-read {
+  font-family: var(--dsr-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .18em;
+  color: var(--dsr-accent);
+  white-space: nowrap;
+}
+
+/* starred highlights --------------------------------------------------- */
+
+.dsr-iv-highlights { margin-bottom: 18px; }
+
+.dsr-iv-highlight-row {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  scrollbar-width: thin;
+}
+
+.dsr-iv-highlight {
+  flex: 0 0 auto;
+  max-width: 240px;
+  text-align: left;
+  padding: 8px 12px;
+  background: rgba(21, 27, 35, .92);
+  border: 1.5px solid var(--dsr-accent);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.dsr-iv-highlight:hover { transform: translateY(-2px); box-shadow: 0 6px 18px -8px var(--dsr-accent); }
+
+.dsr-iv-highlight-q {
+  display: block;
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--dsr-accent);
+  margin-bottom: 3px;
+}
+
+.dsr-iv-highlight-a {
+  display: block;
+  font-family: 'Caveat', cursive;
+  font-size: 17px;
+  line-height: 1.25;
+  color: var(--dsr-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* volume dividers ------------------------------------------------------ */
+
+.dsr-iv-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  margin-bottom: 14px;
+  scrollbar-width: thin;
+}
+
+/* Built on .dsr-tool-btn, NOT .dsr-tab - despite the name, .dsr-tab is the
+   protocol folder's manila index tab (it repaints background, colour and
+   border further up this sheet), so borrowing it here put dark folder-brown
+   text on a dark panel. Background and colour are restated explicitly so a
+   future rule up there cannot bleed into this section either. */
+.dsr-iv-tab {
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  /* File-divider silhouette: square shoulders at the bottom, tabbed top. */
+  border-radius: 10px 10px 4px 4px;
+  min-height: 44px;
+  background: rgba(21, 27, 35, .9);
+  color: var(--dsr-text);
+  border: 1.5px solid var(--dsr-line);
+}
+.dsr-iv-tab.is-on {
+  border-color: var(--dsr-accent);
+  background: color-mix(in srgb, var(--dsr-accent) 16%, rgba(21, 27, 35, .95));
+  color: var(--dsr-text);
+  box-shadow: 0 -3px 0 0 var(--dsr-accent) inset;
+}
+
+.dsr-iv-tab-mark { font-size: 14px; line-height: 1; }
+
+.dsr-iv-tab-text { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.15; }
+
+.dsr-iv-tab-roman {
+  font-family: var(--dsr-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .2em;
+  color: var(--dsr-accent);
+}
+
+.dsr-iv-tab-title {
+  font-family: var(--dsr-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--dsr-text);
+  white-space: nowrap;
+}
+
+.dsr-iv-tab-count {
+  font-family: var(--dsr-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  color: var(--dsr-dim);
+  padding-left: 2px;
+}
+
+/* controls ------------------------------------------------------------- */
+
+.dsr-iv-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.dsr-iv-search { flex: 1 1 200px; min-width: 0; }
+
+.dsr-iv-modes { display: flex; gap: 4px; }
+
+.dsr-iv-mode {
+  min-height: 40px;
+  font-size: 10.5px;
+  background: rgba(21, 27, 35, .9);
+  color: var(--dsr-text);
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 9px;
+}
+.dsr-iv-mode.is-on {
+  border-color: var(--dsr-accent);
+  color: var(--dsr-accent);
+  background: color-mix(in srgb, var(--dsr-accent) 14%, rgba(21, 27, 35, .95));
+}
+
+.dsr-iv-draw { min-height: 40px; white-space: nowrap; }
+
+/* the drawn card ------------------------------------------------------- */
+
+.dsr-iv-spotlight {
+  margin-bottom: 18px;
+  padding: 12px;
+  border: 1.5px dashed var(--dsr-accent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--dsr-accent) 8%, rgba(9, 13, 18, .6));
+  animation: dsrDrawIn 300ms cubic-bezier(.2, .8, .2, 1) both;
+}
+
+@keyframes dsrDrawIn {
+  from { opacity: 0; transform: translateY(-8px) rotate(-.6deg); }
+  to   { opacity: 1; transform: none; }
+}
+
+.dsr-iv-spotlight-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.dsr-iv-spotlight-x {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 8px;
+  color: var(--dsr-dim);
+  cursor: pointer;
+  font-size: 12px;
+}
+.dsr-iv-spotlight-x:hover { color: var(--dsr-text); border-color: var(--dsr-accent); }
+
+/* volume heading ------------------------------------------------------- */
+
+.dsr-iv-volhead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding-top: 6px;
+  border-top: 1.5px solid var(--dsr-line);
+}
+
+.dsr-iv-volroman {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  font-family: 'Permanent Marker', cursive;
+  font-size: 17px;
+  color: var(--dsr-accent);
+  border: 1.5px solid var(--dsr-accent);
+  border-radius: 50%;
+}
+
+.dsr-iv-voltitle {
+  margin: 0;
+  font-family: 'Permanent Marker', cursive;
+  font-size: 1.15rem;
+  color: #FFF;
+  line-height: 1.1;
+}
+
+.dsr-iv-empty {
+  margin: 0;
+  padding: 22px 4px;
+  font-family: 'Caveat', cursive;
+  font-size: 19px;
+  color: var(--dsr-dim);
+}
+
+/* the cards ------------------------------------------------------------ */
+
+.dsr-iv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr));
+  gap: 10px;
+}
+
+.dsr-iv-card {
+  position: relative;
+  padding: 10px 12px;
+  background: rgba(9, 13, 18, .5);
+  border: 1.5px solid var(--dsr-line);
+  /* Ruled left edge, like the margin line on an index card. */
+  border-left-width: 3px;
+  border-radius: 10px;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+.dsr-iv-card:focus-within { border-color: var(--dsr-accent); }
+.dsr-iv-card.is-filled {
+  border-left-color: var(--dsr-accent);
+  background: rgba(21, 27, 35, .72);
+}
+.dsr-iv-card.is-spotlit { border-color: var(--dsr-accent); background: rgba(21, 27, 35, .85); }
+
+.dsr-iv-cardhead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.dsr-iv-q {
+  font-family: var(--dsr-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--dsr-dim);
+  line-height: 1.45;
+  cursor: pointer;
+}
+.dsr-iv-card.is-filled .dsr-iv-q { color: var(--dsr-accent); }
+
+.dsr-iv-pin {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  margin: -4px -4px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  color: rgba(147, 163, 178, .5);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 140ms ease, transform 140ms ease;
+}
+.dsr-iv-pin:hover { color: var(--dsr-accent); transform: scale(1.15); }
+.dsr-iv-pin.is-on { color: var(--dsr-accent); }
+
+/* The answer reads as handwriting on the card, not as form input. */
+.dsr-iv-input {
+  font-family: 'Caveat', cursive;
+  font-size: 18px;
+  line-height: 1.35;
+  padding: 5px 8px;
+}
+.dsr-iv-input::placeholder { font-family: var(--dsr-mono); font-size: 12px; }
+
+/* the play bar --------------------------------------------------------- */
+
+.dsr-iv-modesbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.dsr-iv-modesbar .dsr-tool-btn { min-height: 42px; }
+
+.dsr-iv-primary {
+  background: color-mix(in srgb, var(--dsr-accent) 20%, rgba(21, 27, 35, .95));
+  border-color: var(--dsr-accent);
+  color: var(--dsr-text);
+}
+
+.dsr-iv-quiztoggle.is-on {
+  background: color-mix(in srgb, var(--dsr-accent) 22%, rgba(21, 27, 35, .95));
+  border-color: var(--dsr-accent);
+  color: var(--dsr-accent);
+}
+
+.dsr-iv-quiznote,
+.dsr-iv-note {
+  margin: -6px 0 14px;
+  font-family: var(--dsr-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--dsr-dim);
+}
+.dsr-iv-note { margin: 12px 0 0; }
+
+/* volume ink: each divider carries its own colour so six stacks of index
+   cards do not read as one wall. */
+.dsr-iv-tab.is-on {
+  border-color: var(--iv-ink, var(--dsr-accent));
+  background: color-mix(in srgb, var(--iv-ink, var(--dsr-accent)) 16%, rgba(21, 27, 35, .95));
+  box-shadow: 0 -3px 0 0 var(--iv-ink, var(--dsr-accent)) inset;
+}
+.dsr-iv-tab.is-on .dsr-iv-tab-roman { color: var(--iv-ink, var(--dsr-accent)); }
+.dsr-iv-tab-count.is-done { color: var(--iv-ink, var(--dsr-accent)); }
+
+/* their own questions -------------------------------------------------- */
+
+.dsr-iv-addrow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.dsr-iv-addinput { flex: 1 1 auto; min-width: 0; }
+.dsr-iv-addrow .dsr-tool-btn { min-height: 40px; white-space: nowrap; }
+
+.dsr-iv-ours {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--iv-ink, var(--dsr-accent));
+  border-radius: 999px;
+  font-size: 7.5px;
+  letter-spacing: .12em;
+  color: var(--iv-ink, var(--dsr-accent));
+  vertical-align: middle;
+}
+
+.dsr-iv-reset {
+  margin-left: auto;
+  background: none;
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--dsr-dim);
+  cursor: pointer;
+}
+.dsr-iv-reset:hover { color: var(--dsr-text); border-color: var(--iv-ink, var(--dsr-accent)); }
+
+.dsr-iv-volheadtext { min-width: 0; }
+
+/* re-arranging --------------------------------------------------------- */
+
+.dsr-iv-grip {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 30px;
+  margin: -4px 0 0 -4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: rgba(147, 163, 178, .45);
+  font-size: 13px;
+  line-height: 1;
+  cursor: grab;
+  /* Without this a drag on a phone scrolls the page instead of moving the
+     card - the same trap the letter jar pile hit. */
+  touch-action: none;
+}
+.dsr-iv-grip:hover { color: var(--iv-ink, var(--dsr-accent)); }
+.dsr-iv-grip:active { cursor: grabbing; }
+
+.dsr-iv-card.is-dragging {
+  border-color: var(--iv-ink, var(--dsr-accent));
+  box-shadow: 0 10px 26px -10px var(--iv-ink, var(--dsr-accent));
+  opacity: .92;
+  transform: scale(1.02);
+  z-index: 5;
+}
+.dsr-iv-grid.is-dragging { cursor: grabbing; }
+/* A drag must not select the question text it passes over. */
+.dsr-iv-grid.is-dragging .dsr-iv-card { user-select: none; }
+
+.dsr-iv-cardfoot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.dsr-iv-move {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 13, 18, .6);
+  border: 1.5px solid var(--dsr-line);
+  border-radius: 7px;
+  color: var(--dsr-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.dsr-iv-move:hover { color: var(--iv-ink, var(--dsr-accent)); border-color: var(--iv-ink, var(--dsr-accent)); }
+
+.dsr-iv-del {
+  margin-left: auto;
+  background: none;
+  border: none;
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: rgba(255, 107, 107, .75);
+  cursor: pointer;
+}
+.dsr-iv-del:hover { color: #FF6B6B; text-decoration: underline; }
+
+.dsr-iv-card.is-custom { border-style: dashed; }
+
+/* quiz cover ----------------------------------------------------------- */
+
+.dsr-iv-cover {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 9px 10px;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(9, 13, 18, .85),
+    rgba(9, 13, 18, .85) 6px,
+    rgba(30, 40, 50, .85) 6px,
+    rgba(30, 40, 50, .85) 12px
+  );
+  border: 1.5px solid var(--iv-ink, var(--dsr-accent));
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.dsr-iv-cover:hover { background: rgba(21, 27, 35, .9); }
+
+.dsr-iv-cover-tag {
+  font-family: var(--dsr-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .18em;
+  color: var(--iv-ink, var(--dsr-accent));
+}
+.dsr-iv-cover-hint {
+  font-family: 'Caveat', cursive;
+  font-size: 15px;
+  color: var(--dsr-dim);
+}
+
+/* interview mode (the deck) -------------------------------------------- */
+
+.dsr-iv-deck {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(5, 8, 11, .88);
+  backdrop-filter: blur(6px);
+  animation: dsrDrawIn 240ms ease-out both;
+}
+
+.dsr-iv-deck-card {
+  width: min(560px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  /* Pairing overflow-y:auto with the default visible x gives a stray
+     horizontal scrollbar along the bottom of the card. */
+  overflow-x: hidden;
+  box-sizing: border-box;
+  padding: clamp(16px, 4vw, 26px);
+  background: rgba(19, 25, 32, .96);
+  border: 2px solid var(--iv-ink, var(--dsr-accent));
+  border-radius: 18px;
+  box-shadow: 0 30px 70px rgba(0, 0, 0, .6), 0 0 40px -18px var(--iv-ink, var(--dsr-accent));
+}
+
+.dsr-iv-deck-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.dsr-iv-deck-q {
+  margin: 0 0 16px;
+  font-family: 'Permanent Marker', cursive;
+  font-size: clamp(1.2rem, 4.5vw, 1.75rem);
+  line-height: 1.25;
+  color: #FFF;
+}
+
+.dsr-iv-deck-input {
+  font-family: 'Caveat', cursive;
+  font-size: 21px;
+  line-height: 1.4;
+  margin-bottom: 14px;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+.dsr-iv-deck-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dsr-iv-deck-foot .dsr-tool-btn { flex: 1 1 auto; justify-content: center; min-height: 44px; }
+
+@media (max-width: 480px) {
+  .dsr-iv-grid { grid-template-columns: 1fr; }
+  .dsr-iv-controls > * { flex: 1 1 100%; }
+  .dsr-iv-modesbar .dsr-tool-btn { flex: 1 1 100%; justify-content: center; }
+  .dsr-iv-addrow { flex-wrap: wrap; }
+  .dsr-iv-addrow .dsr-tool-btn { width: 100%; justify-content: center; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dsr-iv-spotlight, .dsr-iv-deck { animation: none; }
+  .dsr-iv-meter-fill { transition: none; }
+  .dsr-iv-pin:hover { transform: none; }
+  .dsr-iv-card.is-dragging { transform: none; }
 }
 `;

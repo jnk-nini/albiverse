@@ -420,11 +420,15 @@ export default function WishlistBoard({ userId }: { userId: string }) {
               <span className="font-mono text-[7px] font-black uppercase tracking-widest text-[#5A2029]/70">
                 {chrome.label}
               </span>
+              {/* Visible by default and merely emphasised on hover: gating it
+                  purely on group-hover made it unreachable on any touch
+                  device, since no hover state ever fires there. */}
               <button
                 type="button"
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={() => deleteClue(clue.id)}
-                className="ml-auto opacity-0 group-hover:opacity-100 text-[#5A2029]/50 hover:text-[#5A2029] cursor-pointer"
+                aria-label="Remove this clue"
+                className="ml-auto opacity-60 group-hover:opacity-100 focus-visible:opacity-100 text-[#5A2029]/70 hover:text-[#5A2029] cursor-pointer"
               >
                 <X className="w-3 h-3" />
               </button>

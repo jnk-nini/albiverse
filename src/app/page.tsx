@@ -644,12 +644,15 @@ export default function AuthPage() {
                     />
                     <Lock className="w-3.5 h-3.5 text-zinc-700 absolute left-3 top-2.5 pointer-events-none" />
                     
+                    {/* The icon stays 16px, but the hit area is a full 36px
+                        square: at p-0.5 this was a 20x20 target on the first
+                        screen anyone touches, which is well under a thumb. */}
                     <button
                       type="button"
                       tabIndex={-1}
                       onClick={() => setShowPassword(!showPassword)}
                       aria-label={showPassword ? "Hide password" : "Show password"}
-                      className="absolute right-2.5 top-2 text-zinc-600 hover:text-zinc-950 transition cursor-pointer p-0.5 rounded hover:bg-zinc-100"
+                      className="absolute right-1 top-1/2 -translate-y-1/2 w-9 h-9 flex items-center justify-center text-zinc-600 hover:text-zinc-950 transition cursor-pointer rounded hover:bg-zinc-100"
                     >
                       {showPassword ? (
                         <EyeOff className="w-4 h-4 text-red-700" />

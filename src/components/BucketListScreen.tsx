@@ -135,6 +135,163 @@ function WebProgress({ pct, label }: { pct: number; label: string }) {
   );
 }
 
+/* Edit / delete controls, shared by the active cards and the Hall of Fame so
+   both piles get the same full CRUD.
+
+   These used to be `opacity-0 group-hover:opacity-100`, which meant they were
+   completely invisible on any touch device (no hover state ever fires) and
+   easy to miss on desktop - the chapter read as though items simply could not
+   be edited or deleted. They are always rendered now, and hover only
+   emphasises them. Same reasoning as the Ch.09 cassette captions fix. */
+function CardActions({
+  item,
+  isDeletePending,
+  onEdit,
+  onAskDelete,
+  onConfirmDelete,
+}: {
+  item: BucketItem;
+  isDeletePending: boolean;
+  onEdit: (item: BucketItem) => void;
+  onAskDelete: (id: string) => void;
+  onConfirmDelete: (id: string) => void;
+}) {
+  return (
+    <div className="absolute top-2 right-2 flex gap-1 z-20 opacity-80 hover:opacity-100 focus-within:opacity-100 transition">
+      <button
+        type="button"
+        onClick={() => onEdit(item)}
+        aria-label={`Edit ${item.title}`}
+        title="Edit"
+        className="w-9 h-9 flex items-center justify-center bg-[#FAF6EE] hover:bg-white rounded-full border-2 border-[#261D24] shadow-[2px_2px_0_rgba(23,19,26,0.45)] transition cursor-pointer active:translate-x-[1px] active:translate-y-[1px] active:shadow-none"
+      >
+        <Edit3 className="w-3.5 h-3.5 text-[#261D24]" strokeWidth={2.5} />
+      </button>
+      {isDeletePending ? (
+        <button
+          type="button"
+          onClick={() => onConfirmDelete(item.id)}
+          aria-label={`Confirm delete ${item.title}`}
+          className="h-9 px-3 flex items-center justify-center bg-[#7D2834] text-[#FAF4EB] rounded-full border-2 border-[#261D24] shadow-[2px_2px_0_rgba(23,19,26,0.45)] text-[9px] font-mono font-black cursor-pointer animate-pulse"
+        >
+          SURE?
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => onAskDelete(item.id)}
+          aria-label={`Delete ${item.title}`}
+          title="Delete"
+          className="w-9 h-9 flex items-center justify-center bg-[#FAF6EE] hover:bg-red-100 rounded-full border-2 border-[#261D24] shadow-[2px_2px_0_rgba(23,19,26,0.45)] transition cursor-pointer active:translate-x-[1px] active:translate-y-[1px] active:shadow-none"
+        >
+          <Trash2 className="w-3.5 h-3.5 text-[#7D2834]" strokeWidth={2.5} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* An active (not yet completed) adventure card.
+
+   Deliberately declared at module scope. It used to be defined inside
+   BucketListScreen, which made it a brand-new component *type* on every
+   render - so React tore down and rebuilt every card (and re-decoded every
+   base64 photo on it) on each keystroke in the add/edit form. */
+function BucketCard({
+  item,
+  idx,
+  isDeletePending,
+  authorName,
+  onEdit,
+  onAskDelete,
+  onConfirmDelete,
+  onComplete,
+}: {
+  item: BucketItem;
+  idx: number;
+  isDeletePending: boolean;
+  authorName: string;
+  onEdit: (item: BucketItem) => void;
+  onAskDelete: (id: string) => void;
+  onConfirmDelete: (id: string) => void;
+  onComplete: (item: BucketItem) => void;
+}) {
+  const theme = categoryTheme(item.category);
+  const tape = item.color || theme.tape;
+  const tilt = CARD_ROTATIONS[idx % CARD_ROTATIONS.length];
+  return (
+    <div
+      className={`group relative border-3 border-[#261D24] rounded-[28px] pt-9 pb-4 px-4 ${theme.bg} shadow-[8px_8px_0_rgba(23,19,26,0.5)] transition-all duration-300 ${tilt} hover:rotate-0 hover:-translate-y-1.5 hover:shadow-[10px_10px_0_rgba(23,19,26,0.55)]`}
+    >
+      {/* torn category flag, pinned like a little sticker tab */}
+      <span
+        className={`absolute -top-3 left-1/2 -translate-x-1/2 w-max whitespace-nowrap px-3 py-1 ${tape} rounded-full text-[9px] font-mono font-black uppercase tracking-wider text-[#1A0D10] border-2 border-[#261D24] shadow-[2px_2px_0_#171B22] z-10`}
+      >
+        {item.category}
+      </span>
+
+      <CardActions
+        item={item}
+        isDeletePending={isDeletePending}
+        onEdit={onEdit}
+        onAskDelete={onAskDelete}
+        onConfirmDelete={onConfirmDelete}
+      />
+
+      {/* the big cute icon badge - the focal point, like the reference moodboard */}
+      <div className="flex flex-col items-center text-center">
+        <div className="w-20 h-20 rounded-full bg-[#FAF6EE] border-3 border-[#261D24] flex items-center justify-center text-4xl shadow-[3px_3px_0_rgba(23,19,26,0.4)] mb-2.5 group-hover:scale-105 transition-transform">
+          {item.cover_emoji || theme.emoji}
+        </div>
+        <h4 className="font-marker text-xl text-[#1A0D10] leading-tight">{item.title}</h4>
+        {item.description && (
+          <p className="font-handwriting text-lg text-stone-800 mt-1 leading-snug line-clamp-2">{item.description}</p>
+        )}
+        {item.target_year && (
+          <span className="mt-1.5 inline-block font-mono text-[9px] font-black text-[#5A2029] bg-white/60 px-2 py-0.5 rounded-full border border-[#261D24]/20">
+            🎯 {item.target_year}
+          </span>
+        )}
+      </div>
+
+      {item.photo_urls.length > 0 && (
+        <div className="flex justify-center gap-1.5 mt-3">
+          {item.photo_urls.slice(0, 3).map((url, i) => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={i}
+              src={url}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              className={`w-11 h-11 object-cover rounded-lg border-2 border-[#261D24] shadow-[2px_2px_0_rgba(23,19,26,0.4)] ${i % 2 ? "rotate-3" : "-rotate-3"}`}
+            />
+          ))}
+        </div>
+      )}
+
+      <p className="text-center font-mono text-[9px] text-stone-500 mt-2">added by {authorName}</p>
+
+      <div className="flex items-center justify-between mt-3 pt-3 border-t-2 border-dashed border-[#8A7550]/70">
+        <div className="flex gap-0.5" title={`Hype: ${item.hype_rating}/5`}>
+          {Array.from({ length: 5 }).map((_, i) => (
+            <span key={i} className={i < item.hype_rating ? "opacity-100" : "opacity-25 grayscale"}>
+              🕸️
+            </span>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => onComplete(item)}
+          className="px-3 py-1.5 bg-[#1E3A34] hover:bg-[#16281f] text-[#FAF4EB] rounded-full font-mono text-[10px] font-black uppercase flex items-center gap-1.5 cursor-pointer transition"
+        >
+          <Check className="w-3.5 h-3.5" /> Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function BucketListScreen({ userId, coupleId, myName, partnerName, onBack }: BucketListScreenProps) {
   const supabase = useMemo(() => createClient(), []);
   const [items, setItems] = useState<BucketItem[]>([]);
@@ -164,6 +321,16 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  /* The armed "SURE?" state used to be cleared by an onBlur + setTimeout on
+     the trash button itself, which never fired reliably on touch (a tap does
+     not always focus, so it never blurs). A plain timer is honest about what
+     it is: arm it, and it disarms itself a few seconds later either way. */
+  useEffect(() => {
+    if (!confirmDeleteId) return;
+    const t = setTimeout(() => setConfirmDeleteId(null), 4000);
+    return () => clearTimeout(t);
+  }, [confirmDeleteId]);
 
   const [completionDraft, setCompletionDraft] = useState<{ item: BucketItem; note: string; photo: string | null } | null>(null);
   const [collapseBurst, setCollapseBurst] = useState<BucketItem | null>(null);
@@ -433,93 +600,6 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
 
   /* ---------------------------------------------------------- rendering */
 
-  const ItemCard = ({ item, idx }: { item: BucketItem; idx: number }) => {
-    const theme = categoryTheme(item.category);
-    const tape = item.color || theme.tape;
-    const isDeletePending = confirmDeleteId === item.id;
-    const tilt = CARD_ROTATIONS[idx % CARD_ROTATIONS.length];
-    return (
-      <div
-        className={`group relative border-3 border-[#261D24] rounded-[28px] pt-9 pb-4 px-4 ${theme.bg} shadow-[8px_8px_0_rgba(23,19,26,0.5)] transition-all duration-300 ${tilt} hover:rotate-0 hover:-translate-y-1.5 hover:shadow-[10px_10px_0_rgba(23,19,26,0.55)]`}
-      >
-        {/* torn category flag, pinned like a little sticker tab */}
-        <span
-          className={`absolute -top-3 left-1/2 -translate-x-1/2 w-max whitespace-nowrap px-3 py-1 ${tape} rounded-full text-[9px] font-mono font-black uppercase tracking-wider text-[#1A0D10] border-2 border-[#261D24] shadow-[2px_2px_0_#171B22] z-10`}
-        >
-          {item.category}
-        </span>
-
-        {/* edit/delete tucked away until you hover, so the card reads clean by default */}
-        <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition">
-          <button onClick={() => openEdit(item)} className="p-1.5 bg-white/80 hover:bg-white rounded-full border border-[#261D24]/30 transition cursor-pointer">
-            <Edit3 className="w-3 h-3 text-[#261D24]" />
-          </button>
-          {isDeletePending ? (
-            <button onClick={() => runDelete(item.id)} className="px-2 py-1 bg-[#7D2834] text-[#FAF4EB] rounded-full text-[8px] font-mono font-black cursor-pointer animate-pulse">
-              SURE?
-            </button>
-          ) : (
-            <button
-              onClick={() => setConfirmDeleteId(item.id)}
-              onBlur={() => setTimeout(() => setConfirmDeleteId((c) => (c === item.id ? null : c)), 2500)}
-              className="p-1.5 bg-white/80 hover:bg-red-100 rounded-full border border-[#261D24]/30 transition cursor-pointer"
-            >
-              <Trash2 className="w-3 h-3 text-[#7D2834]" />
-            </button>
-          )}
-        </div>
-
-        {/* the big cute icon badge - the focal point, like the reference moodboard */}
-        <div className="flex flex-col items-center text-center">
-          <div className="w-20 h-20 rounded-full bg-[#FAF6EE] border-3 border-[#261D24] flex items-center justify-center text-4xl shadow-[3px_3px_0_rgba(23,19,26,0.4)] mb-2.5 group-hover:scale-105 transition-transform">
-            {item.cover_emoji || theme.emoji}
-          </div>
-          <h4 className="font-marker text-xl text-[#1A0D10] leading-tight">{item.title}</h4>
-          {item.description && (
-            <p className="font-handwriting text-lg text-stone-800 mt-1 leading-snug line-clamp-2">{item.description}</p>
-          )}
-          {item.target_year && (
-            <span className="mt-1.5 inline-block font-mono text-[9px] font-black text-[#5A2029] bg-white/60 px-2 py-0.5 rounded-full border border-[#261D24]/20">
-              🎯 {item.target_year}
-            </span>
-          )}
-        </div>
-
-        {item.photo_urls.length > 0 && (
-          <div className="flex justify-center gap-1.5 mt-3">
-            {item.photo_urls.slice(0, 3).map((url, i) => (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                key={i}
-                src={url}
-                alt=""
-                className={`w-11 h-11 object-cover rounded-lg border-2 border-[#261D24] shadow-[2px_2px_0_rgba(23,19,26,0.4)] ${i % 2 ? "rotate-3" : "-rotate-3"}`}
-              />
-            ))}
-          </div>
-        )}
-
-        <p className="text-center font-mono text-[9px] text-stone-500 mt-2">added by {item.creator_id === userId ? myName : partnerName}</p>
-
-        <div className="flex items-center justify-between mt-3 pt-3 border-t-2 border-dashed border-[#8A7550]/70">
-          <div className="flex gap-0.5" title={`Hype: ${item.hype_rating}/5`}>
-            {Array.from({ length: 5 }).map((_, i) => (
-              <span key={i} className={i < item.hype_rating ? "opacity-100" : "opacity-25 grayscale"}>
-                🕸️
-              </span>
-            ))}
-          </div>
-          <button
-            onClick={() => setCompletionDraft({ item, note: "", photo: null })}
-            className="px-3 py-1.5 bg-[#1E3A34] hover:bg-[#16281f] text-[#FAF4EB] rounded-full font-mono text-[10px] font-black uppercase flex items-center gap-1.5 cursor-pointer transition"
-          >
-            <Check className="w-3.5 h-3.5" /> Done
-          </button>
-        </div>
-      </div>
-    );
-  };
-
   return (
     <main className="min-h-screen w-full p-4 sm:p-8 lg:p-12 bg-[#14181A] relative overflow-hidden animate-toc-reveal">
       <div className="absolute inset-0 bg-[radial-gradient(#242e2c_1.5px,transparent_1.5px)] [background-size:24px_24px] opacity-40 pointer-events-none" />
@@ -625,7 +705,17 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
           ) : (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-5 gap-y-8 my-6">
               {tabFiltered.map((item, idx) => (
-                <ItemCard key={item.id} item={item} idx={idx} />
+                <BucketCard
+                  key={item.id}
+                  item={item}
+                  idx={idx}
+                  isDeletePending={confirmDeleteId === item.id}
+                  authorName={item.creator_id === userId ? myName : partnerName}
+                  onEdit={openEdit}
+                  onAskDelete={setConfirmDeleteId}
+                  onConfirmDelete={runDelete}
+                  onComplete={(it) => setCompletionDraft({ item: it, note: "", photo: null })}
+                />
               ))}
             </div>
           )}
@@ -644,9 +734,21 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
                       key={item.id}
                       className={`relative border-3 border-[#261D24] rounded-[28px] pt-9 pb-4 px-4 bg-[#EAD9A9] shadow-[8px_8px_0_rgba(23,19,26,0.5)] ${CARD_ROTATIONS[idx % CARD_ROTATIONS.length]} hover:rotate-0 transition duration-300`}
                     >
-                      <div className="absolute -top-4 -right-3 w-11 h-11 rounded-full bg-[#7D2834] border-3 border-[#261D24] flex items-center justify-center text-xl shadow-[3px_3px_0_#171B22] z-10">
+                      {/* The medal sits at the top-LEFT on these so it never
+                          collides with the edit/delete controls, which a
+                          completed adventure needs just as much as an active
+                          one - a typo in a reflection was previously
+                          uncorrectable and a mistaken entry undeletable. */}
+                      <div className="absolute -top-4 -left-3 w-11 h-11 rounded-full bg-[#7D2834] border-3 border-[#261D24] flex items-center justify-center text-xl shadow-[3px_3px_0_#171B22] z-10">
                         🏅
                       </div>
+                      <CardActions
+                        item={item}
+                        isDeletePending={confirmDeleteId === item.id}
+                        onEdit={openEdit}
+                        onAskDelete={setConfirmDeleteId}
+                        onConfirmDelete={runDelete}
+                      />
                       <div className="flex flex-col items-center text-center">
                         <div className="w-16 h-16 rounded-full bg-[#FAF6EE] border-3 border-[#261D24] flex items-center justify-center text-3xl shadow-[3px_3px_0_rgba(23,19,26,0.4)] mb-2">
                           {item.cover_emoji}
