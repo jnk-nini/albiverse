@@ -19,6 +19,16 @@ import {
   ChevronUp,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { compressImage, dataUrlToBlob } from "@/lib/media/mediaPrep";
+import {
+  coupleObjectPath,
+  getStorageBlob,
+  isStorageRef,
+  removeFromStorage,
+  storagePathOf,
+  toStorageRef,
+  uploadToStorage,
+} from "@/lib/media/storage";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 
 /* ============================================================================
@@ -89,7 +99,7 @@ const MAX_PHOTOS = 4;
 const MAX_PHOTO_BYTES = 4 * 1024 * 1024;
 const CARD_ROTATIONS = ["-rotate-2", "rotate-1", "-rotate-1", "rotate-2", "-rotate-3", "rotate-3"];
 
-function readFileAsDataUrl(file: File): Promise<string> {
+function readFileAsDataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result as string);
@@ -97,6 +107,10 @@ function readFileAsDataUrl(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 }
+
+/* `photo_urls` is a plain string[] with no room for a parallel "is this a
+   storage path" flag — see `isStorageRef`/`storagePathOf`/`toStorageRef` in
+   storage.ts for the self-describing-prefix convention this uses. */
 
 function WebProgress({ pct, label }: { pct: number; label: string }) {
   const spokes = 8;
@@ -206,6 +220,7 @@ function BucketCard({
   onAskDelete,
   onConfirmDelete,
   onComplete,
+  photoSrc,
 }: {
   item: BucketItem;
   idx: number;
@@ -215,6 +230,7 @@ function BucketCard({
   onAskDelete: (id: string) => void;
   onConfirmDelete: (id: string) => void;
   onComplete: (item: BucketItem) => void;
+  photoSrc: (ref: string) => string;
 }) {
   const theme = categoryTheme(item.category);
   const tape = item.color || theme.tape;
@@ -260,7 +276,7 @@ function BucketCard({
             // eslint-disable-next-line @next/next/no-img-element
             <img
               key={i}
-              src={url}
+              src={photoSrc(url)}
               alt=""
               loading="lazy"
               decoding="async"
@@ -297,6 +313,43 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
   const [items, setItems] = useState<BucketItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  /* Storage-backed photos ("storage:<path>" entries in photo_urls) resolved
+     to a displayable data URL, keyed by the raw ref string. */
+  const [photoSrcCache, setPhotoSrcCache] = useState<Record<string, string>>({});
+  const resolvingPhotos = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const pending: string[] = [];
+    for (const item of items) {
+      for (const ref of item.photo_urls) {
+        if (isStorageRef(ref) && !resolvingPhotos.current.has(ref)) {
+          pending.push(ref);
+        }
+      }
+    }
+    if (pending.length === 0) return;
+    pending.forEach((ref) => resolvingPhotos.current.add(ref));
+
+    void Promise.all(
+      pending.map(async (ref) => {
+        try {
+          const blob = await getStorageBlob(supabase, storagePathOf(ref));
+          return { ref, dataUrl: await readFileAsDataUrl(blob) };
+        } catch {
+          return { ref, dataUrl: "" };
+        }
+      })
+    ).then((resolved) => {
+      setPhotoSrcCache((prev) => {
+        const next = { ...prev };
+        for (const r of resolved) if (r.dataUrl) next[r.ref] = r.dataUrl;
+        return next;
+      });
+    });
+  }, [items, supabase]);
+
+  const photoSrc = (ref: string) => (isStorageRef(ref) ? photoSrcCache[ref] || "" : ref);
 
   const [activeTab, setActiveTab] = useState<string>("All");
   const [activeCategory, setActiveCategory] = useState<string>("all");
@@ -493,6 +546,19 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
     setIsModalOpen(true);
   };
 
+  /* Freshly-picked photos are still raw data: URLs at this point; anything
+     already a "storage:" ref was uploaded on an earlier save of this item
+     and is left untouched. */
+  const uploadPendingPhotos = async (photos: string[]): Promise<string[]> =>
+    Promise.all(
+      photos.map(async (p) => {
+        if (isStorageRef(p) || !p.startsWith("data:")) return p;
+        const blob = await dataUrlToBlob(p);
+        const path = await uploadToStorage(supabase, coupleObjectPath(coupleId, "bucket-list", "photo.jpg"), blob);
+        return toStorageRef(path);
+      })
+    );
+
   const handlePhotoUpload = async (files: FileList | null) => {
     if (!files) return;
     setPhotoError(null);
@@ -508,8 +574,8 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
         setPhotoError(`Keep each photo under ${MAX_PHOTO_BYTES / (1024 * 1024)}MB.`);
         continue;
       }
-      const dataUrl = await readFileAsDataUrl(file);
-      setForm((f) => ({ ...f, photos: [...f.photos, dataUrl] }));
+      const prepared = await compressImage(file, { maxEdge: 1400, targetBytes: 700_000 });
+      setForm((f) => ({ ...f, photos: [...f.photos, prepared.dataUrl] }));
     }
   };
 
@@ -523,6 +589,8 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
     setSaving(true);
     setError(null);
     try {
+      const photoUrls = await uploadPendingPhotos(form.photos);
+
       const payload: Record<string, unknown> = {
         title: form.title.trim(),
         description: form.description.trim(),
@@ -531,12 +599,16 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
         hype_rating: form.hypeRating,
         cover_emoji: form.coverEmoji,
         color: form.color,
-        photo_urls: form.photos,
+        photo_urls: photoUrls,
       };
 
       if (editingItem) {
         const { error: updateErr } = await supabase.from("bucket_list").update(payload).eq("id", editingItem.id);
         if (updateErr) throw updateErr;
+        const kept = new Set(photoUrls);
+        editingItem.photo_urls
+          .filter((ref) => isStorageRef(ref) && !kept.has(ref))
+          .forEach((ref) => void removeFromStorage(supabase, storagePathOf(ref)));
       } else {
         payload.couple_id = coupleId;
         payload.creator_id = userId;
@@ -554,19 +626,30 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
   });
 
   const [runDelete] = useGuardedAction(async (id: string) => {
+    const target = items.find((i) => i.id === id);
     setItems((prev) => prev.filter((i) => i.id !== id));
     setConfirmDeleteId(null);
     const { error: delErr } = await supabase.from("bucket_list").delete().eq("id", id);
     if (delErr) {
       setError(delErr.message);
       fetchItems();
+      return;
     }
+    target?.photo_urls
+      .filter(isStorageRef)
+      .forEach((ref) => void removeFromStorage(supabase, storagePathOf(ref)));
   });
 
   const [runCompletion] = useGuardedAction(async () => {
     if (!completionDraft) return;
     const { item, note, photo } = completionDraft;
-    const photos = photo ? [...item.photo_urls, photo] : item.photo_urls;
+    let newRef: string | null = null;
+    if (photo) {
+      const blob = await dataUrlToBlob(photo);
+      const path = await uploadToStorage(supabase, coupleObjectPath(coupleId, "bucket-list", "photo.jpg"), blob);
+      newRef = toStorageRef(path);
+    }
+    const photos = newRef ? [...item.photo_urls, newRef] : item.photo_urls;
     const { error: err } = await supabase
       .from("bucket_list")
       .update({ is_completed: true, completed_at: new Date().toISOString(), completed_note: note.trim() || null, photo_urls: photos })
@@ -715,6 +798,7 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
                   onAskDelete={setConfirmDeleteId}
                   onConfirmDelete={runDelete}
                   onComplete={(it) => setCompletionDraft({ item: it, note: "", photo: null })}
+                  photoSrc={photoSrc}
                 />
               ))}
             </div>
@@ -761,7 +845,7 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
                         <div className="flex justify-center gap-1.5 mt-3">
                           {item.photo_urls.slice(0, 3).map((url, i) => (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img key={i} src={url} alt="" className={`w-11 h-11 object-cover rounded-lg border-2 border-[#261D24] shrink-0 ${i % 2 ? "rotate-3" : "-rotate-3"}`} />
+                            <img key={i} src={photoSrc(url)} alt="" className={`w-11 h-11 object-cover rounded-lg border-2 border-[#261D24] shrink-0 ${i % 2 ? "rotate-3" : "-rotate-3"}`} />
                           ))}
                         </div>
                       )}
@@ -964,7 +1048,7 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
                   {form.photos.map((url, i) => (
                     <div key={i} className="relative">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={url} alt="" className="w-16 h-16 object-cover rounded-lg border-2 border-[#261D24]" />
+                      <img src={photoSrc(url)} alt="" className="w-16 h-16 object-cover rounded-lg border-2 border-[#261D24]" />
                       <button
                         type="button"
                         onClick={() => setForm((f) => ({ ...f, photos: f.photos.filter((_, idx) => idx !== i) }))}
@@ -1051,8 +1135,8 @@ export default function BucketListScreen({ userId, coupleId, myName, partnerName
                       setError(`Keep the photo under ${MAX_PHOTO_BYTES / (1024 * 1024)}MB.`);
                       return;
                     }
-                    const dataUrl = await readFileAsDataUrl(file);
-                    setCompletionDraft((d) => (d ? { ...d, photo: dataUrl } : d));
+                    const prepared = await compressImage(file, { maxEdge: 1400, targetBytes: 700_000 });
+                    setCompletionDraft((d) => (d ? { ...d, photo: prepared.dataUrl } : d));
                   }}
                 />
               </label>

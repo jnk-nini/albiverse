@@ -4,8 +4,11 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { clearChapterAccessCache } from "@/lib/hooks/useChapterAccess";
 import { blobKey, dropBlob, readBlob, writeBlob } from "@/lib/media/blobCache";
+import { readFileAsDataUrl } from "@/lib/media/mediaPrep";
+import { getStorageBlob } from "@/lib/media/storage";
 import CoupleConnect from "@/components/CoupleConnect";
 import Dashboard from "@/components/Dashboard";
+import TurnstileWidget from "@/components/TurnstileWidget";
 import { 
   Heart, 
   Sparkles, 
@@ -31,6 +34,7 @@ type CoupleRow = {
   partner_2_id: string | null;
   anniversary_timestamp: string | null;
   cover_image_data?: string | null;
+  cover_storage_path?: string | null;
 };
 
 /* The cover has no per-row version column to key a cache on, so entries carry
@@ -59,6 +63,12 @@ export default function AuthPage() {
   const [fullName, setFullName] = useState("");
   const [message, setMessage] = useState<{ text: string; type: "err" | "success" } | null>(null);
   const [loading, setLoading] = useState(false);
+  /* Supabase's "Enable CAPTCHA protection" toggle, once turned on, requires a
+     captchaToken on sign-in AND sign-up alike - see TurnstileWidget. Tokens
+     are single-use, so captchaResetKey is bumped after every submit attempt
+     to force a fresh challenge for the next one. */
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [captchaResetKey, setCaptchaResetKey] = useState(0);
 
   // Transition States
   const [isTransitioningIn, setIsTransitioningIn] = useState(false);
@@ -89,9 +99,11 @@ export default function AuthPage() {
   const loadCoverImage = async (coupleId: string) => {
     const key = blobKey.coupleCover(coupleId);
 
-    const applyCover = (bytes: string) =>
+    const applyCover = (bytes: string, storagePath?: string | null) =>
       setCoupleData((prev: CoupleRow | null) =>
-        prev && prev.id === coupleId ? { ...prev, cover_image_data: bytes } : prev
+        prev && prev.id === coupleId
+          ? { ...prev, cover_image_data: bytes, cover_storage_path: storagePath ?? prev.cover_storage_path ?? null }
+          : prev
       );
 
     /* Revalidation is timed, but a cache HIT still paints instantly on every
@@ -113,7 +125,7 @@ export default function AuthPage() {
 
     const { data: cover } = await supabase
       .from("couples")
-      .select("cover_image_data")
+      .select("cover_image_data, cover_storage_path")
       .eq("id", coupleId)
       .maybeSingle();
 
@@ -123,7 +135,14 @@ export default function AuthPage() {
       /* see above */
     }
 
-    const bytes = cover?.cover_image_data ?? null;
+    let bytes = cover?.cover_image_data ?? null;
+    if (!bytes && cover?.cover_storage_path) {
+      try {
+        bytes = await readFileAsDataUrl(await getStorageBlob(supabase, cover.cover_storage_path));
+      } catch {
+        bytes = null;
+      }
+    }
 
     if (!bytes) {
       /* Reset to the default cover, probably on the other partner's device.
@@ -132,19 +151,19 @@ export default function AuthPage() {
       if (cached) {
         void dropBlob(key);
         setCoupleData((prev: CoupleRow | null) =>
-          prev && prev.id === coupleId ? { ...prev, cover_image_data: null } : prev
+          prev && prev.id === coupleId ? { ...prev, cover_image_data: null, cover_storage_path: null } : prev
         );
       }
       return;
     }
 
     if (bytes !== cached) {
-      applyCover(bytes);
+      applyCover(bytes, cover?.cover_storage_path ?? null);
       void writeBlob(key, COVER_VERSION, bytes);
     }
   };
 
-  const fetchProfileAndCouple = async (userId: string, userEmail?: string) => {
+  const fetchProfileAndCouple = async (userId: string) => {
     try {
       let { data: profile } = await supabase
         .from("profiles")
@@ -152,20 +171,33 @@ export default function AuthPage() {
         .eq("id", userId)
         .maybeSingle();
 
-      if (!profile || !profile.invite_code) {
-        const freshCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-        const { data: newProfile } = await supabase
-          .from("profiles")
-          .upsert({
-            id: userId,
-            email: userEmail || "spidey@dailybugle.com",
-            full_name: fullName || "Web-Slinger",
-            invite_code: freshCode,
-          })
-          .select()
-          .single();
+      /* THE "NAME KEEPS RESETTING TO WEB-SLINGER" BUG, ROOT CAUSE:
+         `onAuthStateChange` fires this function on every session event, not
+         just the first login - including Supabase's own silent token refresh,
+         which happens roughly hourly for as long as a tab stays open. A
+         transient empty result from the select above (a cold-start query, a
+         network blip - `handle_new_user` already creates this row at signup,
+         synchronously, before the client ever gets here) used to look
+         identical to "this is a brand new user" and force-upserted a fresh
+         `full_name`/`invite_code`. `fullName` is the SIGNUP FORM's local
+         state, which is empty during an ordinary session - so the fallback
+         `"Web-Slinger"` silently overwrote the real name on the very next
+         auth event, no matter how many times the table was corrected by hand.
 
-        if (newProfile) profile = newProfile;
+         This must never fabricate or overwrite full_name/email/invite_code
+         here. The only legitimate self-heal left is filling in a missing
+         invite_code on an old row that predates the column - and only that
+         one column, only when the row genuinely already exists. */
+      if (profile && !profile.invite_code) {
+        const freshCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const { data: healed } = await supabase
+          .from("profiles")
+          .update({ invite_code: freshCode })
+          .eq("id", userId)
+          .is("invite_code", null)
+          .select()
+          .maybeSingle();
+        if (healed) profile = healed;
       }
 
       setUserProfile(profile);
@@ -218,7 +250,7 @@ export default function AuthPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
         setUser(session.user);
-        await fetchProfileAndCouple(session.user.id, session.user.email);
+        await fetchProfileAndCouple(session.user.id);
       } else {
         setUser(null);
         setUserProfile(null);
@@ -246,7 +278,7 @@ export default function AuthPage() {
 
       if (session?.user && !isTransitioningIn) {
         setUser(session.user);
-        await fetchProfileAndCouple(session.user.id, session.user.email);
+        await fetchProfileAndCouple(session.user.id);
       }
       setAuthChecking(false);
     });
@@ -264,7 +296,7 @@ export default function AuthPage() {
         const { data, error } = await supabase.auth.signUp({
           email,
           password,
-          options: { data: { full_name: fullName } },
+          options: { data: { full_name: fullName }, captchaToken: captchaToken ?? undefined },
         });
         if (error) throw error;
 
@@ -285,14 +317,18 @@ export default function AuthPage() {
         // Start transition overlay immediately
         setIsTransitioningIn(true);
 
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+          options: { captchaToken: captchaToken ?? undefined },
+        });
         if (error) {
           setIsTransitioningIn(false);
           throw error;
         }
 
         if (data.user) {
-          const profile = await fetchProfileAndCouple(data.user.id, data.user.email);
+          const profile = await fetchProfileAndCouple(data.user.id);
           setUser(data.user);
 
           // Route to correct animation mode
@@ -315,6 +351,10 @@ export default function AuthPage() {
       setIsTransitioningIn(false);
       setLoading(false);
       setMessage({ text: err.message || "Spider-sense tingling: dimensional sync failed!", type: "err" });
+    } finally {
+      /* Turnstile tokens are single-use regardless of outcome - force a
+         fresh challenge for the next attempt. */
+      setCaptchaResetKey((k) => k + 1);
     }
   };
 
@@ -335,7 +375,7 @@ export default function AuthPage() {
   const handleCoupleConnected = async () => {
     setTransitionMode("to_dashboard");
     setIsTransitioningIn(true);
-    await fetchProfileAndCouple(user.id, user.email);
+    await fetchProfileAndCouple(user.id);
     setTimeout(() => {
       setIsTransitioningIn(false);
     }, 1100);
@@ -479,7 +519,7 @@ export default function AuthPage() {
           profile={userProfile}
           couple={coupleData || { id: userProfile.couple_id, anniversary_timestamp: new Date().toISOString() }}
           partner={partnerProfile}
-          onUnlinked={() => fetchProfileAndCouple(user.id, user.email)}
+          onUnlinked={() => fetchProfileAndCouple(user.id)}
           onSignOut={handleSignOut}
         />
       ) : user && !userProfile?.couple_id ? (
@@ -738,6 +778,8 @@ export default function AuthPage() {
                     </button>
                   </div>
                 </div>
+
+                <TurnstileWidget onToken={setCaptchaToken} resetKey={captchaResetKey} />
 
                 <button
                   type="submit"

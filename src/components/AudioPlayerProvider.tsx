@@ -42,6 +42,8 @@ import { createPortal } from "react-dom";
 import { Disc3 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { blobKey, readBlob, writeBlob } from "@/lib/media/blobCache";
+import { readFileAsDataUrl } from "@/lib/media/mediaPrep";
+import { coupleObjectPath, getStorageBlob, removeFromStorage, uploadToStorage } from "@/lib/media/storage";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import NowPlayingPill from "./NowPlayingPill";
 
@@ -66,6 +68,7 @@ export type MixtapeTrack = {
   duration_seconds: number | null;
   liner_note: string | null;
   created_at: string;
+  storage_path: string | null;
 };
 
 type RepeatMode = "off" | "all" | "one";
@@ -300,13 +303,21 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
 
     const { data } = await supabase
       .from("couples")
-      .select("ambient_audio_data")
+      .select("ambient_audio_data, ambient_storage_path")
       .eq("id", coupleId)
       .maybeSingle();
 
-    if (!data?.ambient_audio_data) return null;
-    void writeBlob(key, version, data.ambient_audio_data);
-    return data.ambient_audio_data;
+    let bytes = data?.ambient_audio_data ?? null;
+    if (!bytes && data?.ambient_storage_path) {
+      try {
+        bytes = await readFileAsDataUrl(await getStorageBlob(supabase, data.ambient_storage_path));
+      } catch {
+        bytes = null;
+      }
+    }
+    if (!bytes) return null;
+    void writeBlob(key, version, bytes);
+    return bytes;
   }, [coupleId, ambientHasCustomTrack, ambientTrackName, supabase]);
 
   const [ambientTogglePlayRun] = useGuardedAction(async () => {
@@ -348,22 +359,34 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const dataUrl: string = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
-      reader.readAsDataURL(file);
-    });
+    const dataUrl = await readFileAsDataUrl(file);
+
+    let storagePath: string;
+    try {
+      storagePath = await uploadToStorage(supabase, coupleObjectPath(coupleId, "ambient", "ambient.mp3"), file);
+    } catch (err) {
+      setAmbientError(err instanceof Error ? err.message : "Could not upload to storage.");
+      return;
+    }
+
+    const { data: prevRow } = await supabase
+      .from("couples")
+      .select("ambient_storage_path")
+      .eq("id", coupleId)
+      .maybeSingle();
 
     const { error: saveError } = await supabase
       .from("couples")
-      .update({ ambient_audio_data: dataUrl, ambient_audio_name: file.name })
+      .update({ ambient_audio_data: null, ambient_storage_path: storagePath, ambient_audio_name: file.name })
       .eq("id", coupleId);
 
     if (saveError) {
       setAmbientError(saveError.message);
+      void removeFromStorage(supabase, storagePath);
       return;
     }
+
+    void removeFromStorage(supabase, prevRow?.ambient_storage_path ?? null);
 
     const wasPlaying = ambientPlaying;
     setAmbientHasTrackError(false);
@@ -433,14 +456,25 @@ export function AudioPlayerProvider({ children }: { children: ReactNode }) {
 
       const { data, error: blobError } = await supabase
         .from("mixtape_tracks")
-        .select("audio_data")
+        .select("audio_data, storage_path")
         .eq("id", trackId)
         .eq("couple_id", coupleId)
         .maybeSingle();
-      if (blobError || !data?.audio_data) return null;
-      blobCacheRef.current.set(trackId, data.audio_data);
-      void writeBlob(key, "insert-only", data.audio_data);
-      return data.audio_data;
+      if (blobError || !data) return null;
+
+      let bytes = data.audio_data ?? null;
+      if (!bytes && data.storage_path) {
+        try {
+          bytes = await readFileAsDataUrl(await getStorageBlob(supabase, data.storage_path));
+        } catch {
+          bytes = null;
+        }
+      }
+      if (!bytes) return null;
+
+      blobCacheRef.current.set(trackId, bytes);
+      void writeBlob(key, "insert-only", bytes);
+      return bytes;
     },
     [supabase, coupleId]
   );

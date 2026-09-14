@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Camera, FlaskConical, ImagePlus, Loader2, Sparkles, X } from "lucide-react";
 import { playBondSnap, playPop, playThwip, type EntryMode, type Priority, hashString } from "@/lib/wishlistLab";
+import { compressImage } from "@/lib/media/mediaPrep";
 
 /* ============================================================================
    THE DYNAMIC DUO INPUT - "Snapshot" vs "Scientist" entry
@@ -17,15 +18,6 @@ import { playBondSnap, playPop, playThwip, type EntryMode, type Priority, hashSt
    WishlistScreen's simpler blueprint-style edit form, unchanged. */
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
-    reader.readAsDataURL(file);
-  });
-}
 
 export interface WishlistDraft {
   title: string;
@@ -168,8 +160,8 @@ function SnapshotSide({
       setPhotoError(`Keep the photo under ${MAX_IMAGE_BYTES / (1024 * 1024)}MB.`);
       return;
     }
-    const dataUrl = await readFileAsDataUrl(file);
-    setImage(dataUrl);
+    const prepared = await compressImage(file, { maxEdge: 1400, targetBytes: 700_000 });
+    setImage(prepared.dataUrl);
     setDeveloped(false);
     setRevealed(false);
     playPop();

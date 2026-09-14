@@ -29,6 +29,7 @@ import {
   canBrowserPlay,
   compressImage,
   dataUrlBytes,
+  dataUrlToBlob,
   formatBytes,
   normaliseMediaMime,
   playableMediaSrc,
@@ -36,6 +37,7 @@ import {
   relabelDataUrl,
   transcodeVideo,
 } from "@/lib/media/mediaPrep";
+import { coupleObjectPath, getStorageBlob, removeFromStorage, uploadToStorage } from "@/lib/media/storage";
 import {
   BugleMasthead,
   ComicPanel,
@@ -85,6 +87,9 @@ export interface DiaryAttachment {
   note?: string;
   mime?: string;
   size?: number;
+  /* Storage object path, set once this attachment's bytes are moved off
+     `url` and into Storage at save time. Links never get one. */
+  storagePath?: string;
 }
 
 interface DiaryEntry {
@@ -341,12 +346,12 @@ const newAttachmentId = () =>
   "att_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
 /** The photo a clipping shows: first image attachment, else the legacy column. */
-function coverPhotoOf(entry: {
-  attachments: DiaryAttachment[] | null;
-  media_urls: string[] | null;
-}): string | null {
+function coverPhotoOf(
+  entry: { attachments: DiaryAttachment[] | null; media_urls: string[] | null },
+  resolved: Record<string, string>
+): string | null {
   const img = (entry.attachments ?? []).find((a) => a.kind === "image");
-  if (img) return img.url;
+  if (img) return img.url || resolved[img.id] || null;
   return entry.media_urls && entry.media_urls.length > 0 ? entry.media_urls[0] : null;
 }
 
@@ -1092,6 +1097,45 @@ export default function DiaryScreen({
   const [activePinId, setActivePinId] = useState<string | null>(null);
   const [placingId, setPlacingId] = useState<string | null>(null);
 
+  /* Storage-backed attachments carry an empty `url` and have to be downloaded
+     and turned back into a data URL before anything can render them - keyed
+     by attachment id since several entries' attachments share no other id.
+     No IndexedDB persistence here (unlike the other chapters) - Diary never
+     had blob caching before this either, so this is not a regression. */
+  const [attachmentSrc, setAttachmentSrc] = useState<Record<string, string>>({});
+  const resolvingAttachments = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const pending: DiaryAttachment[] = [];
+    for (const entry of entries) {
+      for (const a of entry.attachments ?? []) {
+        if (a.storagePath && !a.url && !resolvingAttachments.current.has(a.id)) {
+          pending.push(a);
+        }
+      }
+    }
+    if (pending.length === 0) return;
+    pending.forEach((a) => resolvingAttachments.current.add(a.id));
+
+    void Promise.all(
+      pending.map(async (a) => {
+        try {
+          const blob = await getStorageBlob(supabase, a.storagePath!);
+          const dataUrl = await readFileAsDataUrl(blob);
+          return { id: a.id, dataUrl };
+        } catch {
+          return { id: a.id, dataUrl: "" };
+        }
+      })
+    ).then((resolved) => {
+      setAttachmentSrc((prev) => {
+        const next = { ...prev };
+        for (const r of resolved) if (r.dataUrl) next[r.id] = r.dataUrl;
+        return next;
+      });
+    });
+  }, [entries, supabase]);
+
   /* Which clippings the reader has chosen to un-redact on the board. A log is
      covered by default so walking past the board never spoils what is in it -
      see the redaction bars in renderClipping. */
@@ -1293,22 +1337,6 @@ export default function DiaryScreen({
     setSaving(true);
     setFormError(null);
 
-    const values = {
-      couple_id: coupleId,
-      author_id: userId,
-      title: draft.title.trim(),
-      content: draft.content.trim(),
-      mood: draft.mood,
-      location: draft.location.trim() || null,
-      weather: draft.weather,
-      card_style: draft.cardStyle,
-      pin_x: draft.pinX,
-      pin_y: draft.pinY,
-      pin_style: draft.pinX === null ? null : draft.pinStyle,
-      attachments: draft.attachments,
-      updated_at: new Date().toISOString(),
-    };
-
     /* Belt and braces against the shared_diary_attachments_size_guardrail
        CHECK: the composer already bounds this, but a draft restored from an
        older localStorage copy could in principle arrive over the line, and a
@@ -1323,14 +1351,64 @@ export default function DiaryScreen({
       return;
     }
 
+    /* Attachments already carrying a storagePath were uploaded in an earlier
+       save of this entry - only freshly-picked ones (still holding a raw
+       data: URL) need uploading now. Links pass through untouched. */
+    const uploadedPaths: string[] = [];
+    let attachments: DiaryAttachment[];
+    try {
+      attachments = await Promise.all(
+        draft.attachments.map(async (a) => {
+          if (a.storagePath || !a.url.startsWith("data:")) return a;
+          const blob = await dataUrlToBlob(a.url);
+          const ext = a.kind === "image" ? "jpg" : a.kind === "video" ? "mp4" : a.kind === "audio" ? "mp3" : "bin";
+          const path = await uploadToStorage(supabase, coupleObjectPath(coupleId, "diary", `${a.kind}.${ext}`), blob);
+          uploadedPaths.push(path);
+          return { ...a, url: "", storagePath: path };
+        })
+      );
+    } catch (err) {
+      uploadedPaths.forEach((p) => void removeFromStorage(supabase, p));
+      setFormError(err instanceof Error ? err.message : "That evidence could not be uploaded.");
+      setSaving(false);
+      return;
+    }
+
+    const values = {
+      couple_id: coupleId,
+      author_id: userId,
+      title: draft.title.trim(),
+      content: draft.content.trim(),
+      mood: draft.mood,
+      location: draft.location.trim() || null,
+      weather: draft.weather,
+      card_style: draft.cardStyle,
+      pin_x: draft.pinX,
+      pin_y: draft.pinY,
+      pin_style: draft.pinX === null ? null : draft.pinStyle,
+      attachments,
+      updated_at: new Date().toISOString(),
+    };
+
     const result = editingId
       ? await supabase.from("shared_diary").update(values).eq("id", editingId).eq("couple_id", coupleId)
       : await supabase.from("shared_diary").insert(values);
 
     if (result.error) {
+      uploadedPaths.forEach((p) => void removeFromStorage(supabase, p));
       setFormError(result.error.message);
       setSaving(false);
       return;
+    }
+
+    /* Any attachment that was storage-backed on the entry being edited but is
+       no longer in the saved array (the writer unpinned it) is now orphaned. */
+    if (editingId) {
+      const before = entries.find((e) => e.id === editingId)?.attachments ?? [];
+      const keptPaths = new Set(attachments.map((a) => a.storagePath).filter(Boolean));
+      before
+        .filter((a) => a.storagePath && !keptPaths.has(a.storagePath))
+        .forEach((a) => void removeFromStorage(supabase, a.storagePath));
     }
 
     await loadEntries();
@@ -1343,6 +1421,9 @@ export default function DiaryScreen({
   const [runSave] = useGuardedAction(saveDraft, 700);
 
   const deleteEntry = async (id: string) => {
+    const orphanedPaths = (entries.find((e) => e.id === id)?.attachments ?? [])
+      .map((a) => a.storagePath)
+      .filter((p): p is string => Boolean(p));
     const { error } = await supabase
       .from("shared_diary")
       .delete()
@@ -1353,6 +1434,7 @@ export default function DiaryScreen({
       setLoadError(error.message);
       return;
     }
+    orphanedPaths.forEach((p) => void removeFromStorage(supabase, p));
     setEntries((rows) => rows.filter((r) => r.id !== id));
     setConfirmDeleteId(null);
     setOpenId(null);
@@ -1510,7 +1592,7 @@ export default function DiaryScreen({
   const renderClipping = (item: (typeof decorated)[number]) => {
     const { entry, seed, tilt, fastener, pinTilt, tapeShift, style, torn } = item;
     const mood = moodOf(entry.mood);
-    const photo = coverPhotoOf(entry);
+    const photo = coverPhotoOf(entry, attachmentSrc);
     const attachCount = (entry.attachments ?? []).length;
 
     /* A board full of legible logs spoils every one of them from across the
@@ -2198,11 +2280,13 @@ export default function DiaryScreen({
                   <section className="dy-exhibits">
                     <h3 className="dy-exhibits-head">Evidence attached</h3>
                     <ul className="dy-exhibit-list">
-                      {attached.map((a) => (
+                      {attached.map((a) => {
+                        const src = a.url || attachmentSrc[a.id] || "";
+                        return (
                         <li key={a.id} className="dy-exhibit" data-kind={a.kind}>
                           {a.kind === "image" && (
                             <img
-                              src={a.url}
+                              src={src}
                               alt={a.title}
                               className="dy-exhibit-img"
                               loading="lazy"
@@ -2214,7 +2298,7 @@ export default function DiaryScreen({
                             /* playableMediaSrc rewrites the MIME label of an
                                iPhone clip on the way out - see mediaPrep. */
                             <video
-                              src={playableMediaSrc(a.url)}
+                              src={playableMediaSrc(src)}
                               className="dy-exhibit-video"
                               controls
                               preload="metadata"
@@ -2223,7 +2307,7 @@ export default function DiaryScreen({
                           )}
 
                           {a.kind === "audio" && (
-                            <audio src={a.url} className="dy-exhibit-audio" controls preload="none" />
+                            <audio src={src} className="dy-exhibit-audio" controls preload="none" />
                           )}
 
                           {a.kind === "link" ? (
@@ -2241,7 +2325,8 @@ export default function DiaryScreen({
                             <span className="dy-exhibit-cap">{a.title}</span>
                           )}
                         </li>
-                      ))}
+                        );
+                      })}
                     </ul>
                   </section>
                 );

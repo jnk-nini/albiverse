@@ -4,7 +4,8 @@ import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { blobKey, dropBlob, readBlobs, writeBlobs } from "@/lib/media/blobCache";
-import { compressImage } from "@/lib/media/mediaPrep";
+import { compressImage, dataUrlToBlob, readFileAsDataUrl } from "@/lib/media/mediaPrep";
+import { coupleObjectPath, getStorageBlob, removeFromStorage, uploadToStorage } from "@/lib/media/storage";
 import SpideyBackground from "./SpideyBackground";
 import { 
   ArrowLeft, 
@@ -45,6 +46,9 @@ export interface PolaroidMemory {
   photo_flip_v?: boolean;
   /* Not rendered - the blob cache's version stamp for this row's photo. */
   updatedAt?: string;
+  /* Storage object path for rows uploaded after the Storage migration; null/
+     undefined for legacy rows still holding their bytes in `url`/`file_url`. */
+  storagePath?: string | null;
 }
 
 /* PERFORMANCE: `url` is deliberately NOT in this list. It holds the whole
@@ -57,7 +61,7 @@ export interface PolaroidMemory {
 
    This is the same two-stage load Ch.04 Digicam already uses. */
 const MEMORY_SELECT_COLUMNS =
-  "id, caption, notes, memory_date, created_at, updated_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v";
+  "id, caption, notes, memory_date, created_at, updated_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v, storage_path";
 
 /* How many photos to pull in the first burst. The rest follow immediately
    after, so a long timeline still fills in without one giant request. */
@@ -88,6 +92,7 @@ function normalizeMemory(item: any): PolaroidMemory {
     photo_flip_h: item.photo_flip_h ?? false,
     photo_flip_v: item.photo_flip_v ?? false,
     updatedAt: item.updated_at ?? item.created_at ?? "v0",
+    storagePath: item.storage_path ?? null,
   };
 }
 
@@ -118,6 +123,10 @@ export default function TimelineScreen({
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formImagePreview, setFormImagePreview] = useState<string>("");
+  /* True only when the reader actually picked a new file this session -
+     distinguishes "editing caption/date, photo untouched" (no new Storage
+     upload, no orphaned old object) from "picked a different photo". */
+  const [imagePicked, setImagePicked] = useState(false);
   const [formCaption, setFormCaption] = useState("");
   const [formNotes, setFormNotes] = useState("");
   const [formDate, setFormDate] = useState("");
@@ -196,27 +205,41 @@ export default function TimelineScreen({
          photo's base64 down the wire twice. Writes still populate both. */
       const { data, error: photoErr } = await supabase
         .from("media_items")
-        .select("id, url")
+        .select("id, url, storage_path")
         .in("id", missing);
 
       if (photoErr) throw photoErr;
 
+      /* Storage-backed rows (storage_path set) are downloaded and turned back
+         into a data URL so every existing <img> consumer needs no changes;
+         legacy rows fall back to their base64 `url` exactly as before. */
+      const resolved = await Promise.all(
+        (data || []).map(async (row) => {
+          const id = (row as any).id as string;
+          const path = (row as any).storage_path as string | null;
+          if (!path) return { id, value: ((row as any).url as string) || "" };
+          try {
+            const blob = await getStorageBlob(supabase, path);
+            return { id, value: await readFileAsDataUrl(blob) };
+          } catch {
+            return { id, value: "" };
+          }
+        })
+      );
+
       setPhotoUrls((prev) => {
         const next = { ...prev };
-        for (const row of data || []) {
-          const bytes = (row as any).url;
-          if (bytes) next[(row as any).id] = bytes;
-        }
+        for (const r of resolved) if (r.value) next[r.id] = r.value;
         return next;
       });
 
       void writeBlobs(
-        (data || [])
-          .filter((row) => typeof (row as any).url === "string")
-          .map((row) => ({
-            key: blobKey.timelinePhoto((row as any).id),
-            version: versions.get((row as any).id) ?? "v0",
-            value: (row as any).url as string,
+        resolved
+          .filter((r) => r.value)
+          .map((r) => ({
+            key: blobKey.timelinePhoto(r.id),
+            version: versions.get(r.id) ?? "v0",
+            value: r.value,
           }))
       );
     } catch {
@@ -356,6 +379,7 @@ export default function TimelineScreen({
     try {
       const prepared = await compressImage(file, { maxEdge: 1600, targetBytes: 900_000 });
       setFormImagePreview(prepared.dataUrl);
+      setImagePicked(true);
       setPhotoScale(1.0);
       setPhotoX(0);
       setPhotoY(0);
@@ -375,6 +399,7 @@ export default function TimelineScreen({
   const handleOpenCreate = () => {
     setEditingId(null);
     setFormImagePreview("");
+    setImagePicked(false);
     setFormCaption("");
     setFormNotes("");
     setFormDate(new Date().toISOString().slice(0, 10));
@@ -391,6 +416,7 @@ export default function TimelineScreen({
   const handleOpenEdit = async (m: PolaroidMemory, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingId(m.id);
+    setImagePicked(false);
     /* The photo may not have been fetched yet (metadata-first load). Open the
        editor straight away with whatever is on hand, and fill the preview in
        when the bytes land - the crop tool needs the real image. */
@@ -410,8 +436,17 @@ export default function TimelineScreen({
 
     /* Modal is already up by here; the preview fills in behind it. */
     if (!current) {
-      const { data } = await supabase.from("media_items").select("id, url").eq("id", m.id).single();
-      const bytes = (data as any)?.url || "";
+      let bytes = "";
+      if (m.storagePath) {
+        try {
+          bytes = await readFileAsDataUrl(await getStorageBlob(supabase, m.storagePath));
+        } catch {
+          /* Leave bytes empty - the modal still opens, just without a preview. */
+        }
+      } else {
+        const { data } = await supabase.from("media_items").select("id, url").eq("id", m.id).single();
+        bytes = (data as any)?.url || "";
+      }
       if (bytes) {
         setPhotoUrls((prev) => ({ ...prev, [m.id]: bytes }));
         setFormImagePreview((prev) => (prev ? prev : bytes));
@@ -456,13 +491,24 @@ export default function TimelineScreen({
     setError(null);
 
     try {
+      const isNewImage = !editingId || imagePicked;
+      const prevMemory = editingId ? memories.find((m) => m.id === editingId) : null;
+
+      let storagePath: string | null = null;
+      if (isNewImage) {
+        const blob = await dataUrlToBlob(formImagePreview);
+        storagePath = await uploadToStorage(
+          supabase,
+          coupleObjectPath(coupleId, "timeline", "photo.jpg"),
+          blob
+        );
+      }
+
       const payload: any = {
         couple_id: coupleId,
         uploaded_by: userId,
         uploader_id: userId,
         media_type: "image",
-        file_url: formImagePreview,
-        url: formImagePreview,
         /* Load-bearing: `updated_at` is the version stamp the blob cache keys
            on, and this payload can carry NEW bytes for an existing row. There
            is no trigger maintaining it (checked - this schema has no triggers
@@ -481,6 +527,15 @@ export default function TimelineScreen({
         photo_flip_v: photoFlipV,
       };
 
+      /* Only touch the photo columns when there is actually a new photo -
+         editing just the caption/date on a Storage-backed row must not
+         re-upload the unchanged bytes as a fresh object every time. */
+      if (isNewImage) {
+        payload.url = "";
+        payload.file_url = "";
+        payload.storage_path = storagePath;
+      }
+
       /* .select().single() hands back the saved row in the same round trip,
          so the polaroid can be patched into state immediately instead of
          re-fetching (and re-downloading every OTHER photo's base64 blob)
@@ -494,7 +549,15 @@ export default function TimelineScreen({
           .select(MEMORY_SELECT_COLUMNS)
           .single();
 
-        if (updateErr) throw updateErr;
+        if (updateErr) {
+          /* The new object was already uploaded but the row update failed -
+             clean it up rather than leaving it orphaned. */
+          if (isNewImage) void removeFromStorage(supabase, storagePath);
+          throw updateErr;
+        }
+        if (isNewImage && prevMemory?.storagePath) {
+          void removeFromStorage(supabase, prevMemory.storagePath);
+        }
         const row = normalizeMemory(saved);
         /* The saved row comes back metadata-only, but the bytes we just sent
            are right here - seed both caches so the card doesn't have to
@@ -515,7 +578,10 @@ export default function TimelineScreen({
           .select(MEMORY_SELECT_COLUMNS)
           .single();
 
-        if (insertErr) throw insertErr;
+        if (insertErr) {
+          void removeFromStorage(supabase, storagePath);
+          throw insertErr;
+        }
         const row = normalizeMemory(saved);
         setPhotoUrls((prev) => ({ ...prev, [row.id]: formImagePreview }));
         void writeBlobs([
@@ -530,6 +596,7 @@ export default function TimelineScreen({
 
       setIsModalOpen(false);
       setFormImagePreview("");
+      setImagePicked(false);
       setFormCaption("");
       setFormNotes("");
       setEditingId(null);
@@ -545,12 +612,14 @@ export default function TimelineScreen({
     if (!confirm("Erase this polaroid from your multiverse string?")) return;
 
     try {
+      const target = memories.find((m) => m.id === id);
       const { error: delErr } = await supabase
         .from("media_items")
         .delete()
         .eq("id", id);
 
       if (delErr) throw delErr;
+      void removeFromStorage(supabase, target?.storagePath);
       /* The row is gone - free the cache slot rather than waiting for
          eviction to notice. */
       void dropBlob(blobKey.timelinePhoto(id));

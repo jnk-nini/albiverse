@@ -160,6 +160,17 @@ export function readFileAsDataUrl(file: Blob): Promise<string> {
   });
 }
 
+/**
+ * The inverse of `readFileAsDataUrl` — used by every upload path now that
+ * `compressImage`/`transcodeVideo` still hand back a data URL (their canvas/
+ * MediaRecorder pipelines produce one directly) but Storage uploads need a
+ * Blob. `fetch()` on a `data:` URL is a pure in-memory decode, no network.
+ */
+export async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
+  const res = await fetch(dataUrl);
+  return res.blob();
+}
+
 /** Bytes the base64 payload of a data URL will occupy in a Postgres text column. */
 export function dataUrlBytes(dataUrl: string): number {
   return dataUrl.length;

@@ -58,6 +58,8 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import { encodeQr } from "@/lib/qr";
+import { dataUrlToBlob } from "@/lib/media/mediaPrep";
+import { coupleObjectPath, removeFromStorage, uploadToStorage } from "@/lib/media/storage";
 import { useMixtapePlayer, type MixtapeTrack as Track } from "./AudioPlayerProvider";
 import {
   Boombox,
@@ -120,7 +122,7 @@ type PendingUpload = {
 
 /* Never select audio_data here. See the file header. */
 const TRACK_COLUMNS =
-  "id, mixtape_id, couple_id, added_by, position, title, artist, source, youtube_id, thumbnail_url, media_type, duration_seconds, liner_note, created_at";
+  "id, mixtape_id, couple_id, added_by, position, title, artist, source, youtube_id, thumbnail_url, media_type, duration_seconds, liner_note, created_at, storage_path";
 
 const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 20 * 1024 * 1024;
@@ -708,6 +710,7 @@ export default function SoundtrackScreen({
   }, 700);
 
   const [runDeleteTape] = useGuardedAction(async (tapeId: string) => {
+    const orphanedPaths = tracks.filter((t) => t.mixtape_id === tapeId).map((t) => t.storage_path);
     const { error: deleteError } = await supabase
       .from("mixtapes")
       .delete()
@@ -717,6 +720,7 @@ export default function SoundtrackScreen({
       setError("That tape would not come off the board.");
       return;
     }
+    orphanedPaths.forEach((path) => void removeFromStorage(supabase, path));
     setTapes((prev) => prev.filter((t) => t.id !== tapeId));
     setTracks((prev) => prev.filter((t) => t.mixtape_id !== tapeId));
     setShowTapeEditor(false);
@@ -751,7 +755,10 @@ export default function SoundtrackScreen({
 
   const addTrack = useCallback(
     async (
-      payload: Omit<Track, "id" | "created_at" | "couple_id" | "added_by" | "mixtape_id" | "position"> & {
+      payload: Omit<
+        Track,
+        "id" | "created_at" | "couple_id" | "added_by" | "mixtape_id" | "position" | "storage_path"
+      > & {
         audio_data?: string;
       },
       tapeId: string
@@ -759,9 +766,28 @@ export default function SoundtrackScreen({
       const position =
         tracks.filter((t) => t.mixtape_id === tapeId).reduce((max, t) => Math.max(max, t.position), -1) + 1;
 
+      /* Local bootlegs carry `audio_data` (a data URL); YouTube tracks never
+         do, since they stream from YouTube and have nothing to upload. */
+      let insertPayload: typeof payload & { storage_path?: string } = payload;
+      if (payload.audio_data) {
+        try {
+          const blob = await dataUrlToBlob(payload.audio_data);
+          const ext = payload.media_type === "video" ? "mp4" : "mp3";
+          const storagePath = await uploadToStorage(
+            supabase,
+            coupleObjectPath(coupleId, "mixtape", `track.${ext}`),
+            blob
+          );
+          insertPayload = { ...payload, audio_data: undefined, storage_path: storagePath };
+        } catch {
+          setError("That track's audio could not be uploaded.");
+          return null;
+        }
+      }
+
       const { data, error: insertError } = await supabase
         .from("mixtape_tracks")
-        .insert({ ...payload, mixtape_id: tapeId, couple_id: coupleId, added_by: userId, position })
+        .insert({ ...insertPayload, mixtape_id: tapeId, couple_id: coupleId, added_by: userId, position })
         .select(TRACK_COLUMNS)
         .single();
 
@@ -795,6 +821,7 @@ export default function SoundtrackScreen({
   }, 500);
 
   const [runDeleteTrack] = useGuardedAction(async (trackId: string) => {
+    const target = tracks.find((t) => t.id === trackId);
     const { error: deleteError } = await supabase
       .from("mixtape_tracks")
       .delete()
@@ -804,6 +831,7 @@ export default function SoundtrackScreen({
       setError("That track would not come off the tape.");
       return;
     }
+    void removeFromStorage(supabase, target?.storage_path);
     mixtape.forgetTrack(trackId);
     setTracks((prev) => prev.filter((t) => t.id !== trackId));
     setOpenTrackMenu(null);

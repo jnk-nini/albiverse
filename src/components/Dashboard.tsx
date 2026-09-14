@@ -8,7 +8,8 @@ import { Typewriter } from "./DiaryArt";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import { createClient } from "@/lib/supabase/client";
 import { blobKey, dropBlob, writeBlob } from "@/lib/media/blobCache";
-import { compressImage } from "@/lib/media/mediaPrep";
+import { compressImage, dataUrlToBlob } from "@/lib/media/mediaPrep";
+import { coupleObjectPath, removeFromStorage, uploadToStorage } from "@/lib/media/storage";
 import { clearChapterAccessCache } from "@/lib/hooks/useChapterAccess";
 import {
   Clock,
@@ -262,15 +263,30 @@ export default function Dashboard({
        hundred KB with no visible difference at the size it is displayed. */
     const prepared = await compressImage(file, { maxEdge: 1600, targetBytes: 900_000 });
     const dataUrl = prepared.dataUrl;
+
+    let storagePath: string;
+    try {
+      const blob = await dataUrlToBlob(dataUrl);
+      storagePath = await uploadToStorage(supabase, coupleObjectPath(coupleId, "cover", "cover.jpg"), blob);
+    } catch (err) {
+      setCoverUploadError(err instanceof Error ? err.message : "Could not upload to storage.");
+      return;
+    }
+
+    const oldStoragePath: string | null = couple?.cover_storage_path ?? null;
+
     const { error } = await supabase
       .from("couples")
-      .update({ cover_image_data: dataUrl })
+      .update({ cover_image_data: null, cover_storage_path: storagePath })
       .eq("id", coupleId);
 
     if (error) {
       setCoverUploadError(error.message);
+      void removeFromStorage(supabase, storagePath);
       return;
     }
+
+    void removeFromStorage(supabase, oldStoragePath);
 
     /* Write straight through to the blob cache. The book cover is only
        re-checked against the database every COVER_REVALIDATE_MS (see
@@ -286,9 +302,11 @@ export default function Dashboard({
     if (!coupleId) return;
     setCoverUploadError(null);
 
+    const oldStoragePath: string | null = couple?.cover_storage_path ?? null;
+
     const { error } = await supabase
       .from("couples")
-      .update({ cover_image_data: null })
+      .update({ cover_image_data: null, cover_storage_path: null })
       .eq("id", coupleId);
 
     if (error) {
@@ -296,6 +314,7 @@ export default function Dashboard({
       return;
     }
 
+    void removeFromStorage(supabase, oldStoragePath);
     if (coupleId) void dropBlob(blobKey.coupleCover(coupleId));
 
     setCoverOverride(null);

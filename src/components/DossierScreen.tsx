@@ -24,7 +24,16 @@ import {
   Zap,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { compressImage, dataUrlBytes, formatBytes, readFileAsDataUrl } from "@/lib/media/mediaPrep";
+import { compressImage, dataUrlBytes, dataUrlToBlob, formatBytes, readFileAsDataUrl } from "@/lib/media/mediaPrep";
+import {
+  getStorageBlob,
+  isStorageRef,
+  removeFromStorage,
+  storagePathOf,
+  toStorageRef,
+  uploadToStorage,
+  vaultObjectPath,
+} from "@/lib/media/storage";
 import {
   DossierDefs,
   EvidencePin,
@@ -865,16 +874,45 @@ const HeroBadge = memo(function HeroBadge({
   identity,
   onChange,
   onFlush,
+  userId,
+  supabase,
 }: {
   identity: Identity;
   onChange: (next: Identity | ((p: Identity) => Identity)) => void;
   onFlush: () => void;
+  userId: string;
+  supabase: ReturnType<typeof createClient>;
 }) {
   const [flipped, setFlipped] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  /* `identity.portrait` may be a "storage:<path>" ref (post-migration) or a
+     legacy base64 data: URL - resolve the ref to something an <img> can
+     actually show. Single value, so a plain local state is enough; no cache
+     map needed like the list-of-items panels below. */
+  const [resolvedPortrait, setResolvedPortrait] = useState<string | null>(null);
+  useEffect(() => {
+    if (!identity.portrait || !isStorageRef(identity.portrait)) return;
+    let cancelled = false;
+    getStorageBlob(supabase, storagePathOf(identity.portrait))
+      .then((blob) => readFileAsDataUrl(blob))
+      .then((dataUrl) => {
+        if (!cancelled) setResolvedPortrait(dataUrl);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [identity.portrait, supabase]);
+
+  const portraitSrc = identity.portrait
+    ? isStorageRef(identity.portrait)
+      ? resolvedPortrait || ""
+      : identity.portrait
+    : null;
 
   /* object-fit: cover alone always auto-centre-crops the portrait with no
      say in which part of the photo actually stays visible - this is the pan
@@ -952,8 +990,14 @@ const HeroBadge = memo(function HeroBadge({
     setBusy(true);
     try {
       const prepared = await compressImage(file, { maxEdge: 900, targetBytes: 420_000 });
-      onChange((prev) => ({ ...prev, portrait: prepared.dataUrl }));
+      const blob = await dataUrlToBlob(prepared.dataUrl);
+      const path = await uploadToStorage(supabase, vaultObjectPath(userId, "dossier-portrait", "portrait.jpg"), blob);
+      const ref = toStorageRef(path);
+      const oldPortrait = identity.portrait;
+      onChange((prev) => ({ ...prev, portrait: ref }));
       onFlush();
+      setResolvedPortrait(prepared.dataUrl);
+      if (isStorageRef(oldPortrait)) void removeFromStorage(supabase, storagePathOf(oldPortrait!));
     } catch (err) {
       setPhotoError(err instanceof Error ? err.message : "That photo could not be filed.");
     } finally {
@@ -1120,7 +1164,7 @@ const HeroBadge = memo(function HeroBadge({
               >
                 {identity.portrait ? (
                   <img
-                    src={identity.portrait}
+                    src={portraitSrc || ""}
                     alt=""
                     className="dsr-portrait-img"
                     style={{
@@ -1256,7 +1300,7 @@ const HeroBadge = memo(function HeroBadge({
             >
               {identity.portrait && (
                 <img
-                  src={identity.portrait}
+                  src={portraitSrc || ""}
                   alt=""
                   className="dsr-portrait-adjust-img"
                   draggable={false}
@@ -1494,16 +1538,61 @@ function Corkboard({
   onFlush,
   onGlitch,
   flipped,
+  userId,
+  supabase,
 }: {
   board: Corkboard;
   onChange: (next: Corkboard | ((p: Corkboard) => Corkboard)) => void;
   onFlush: () => void;
   onGlitch: () => void;
   flipped: boolean;
+  userId: string;
+  supabase: ReturnType<typeof createClient>;
 }) {
   const boardRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingKind = useRef<ArtifactKind>("polaroid");
+
+  /* Storage-backed artifacts ("storage:<path>" refs, images or voice memos)
+     resolved to a displayable data URL, keyed by the raw ref string. */
+  const [artifactSrcCache, setArtifactSrcCache] = useState<Record<string, string>>({});
+  const resolvingArtifacts = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const pending: string[] = [];
+    for (const item of board.items) {
+      if (item.url && isStorageRef(item.url) && !resolvingArtifacts.current.has(item.url)) {
+        pending.push(item.url);
+      }
+    }
+    if (pending.length === 0) return;
+    pending.forEach((ref) => resolvingArtifacts.current.add(ref));
+
+    void Promise.all(
+      pending.map(async (ref) => {
+        try {
+          const blob = await getStorageBlob(supabase, storagePathOf(ref));
+          return { ref, dataUrl: await readFileAsDataUrl(blob) };
+        } catch {
+          return { ref, dataUrl: "" };
+        }
+      })
+    ).then((resolved) => {
+      setArtifactSrcCache((prev) => {
+        const next = { ...prev };
+        for (const r of resolved) if (r.dataUrl) next[r.ref] = r.dataUrl;
+        return next;
+      });
+    });
+  }, [board.items, supabase]);
+
+  const artifactSrc = useCallback(
+    (url: string | null): string => {
+      if (!url) return "";
+      return isStorageRef(url) ? artifactSrcCache[url] || "" : url;
+    },
+    [artifactSrcCache]
+  );
 
   const [dragId, setDragId] = useState<string | null>(null);
   const [linkFrom, setLinkFrom] = useState<string | null>(null);
@@ -1661,25 +1750,34 @@ function Corkboard({
     setBusy(true);
     try {
       const kind = pendingKind.current;
+      let dataUrl: string;
+      let ext: string;
       if (kind === "memo") {
         if (!file.type.startsWith("audio/")) {
           setError("A voice memo needs to be an audio file.");
           return;
         }
-        const dataUrl = await readFileAsDataUrl(file);
+        dataUrl = await readFileAsDataUrl(file);
         if (dataUrlBytes(dataUrl) > 4 * 1024 * 1024) {
           setError("Keep voice memos short - under about 4MB.");
           return;
         }
-        addArtifact("memo", dataUrl, file.name);
+        ext = "webm";
       } else {
         if (!file.type.startsWith("image/")) {
           setError("That needs to be an image.");
           return;
         }
         const prepared = await compressImage(file, { maxEdge: 1100, targetBytes: 340_000 });
-        addArtifact(kind, prepared.dataUrl, file.name);
+        dataUrl = prepared.dataUrl;
+        ext = "jpg";
       }
+      const blob = await dataUrlToBlob(dataUrl);
+      const path = await uploadToStorage(supabase, vaultObjectPath(userId, "dossier-corkboard", `artifact.${ext}`), blob);
+      addArtifact(kind, toStorageRef(path), file.name);
+      /* Seed the cache with what was just uploaded, so the pin renders
+         instantly instead of round-tripping a download of its own bytes. */
+      setArtifactSrcCache((prev) => ({ ...prev, [toStorageRef(path)]: dataUrl }));
     } catch (err) {
       setError(err instanceof Error ? err.message : "That could not be pinned up.");
     } finally {
@@ -1689,6 +1787,7 @@ function Corkboard({
   };
 
   const removeArtifact = (id: string) => {
+    const target = board.items.find((a) => a.id === id);
     onGlitch();
     onChange((prev) => ({
       items: prev.items.filter((a) => a.id !== id),
@@ -1696,6 +1795,7 @@ function Corkboard({
       links: prev.links.filter((l) => l.a !== id && l.b !== id),
     }));
     onFlush();
+    if (isStorageRef(target?.url)) void removeFromStorage(supabase, storagePathOf(target!.url!));
     if (lightboxId === id) setLightboxId(null);
   };
 
@@ -1934,9 +2034,9 @@ function Corkboard({
             />
 
             {a.url && a.kind === "memo" ? (
-              <audio className="dsr-memo-player" src={a.url} controls preload="none" />
+              <audio className="dsr-memo-player" src={artifactSrc(a.url)} controls preload="none" />
             ) : a.url ? (
-              <img src={a.url} alt={a.title} className="dsr-artifact-img" draggable={false} />
+              <img src={artifactSrc(a.url)} alt={a.title} className="dsr-artifact-img" draggable={false} />
             ) : (
               <span className={"dsr-artifact-drawn dsr-drawn-" + a.kind} aria-hidden />
             )}
@@ -2024,7 +2124,7 @@ function Corkboard({
         >
           <div className="dsr-slide">
             <div className="dsr-slide-frame">
-              <img src={lightboxItem.url} alt={lightboxItem.title} className="dsr-slide-img" />
+              <img src={artifactSrc(lightboxItem.url)} alt={lightboxItem.title} className="dsr-slide-img" />
             </div>
             <p className="dsr-slide-cap">{lightboxItem.title}</p>
             <button
@@ -2704,11 +2804,15 @@ function Travelogue({
   onChange,
   onFlush,
   onGlitch,
+  userId,
+  supabase,
 }: {
   travelogue: Travelogue;
   onChange: (next: Travelogue | ((p: Travelogue) => Travelogue)) => void;
   onFlush: () => void;
   onGlitch: () => void;
+  userId: string;
+  supabase: ReturnType<typeof createClient>;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2719,6 +2823,47 @@ function Travelogue({
   const wrapRef = useRef<HTMLDivElement>(null);
   const holdTimer = useRef<number | null>(null);
   const holdStart = useRef<{ x: number; y: number } | null>(null);
+
+  /* Storage-backed pin photos resolved to a displayable data URL, keyed by
+     the raw "storage:<path>" ref. */
+  const [photoSrcCache, setPhotoSrcCache] = useState<Record<string, string>>({});
+  const resolvingPhotos = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const pending: string[] = [];
+    for (const pin of travelogue.items) {
+      if (pin.photo && isStorageRef(pin.photo) && !resolvingPhotos.current.has(pin.photo)) {
+        pending.push(pin.photo);
+      }
+    }
+    if (pending.length === 0) return;
+    pending.forEach((ref) => resolvingPhotos.current.add(ref));
+
+    void Promise.all(
+      pending.map(async (ref) => {
+        try {
+          const blob = await getStorageBlob(supabase, storagePathOf(ref));
+          return { ref, dataUrl: await readFileAsDataUrl(blob) };
+        } catch {
+          return { ref, dataUrl: "" };
+        }
+      })
+    ).then((resolved) => {
+      setPhotoSrcCache((prev) => {
+        const next = { ...prev };
+        for (const r of resolved) if (r.dataUrl) next[r.ref] = r.dataUrl;
+        return next;
+      });
+    });
+  }, [travelogue.items, supabase]);
+
+  const photoSrc = useCallback(
+    (ref: string | null): string => {
+      if (!ref) return "";
+      return isStorageRef(ref) ? photoSrcCache[ref] || "" : ref;
+    },
+    [photoSrcCache]
+  );
 
   const commitPin = useCallback(
     (x: number, y: number) => {
@@ -2786,9 +2931,11 @@ function Travelogue({
     onChange((prev) => ({ items: prev.items.map((p) => (p.id === id ? { ...p, ...patch } : p)) }));
 
   const removePin = (id: string) => {
+    const target = travelogue.items.find((p) => p.id === id);
     onGlitch();
     onChange((prev) => ({ items: prev.items.filter((p) => p.id !== id) }));
     onFlush();
+    if (isStorageRef(target?.photo)) void removeFromStorage(supabase, storagePathOf(target!.photo!));
     if (openId === id) setOpenId(null);
   };
 
@@ -2807,8 +2954,14 @@ function Travelogue({
     setBusy(true);
     try {
       const prepared = await compressImage(file, { maxEdge: 900, targetBytes: 320_000 });
-      setField(id, { photo: prepared.dataUrl });
+      const blob = await dataUrlToBlob(prepared.dataUrl);
+      const path = await uploadToStorage(supabase, vaultObjectPath(userId, "dossier-travelogue", "photo.jpg"), blob);
+      const ref = toStorageRef(path);
+      const oldPhoto = travelogue.items.find((p) => p.id === id)?.photo;
+      setField(id, { photo: ref });
       onFlush();
+      setPhotoSrcCache((prev) => ({ ...prev, [ref]: prepared.dataUrl }));
+      if (isStorageRef(oldPhoto)) void removeFromStorage(supabase, storagePathOf(oldPhoto!));
     } catch (err) {
       setError(err instanceof Error ? err.message : "That photo could not be filed.");
     } finally {
@@ -2918,7 +3071,7 @@ function Travelogue({
               <ImageIcon className="w-3.5 h-3.5" aria-hidden />
               {active.photo ? "Replace photo" : busy ? "Developing…" : "Add photo"}
             </button>
-            {active.photo && <img src={active.photo} alt="" className="dsr-travel-photo" />}
+            {active.photo && <img src={photoSrc(active.photo)} alt="" className="dsr-travel-photo" />}
             <button
               type="button"
               className="dsr-tool-btn dsr-travel-remove"
@@ -3260,20 +3413,72 @@ function TimeCapsule({
   onChange,
   onFlush,
   onGlitch,
+  userId,
+  supabase,
 }: {
   capsule: TimeCapsuleData;
   onChange: (next: TimeCapsuleData | ((p: TimeCapsuleData) => TimeCapsuleData)) => void;
   onFlush: () => void;
   onGlitch: () => void;
+  userId: string;
+  supabase: ReturnType<typeof createClient>;
 }) {
   const [composing, setComposing] = useState(false);
   const [draftMessage, setDraftMessage] = useState("");
   const [draftDate, setDraftDate] = useState("");
+  /* Deliberately NOT uploaded here - only compressed and held in memory. A
+     capsule can be composed and then cancelled, and uploading on every pick
+     would orphan a Storage object for every draft that never gets sealed.
+     The actual upload happens in commitCapsule(), the only place the photo
+     is ever actually persisted. */
   const [draftPhoto, setDraftPhoto] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [breaking, setBreaking] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  /* Storage-backed capsule photos resolved to a displayable data URL, keyed
+     by the raw ref. Capsule photos are never edited after sealing, so this
+     only needs to feed a render-only `displayItems`, same pattern as
+     WishlistBoard's clues. */
+  const [photoSrcCache, setPhotoSrcCache] = useState<Record<string, string>>({});
+  const resolvingPhotos = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const pending: string[] = [];
+    for (const c of capsule.items) {
+      if (c.photo && isStorageRef(c.photo) && !resolvingPhotos.current.has(c.photo)) {
+        pending.push(c.photo);
+      }
+    }
+    if (pending.length === 0) return;
+    pending.forEach((ref) => resolvingPhotos.current.add(ref));
+
+    void Promise.all(
+      pending.map(async (ref) => {
+        try {
+          const blob = await getStorageBlob(supabase, storagePathOf(ref));
+          return { ref, dataUrl: await readFileAsDataUrl(blob) };
+        } catch {
+          return { ref, dataUrl: "" };
+        }
+      })
+    ).then((resolved) => {
+      setPhotoSrcCache((prev) => {
+        const next = { ...prev };
+        for (const r of resolved) if (r.dataUrl) next[r.ref] = r.dataUrl;
+        return next;
+      });
+    });
+  }, [capsule.items, supabase]);
+
+  const displayItems = useMemo(
+    () =>
+      capsule.items.map((c) =>
+        c.photo && isStorageRef(c.photo) ? { ...c, photo: photoSrcCache[c.photo] || null } : c
+      ),
+    [capsule.items, photoSrcCache]
+  );
 
   /* `Date.now()` cannot be called during render (react-hooks/purity) - a
      ticking "now" kept in state, same shape as ClockScreen/CountdownsScreen's
@@ -3318,15 +3523,27 @@ function TimeCapsule({
     }
   };
 
-  const commitCapsule = () => {
+  const commitCapsule = async () => {
     if (!draftMessage.trim()) return;
+    let photoRef: string | null = null;
+    if (draftPhoto) {
+      try {
+        const blob = await dataUrlToBlob(draftPhoto);
+        const path = await uploadToStorage(supabase, vaultObjectPath(userId, "dossier-capsule", "photo.jpg"), blob);
+        photoRef = toStorageRef(path);
+        setPhotoSrcCache((prev) => ({ ...prev, [photoRef!]: draftPhoto }));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "That photo could not be filed.");
+        return;
+      }
+    }
     onChange((prev) => ({
       items: [
         ...prev.items,
         {
           id: uid("capsule"),
           message: draftMessage.trim(),
-          photo: draftPhoto,
+          photo: photoRef,
           sealedUntil: draftDate,
           opened: !draftDate,
         },
@@ -3354,9 +3571,11 @@ function TimeCapsule({
   };
 
   const removeCapsule = (id: string) => {
+    const target = capsule.items.find((c) => c.id === id);
     onGlitch();
     onChange((prev) => ({ items: prev.items.filter((c) => c.id !== id) }));
     onFlush();
+    if (isStorageRef(target?.photo)) void removeFromStorage(supabase, storagePathOf(target!.photo!));
   };
 
   return (
@@ -3369,7 +3588,7 @@ function TimeCapsule({
       </div>
 
       <div className="dsr-capsule-grid">
-        {capsule.items.map((c) => {
+        {displayItems.map((c) => {
           const sealed = isSealed(c);
           return (
             <div
@@ -4727,6 +4946,12 @@ interface DossierScreenProps {
 }
 
 export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
+  /* usePanel() creates its own supabase client per call (see its definition) -
+     this one is just for the Storage upload/download helpers used by the
+     photo-bearing panels below (HeroBadge, Corkboard, Travelogue,
+     TimeCapsule), same lightweight-client-per-use pattern as everywhere else
+     in this file. */
+  const supabase = useMemo(() => createClient(), []);
   const identity = usePanel<Identity>(userId, "identity", EMPTY_IDENTITY, 900, migrateIdentity);
   const vibe = usePanel<Vibe>(userId, "vibe", EMPTY_VIBE);
   const corkboard = usePanel<Corkboard>(userId, "corkboard", EMPTY_CORKBOARD, 700);
@@ -5058,7 +5283,13 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
       )}
 
       <div className="dsr-stack">
-          <HeroBadge identity={identity.value} onChange={identity.update} onFlush={identity.flush} />
+          <HeroBadge
+            identity={identity.value}
+            onChange={identity.update}
+            onFlush={identity.flush}
+            userId={userId}
+            supabase={supabase}
+          />
 
           <VibeRadar
             vibe={vibe.value}
@@ -5073,6 +5304,8 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
             onFlush={corkboard.flush}
             onGlitch={glitch}
             flipped={flipped}
+            userId={userId}
+            supabase={supabase}
           />
 
           <QuirkMatrix
@@ -5100,6 +5333,8 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
             onChange={travelogue.update}
             onFlush={travelogue.flush}
             onGlitch={glitch}
+            userId={userId}
+            supabase={supabase}
           />
 
           <SizingBlueprint sizing={sizing.value} onChange={sizing.update} onFlush={sizing.flush} />
@@ -5116,6 +5351,8 @@ export default function DossierScreen({ userId, onBack }: DossierScreenProps) {
             onChange={timeCapsule.update}
             onFlush={timeCapsule.flush}
             onGlitch={glitch}
+            userId={userId}
+            supabase={supabase}
           />
 
           {/* Deliberately NOT part of the chapter-wide `loading` gate above:

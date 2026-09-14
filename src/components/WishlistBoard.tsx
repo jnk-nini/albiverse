@@ -12,6 +12,16 @@ import {
   type WishlistClue,
   type WishlistEdge,
 } from "@/lib/wishlistLab";
+import { compressImage, dataUrlToBlob, readFileAsDataUrl as blobToDataUrl } from "@/lib/media/mediaPrep";
+import {
+  getStorageBlob,
+  isStorageRef,
+  removeFromStorage,
+  storagePathOf,
+  toStorageRef,
+  uploadToStorage,
+  vaultObjectPath,
+} from "@/lib/media/storage";
 
 /* ============================================================================
    THE INVESTIGATION BOARD - "Cracking the Partner's Code"
@@ -30,15 +40,6 @@ import {
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const EDGES_KEY = "wishlist_connections_singleton";
 const INSIGHT_THRESHOLD = 2;
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
-    reader.readAsDataURL(file);
-  });
-}
 
 function decodeClue(row: Record<string, unknown>): WishlistClue {
   const c = (row.content_json as Record<string, unknown>) || {};
@@ -71,6 +72,49 @@ export default function WishlistBoard({ userId }: { userId: string }) {
 
   const boardRef = useRef<HTMLDivElement>(null);
   const clueRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  /* Storage-backed clue photos ("storage:<path>" refs) resolved to a
+     displayable data URL, keyed by the raw ref string. Clue images are never
+     edited after creation, so `clues` itself never needs the resolved value -
+     only the board-pin render does, via `displayClues` below. */
+  const [photoSrcCache, setPhotoSrcCache] = useState<Record<string, string>>({});
+  const resolvingPhotos = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const pending: string[] = [];
+    for (const clue of clues) {
+      if (clue.image && isStorageRef(clue.image) && !resolvingPhotos.current.has(clue.image)) {
+        pending.push(clue.image);
+      }
+    }
+    if (pending.length === 0) return;
+    pending.forEach((ref) => resolvingPhotos.current.add(ref));
+
+    void Promise.all(
+      pending.map(async (ref) => {
+        try {
+          const blob = await getStorageBlob(supabase, storagePathOf(ref));
+          return { ref, dataUrl: await blobToDataUrl(blob) };
+        } catch {
+          return { ref, dataUrl: "" };
+        }
+      })
+    ).then((resolved) => {
+      setPhotoSrcCache((prev) => {
+        const next = { ...prev };
+        for (const r of resolved) if (r.dataUrl) next[r.ref] = r.dataUrl;
+        return next;
+      });
+    });
+  }, [clues, supabase]);
+
+  const displayClues = useMemo(
+    () =>
+      clues.map((c) =>
+        c.image && isStorageRef(c.image) ? { ...c, image: photoSrcCache[c.image] || null } : c
+      ),
+    [clues, photoSrcCache]
+  );
 
   const load = useCallback(async () => {
     const [clueRes, edgeRes] = await Promise.all([
@@ -152,7 +196,13 @@ export default function WishlistBoard({ userId }: { userId: string }) {
   const [runAddClue, addingClue] = useGuardedAction(
     async (payload: { type: WishlistClue["type"]; text: string; image: string | null }) => {
       if (!addMenu) return;
-      const { data } = await supabase
+      let ref: string | null = null;
+      if (payload.image) {
+        const blob = await dataUrlToBlob(payload.image);
+        const path = await uploadToStorage(supabase, vaultObjectPath(userId, "wishlist-board", "clue.jpg"), blob);
+        ref = toStorageRef(path);
+      }
+      const { data, error } = await supabase
         .from("partner_vault")
         .insert({
           owner_id: userId,
@@ -165,10 +215,11 @@ export default function WishlistBoard({ userId }: { userId: string }) {
             y: addMenu.y,
             rotation: Math.round((Math.random() * 10 - 5) * 10) / 10,
           },
-          media_urls: payload.image ? [payload.image] : [],
+          media_urls: ref ? [ref] : [],
         })
         .select()
         .single();
+      if (error && ref) void removeFromStorage(supabase, storagePathOf(ref));
       if (data) setClues((prev) => [...prev, decodeClue(data)]);
       setComposerType(null);
       setAddMenu(null);
@@ -177,9 +228,11 @@ export default function WishlistBoard({ userId }: { userId: string }) {
   );
 
   const deleteClue = async (id: string) => {
+    const target = clues.find((c) => c.id === id);
     setClues((prev) => prev.filter((c) => c.id !== id));
     await persistEdges(edges.filter((e) => e.a !== id && e.b !== id));
     await supabase.from("partner_vault").delete().eq("id", id).eq("owner_id", userId);
+    if (isStorageRef(target?.image)) void removeFromStorage(supabase, storagePathOf(target!.image!));
   };
 
   /* -------------------------------------------------------- drag to pin */
@@ -395,7 +448,7 @@ export default function WishlistBoard({ userId }: { userId: string }) {
       )}
 
       {/* clue cards */}
-      {clues.map((clue) => {
+      {displayClues.map((clue) => {
         const chrome = CLUE_CHROME[clue.type];
         const Icon = chrome.icon;
         return (
@@ -568,7 +621,8 @@ function ClueComposer({
       return;
     }
     setError(null);
-    setImage(await readFileAsDataUrl(file));
+    const prepared = await compressImage(file, { maxEdge: 1000, targetBytes: 350_000 });
+    setImage(prepared.dataUrl);
   };
 
   const canSave = needsPhoto ? !!image : text.trim().length > 0;
