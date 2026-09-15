@@ -27,6 +27,16 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import { playThwip, playPaperRip, playScratch, type EntryMode, type Priority } from "@/lib/wishlistLab";
+import { compressImage, dataUrlToBlob, readFileAsDataUrl as blobToDataUrl } from "@/lib/media/mediaPrep";
+import {
+  getStorageBlob,
+  isStorageRef,
+  removeFromStorage,
+  storagePathOf,
+  toStorageRef,
+  uploadToStorage,
+  vaultObjectPath,
+} from "@/lib/media/storage";
 import WishlistDuoInput from "@/components/WishlistDuoInput";
 import WishlistBoard from "@/components/WishlistBoard";
 import WishlistMatrix from "@/components/WishlistMatrix";
@@ -107,15 +117,6 @@ function bubbleFor(id: string) {
   return COMPARE_BUBBLES[sum % COMPARE_BUBBLES.length];
 }
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
-    reader.readAsDataURL(file);
-  });
-}
-
 /* Sound synths, insight/report templating, and the shared hash/typewriter
    helpers used across this chapter's sibling components now live in
    src/lib/wishlistLab.ts - see that file for why (shared AudioContext,
@@ -185,8 +186,54 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ title: "", description: "", price: "", link: "", image: null as string | null });
+  /* True once the reader has actually picked a new photo or cleared the
+     existing one this session - distinguishes "editing title/price, photo
+     untouched" (must never re-upload/overwrite the existing Storage ref)
+     from a genuine photo change. */
+  const [imageDirty, setImageDirty] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /* Storage-backed photos ("storage:<path>" refs) resolved to a displayable
+     data URL, keyed by the raw ref string - same pattern as BucketListScreen. */
+  const [photoSrcCache, setPhotoSrcCache] = useState<Record<string, string>>({});
+  const resolvingPhotos = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const pending: string[] = [];
+    for (const item of items) {
+      if (item.image && isStorageRef(item.image) && !resolvingPhotos.current.has(item.image)) {
+        pending.push(item.image);
+      }
+    }
+    if (pending.length === 0) return;
+    pending.forEach((ref) => resolvingPhotos.current.add(ref));
+
+    void Promise.all(
+      pending.map(async (ref) => {
+        try {
+          const blob = await getStorageBlob(supabase, storagePathOf(ref));
+          return { ref, dataUrl: await blobToDataUrl(blob) };
+        } catch {
+          return { ref, dataUrl: "" };
+        }
+      })
+    ).then((resolved) => {
+      setPhotoSrcCache((prev) => {
+        const next = { ...prev };
+        for (const r of resolved) if (r.dataUrl) next[r.ref] = r.dataUrl;
+        return next;
+      });
+    });
+  }, [items, supabase]);
+
+  const photoSrc = useCallback(
+    (ref: string | null): string => {
+      if (!ref) return "";
+      return isStorageRef(ref) ? photoSrcCache[ref] || "" : ref;
+    },
+    [photoSrcCache]
+  );
 
   const [compareSelection, setCompareSelection] = useState<string[]>([]);
   const [battleOpen, setBattleOpen] = useState(false);
@@ -216,10 +263,24 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
     fetchItems();
   }, [fetchItems]);
 
-  const activeItems = useMemo(() => items.filter((i) => !i.isPurchased), [items]);
+  /* `items` stays the raw decode of the row (image may be a "storage:" ref) -
+     every CRUD path (openEdit, patchItem, runDelete, the battle/blueprint
+     lookups below) needs that raw value to save/clean-up correctly.
+     `displayItems` is the render-only view with `image` already resolved to
+     something an <img> can actually show; every pure-display component
+     downstream (ClippingCard, SorterBoard, CompareTray, BattlePanel,
+     ArchiveGrid/ScratchCard) reads from this instead, with zero prop
+     threading needed since they were already fed via activeItems/
+     archivedItems. */
+  const displayItems = useMemo(
+    () => items.map((i) => (i.image ? { ...i, image: photoSrc(i.image) } : i)),
+    [items, photoSrc]
+  );
+  const activeItems = useMemo(() => displayItems.filter((i) => !i.isPurchased), [displayItems]);
   const archivedItems = useMemo(
-    () => items.filter((i) => i.isPurchased).sort((a, b) => (b.purchasedAt || "").localeCompare(a.purchasedAt || "")),
-    [items]
+    () =>
+      displayItems.filter((i) => i.isPurchased).sort((a, b) => (b.purchasedAt || "").localeCompare(a.purchasedAt || "")),
+    [displayItems]
   );
 
   /* "Partner Profile" score: a rough, cosmetic sense of how much dossier has
@@ -246,7 +307,14 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
 
   const openEdit = (item: WishlistItem) => {
     setEditingId(item.id);
-    setForm({ title: item.title, description: item.description, price: item.price, link: item.link, image: item.image });
+    setForm({
+      title: item.title,
+      description: item.description,
+      price: item.price,
+      link: item.link,
+      image: photoSrc(item.image),
+    });
+    setImageDirty(false);
     setPhotoError(null);
     setIsModalOpen(true);
   };
@@ -262,8 +330,16 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
       setPhotoError(`Keep the photo under ${MAX_IMAGE_BYTES / (1024 * 1024)}MB.`);
       return;
     }
-    const dataUrl = await readFileAsDataUrl(file);
-    setForm((f) => ({ ...f, image: dataUrl }));
+    const prepared = await compressImage(file, { maxEdge: 1400, targetBytes: 700_000 });
+    setForm((f) => ({ ...f, image: prepared.dataUrl }));
+    setImageDirty(true);
+  };
+
+  /** Uploads a freshly-picked photo (a raw data: URL) and returns its Storage ref. */
+  const uploadWishlistPhoto = async (dataUrl: string): Promise<string> => {
+    const blob = await dataUrlToBlob(dataUrl);
+    const path = await uploadToStorage(supabase, vaultObjectPath(userId, "wishlist", "photo.jpg"), blob);
+    return toStorageRef(path);
   };
 
   const [runSave, isSaving] = useGuardedAction(async (e: React.FormEvent) => {
@@ -289,27 +365,48 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
         entryMode: existing?.entryMode ?? "snapshot",
         priority: existing?.priority ?? "medium",
       });
-      const mediaUrls = form.image ? [form.image] : [];
+      /* Editing without touching the photo must never re-upload the
+         unchanged bytes or overwrite the existing Storage ref with the
+         (already-resolved-for-preview) display value sitting in form.image -
+         only build/send media_urls when something about the photo actually
+         changed, or when this is a genuinely new item. */
+      const photoChanged = !editingId || imageDirty;
+      let newRef: string | null = null;
+      if (photoChanged && form.image) {
+        newRef = await uploadWishlistPhoto(form.image);
+      }
+
+      const payload: Record<string, unknown> = { content_json: contentJson };
+      if (photoChanged) payload.media_urls = newRef ? [newRef] : [];
 
       if (editingId) {
         const { error: updateErr } = await supabase
           .from("partner_vault")
-          .update({ content_json: contentJson, media_urls: mediaUrls })
+          .update(payload)
           .eq("id", editingId)
           .eq("owner_id", userId);
-        if (updateErr) throw updateErr;
+        if (updateErr) {
+          if (newRef) void removeFromStorage(supabase, storagePathOf(newRef));
+          throw updateErr;
+        }
+        if (photoChanged && isStorageRef(existing?.image)) {
+          void removeFromStorage(supabase, storagePathOf(existing!.image!));
+        }
       } else {
         const { error: insertErr } = await supabase.from("partner_vault").insert({
           owner_id: userId,
           section_type: "wishlist",
           key_name: `wishlist_${crypto.randomUUID()}`,
-          content_json: contentJson,
-          media_urls: mediaUrls,
+          ...payload,
         });
-        if (insertErr) throw insertErr;
+        if (insertErr) {
+          if (newRef) void removeFromStorage(supabase, storagePathOf(newRef));
+          throw insertErr;
+        }
       }
       setIsModalOpen(false);
       setEditingId(null);
+      setImageDirty(false);
       await fetchItems();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save this file.");
@@ -342,14 +439,18 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
           entryMode: draft.entryMode,
           priority: draft.priority,
         });
+        const newRef = draft.image ? await uploadWishlistPhoto(draft.image) : null;
         const { error: insertErr } = await supabase.from("partner_vault").insert({
           owner_id: userId,
           section_type: "wishlist",
           key_name: `wishlist_${crypto.randomUUID()}`,
           content_json: contentJson,
-          media_urls: draft.image ? [draft.image] : [],
+          media_urls: newRef ? [newRef] : [],
         });
-        if (insertErr) throw insertErr;
+        if (insertErr) {
+          if (newRef) void removeFromStorage(supabase, storagePathOf(newRef));
+          throw insertErr;
+        }
         setIsDuoOpen(false);
         await fetchItems();
       } catch (err) {
@@ -361,6 +462,7 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [runDelete] = useGuardedAction(async (id: string) => {
+    const target = items.find((i) => i.id === id);
     setItems((prev) => prev.filter((i) => i.id !== id));
     setConfirmDeleteId(null);
     if (expandedId === id) setExpandedId(null);
@@ -368,7 +470,9 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
     if (delErr) {
       setError(delErr.message);
       fetchItems();
+      return;
     }
+    if (isStorageRef(target?.image)) void removeFromStorage(supabase, storagePathOf(target!.image!));
   });
 
   const patchItem = async (id: string, patch: Partial<WishlistItem>) => {
@@ -806,7 +910,10 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
                     <img src={form.image} alt="" className="w-24 h-24 object-cover rounded-lg border-2 border-[#261D24]" />
                     <button
                       type="button"
-                      onClick={() => setForm((f) => ({ ...f, image: null }))}
+                      onClick={() => {
+                        setForm((f) => ({ ...f, image: null }));
+                        setImageDirty(true);
+                      }}
                       className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-[#7D2834] text-white rounded-full flex items-center justify-center text-[10px] cursor-pointer"
                     >
                       ×
@@ -856,7 +963,7 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
       {/* -------- blueprint detail viewer -------- */}
       {expandedId &&
         (() => {
-          const item = items.find((i) => i.id === expandedId);
+          const item = displayItems.find((i) => i.id === expandedId);
           if (!item) return null;
           return (
             <BlueprintViewer
@@ -909,8 +1016,8 @@ export default function WishlistScreen({ userId, onBack }: WishlistScreenProps) 
       {/* -------- comparison battle overlay -------- */}
       {battleOpen && compareSelection.length === 2 && (
         <BattleOverlay
-          left={items.find((i) => i.id === compareSelection[0])!}
-          right={items.find((i) => i.id === compareSelection[1])!}
+          left={displayItems.find((i) => i.id === compareSelection[0])!}
+          right={displayItems.find((i) => i.id === compareSelection[1])!}
           tearingId={tearingId}
           winnerId={winnerId}
           onEliminate={eliminate}

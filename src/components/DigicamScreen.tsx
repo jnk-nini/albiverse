@@ -35,6 +35,7 @@ import { blobKey, dropBlob, readBlobs, versionOf, writeBlobs } from "@/lib/media
 import { useGuardedAction } from "@/lib/hooks/useGuardedAction";
 import {
   compressImage,
+  dataUrlToBlob,
   formatBytes,
   playableMediaSrc,
   readFileAsDataUrl,
@@ -42,6 +43,7 @@ import {
   transcodeVideo,
   withGuessedType,
 } from "@/lib/media/mediaPrep";
+import { coupleObjectPath, getStorageBlob, removeFromStorage, uploadToStorage } from "@/lib/media/storage";
 
 /* ============================================================================
    CH.04 - RETRO DIGICAM
@@ -73,6 +75,9 @@ interface DigicamItem {
      replaces `url` bumps it, so a replaced photo invalidates its own cached
      copy on both partners' devices. */
   updated_at: string | null;
+  /* Storage object path for rows uploaded after the Storage migration; null
+     for legacy rows still holding their bytes in `url` directly. */
+  storage_path: string | null;
 }
 
 interface DigicamScreenProps {
@@ -118,7 +123,7 @@ const VIDEO_TRANSCODE_THRESHOLD = 12 * 1024 * 1024;
    below is a couple of KB and arrives instantly; the media itself is fetched
    afterwards by `loadMediaFor`, current frame first. */
 const SELECT_COLUMNS =
-  "id, couple_id, uploader_id, media_type, caption, notes, created_at, updated_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v, filter, is_favorite, position";
+  "id, couple_id, uploader_id, media_type, caption, notes, created_at, updated_at, photo_scale, photo_x, photo_y, photo_rotation, photo_flip_h, photo_flip_v, filter, is_favorite, position, storage_path";
 
 /* Film stocks. `css` goes straight into the CSS filter property on the photo,
    `chip` is the swatch colour used in the picker so each stock is identifiable
@@ -577,7 +582,7 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
 
       const { data, error: mediaError } = await supabase
         .from("digicam_media")
-        .select("id, url")
+        .select("id, url, storage_path")
         .eq("couple_id", coupleId)
         .in("id", missing);
 
@@ -587,19 +592,37 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
         return;
       }
 
+      /* Storage-backed rows (storage_path set) are downloaded and turned back
+         into a data URL so every existing <img>/<video> src consumer needs no
+         changes; legacy rows fall back to their base64 `url` exactly as
+         before. */
+      const resolved = await Promise.all(
+        (data ?? []).map(async (row) => {
+          const id = row.id as string;
+          const path = row.storage_path as string | null;
+          if (!path) return { id, value: (row.url as string) ?? "" };
+          try {
+            const blob = await getStorageBlob(supabase, path);
+            return { id, value: await readFileAsDataUrl(blob) };
+          } catch {
+            return { id, value: "" };
+          }
+        })
+      );
+
       setMediaUrls((prev) => {
         const next = { ...prev };
-        for (const row of data ?? []) next[row.id as string] = row.url as string;
+        for (const r of resolved) next[r.id] = r.value;
         return next;
       });
 
       void writeBlobs(
-        (data ?? [])
-          .filter((row) => typeof row.url === "string")
-          .map((row) => ({
-            key: blobKey.digicamMedia(row.id as string),
-            version: versions.get(row.id as string) ?? "v0",
-            value: row.url as string,
+        resolved
+          .filter((r) => r.value)
+          .map((r) => ({
+            key: blobKey.digicamMedia(r.id),
+            version: versions.get(r.id) ?? "v0",
+            value: r.value,
           }))
       );
     },
@@ -1059,10 +1082,24 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
     if (!prepared) return;
     const { dataUrl, isVideo } = prepared;
 
+    let storagePath: string;
+    try {
+      const blob = await dataUrlToBlob(dataUrl);
+      storagePath = await uploadToStorage(
+        supabase,
+        coupleObjectPath(coupleId, "digicam", isVideo ? "clip.mp4" : "photo.jpg"),
+        blob
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not upload to storage.");
+      return;
+    }
+
     const { error: insertError } = await supabase.from("digicam_media").insert({
       couple_id: coupleId,
       uploader_id: userId,
-      url: dataUrl,
+      url: "",
+      storage_path: storagePath,
       media_type: isVideo ? "video" : "image",
       caption: "",
       notes: "",
@@ -1120,10 +1157,26 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
     if (!prepared) return;
     const { dataUrl, isVideo } = prepared;
 
+    let storagePath: string;
+    try {
+      const blob = await dataUrlToBlob(dataUrl);
+      storagePath = await uploadToStorage(
+        supabase,
+        coupleObjectPath(coupleId, "digicam", isVideo ? "clip.mp4" : "photo.jpg"),
+        blob
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not upload to storage.");
+      return;
+    }
+
+    const oldStoragePath = currentItem.storage_path;
+
     const { error: updateError } = await supabase
       .from("digicam_media")
       .update({
-        url: dataUrl,
+        url: "",
+        storage_path: storagePath,
         media_type: isVideo ? "video" : "image",
         photo_scale: DEFAULT_FRAME.scale,
         photo_x: DEFAULT_FRAME.x,
@@ -1138,8 +1191,16 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
 
     if (updateError) {
       setError(updateError.message);
+      /* The new object was already uploaded but the row update failed - clean
+         it up rather than leaving an orphaned file eating storage quota. */
+      void removeFromStorage(supabase, storagePath);
       return;
     }
+
+    /* The slot's old bytes are gone the moment the row points elsewhere -
+       clean up the object they lived in, same "never block on cleanup"
+       spirit as the blob cache eviction below. */
+    void removeFromStorage(supabase, oldStoragePath);
 
     /* Same row id, new bytes - drop the cached media for it (and the stale
        "can't decode" flags) so the next render refetches instead of showing
@@ -1183,8 +1244,10 @@ export default function DigicamScreen({ userId, coupleId, onBack }: DigicamScree
       return;
     }
     /* The row is gone for good - do not leave its bytes sitting in the cache
-       taking up a slot that a live frame could use. */
+       taking up a slot that a live frame could use, or its object sitting in
+       Storage eating quota. */
     void dropBlob(blobKey.digicamMedia(currentItem.id));
+    void removeFromStorage(supabase, currentItem.storage_path);
     setPanel(null);
     setCurrentIndex((i) => Math.max(0, i - 1));
     await loadItems();
